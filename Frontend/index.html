@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="da">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>JAILA</title>
+  <link rel="stylesheet" href="/clean-start/css/styles.css" />
+</head>
+<body>
+  <main class="page">
+    <section class="card">
+      <h1>JAILA</h1>
+
+      <section id="loginSection">
+        <label class="label" for="username">Brugernavn</label>
+        <input id="username" class="input" type="text" autocomplete="username" />
+
+        <label class="label" for="password">Adgangskode</label>
+        <input id="password" class="input" type="password" autocomplete="current-password" />
+
+        <div class="actions">
+          <button id="loginBtn" type="button">Log ind</button>
+        </div>
+
+        <p class="hint">Adgang kræves for at bruge analysefunktionerne.</p>
+      </section>
+
+      <section id="appSection" class="hidden">
+        <div class="toolbar">
+          <span id="sessionLabel" class="session-label"></span>
+          <button id="logoutBtn" type="button" class="button-secondary">Log ud</button>
+        </div>
+
+      <label class="label" for="question">Spørgsmål</label>
+      <textarea
+        id="question"
+        class="input"
+        rows="6"
+        placeholder="Skriv dit juridiske spørgsmål her..."
+      >Lav en juridisk analyse af, om en person er fuldt skattepligtig til Danmark.</textarea>
+
+      <div class="actions">
+        <button id="analyzeBtn" type="button">Kør analyse</button>
+      </div>
+
+      <div id="status" class="status">Klar.</div>
+
+      <section class="result">
+        <h2>Svar</h2>
+        <pre id="answer" class="answer">Intet svar endnu.</pre>
+      </section>
+
+      <section class="result">
+        <h2>Kilder (citations)</h2>
+        <ul id="citations" class="list">
+          <li>Ingen kilder endnu.</li>
+        </ul>
+      </section>
+
+      <section class="result">
+        <h2>Log</h2>
+        <a id="pdfLogLink" href="#" target="_blank" rel="noopener noreferrer">Ingen PDF-log endnu.</a>
+      </section>
+      </section>
+    </section>
+  </main>
+
+  <script src="/clean-start/js/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,171 @@
+:root {
+  --bg: #0b1220;
+  --card: #111a2f;
+  --text: #e6eaf3;
+  --muted: #9aa6bf;
+  --accent: #10b981;
+  --border: #1f2a44;
+  --danger: #ef4444;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  min-height: 100%;
+}
+
+body {
+  font-family: "Segoe UI", Arial, sans-serif;
+  background: linear-gradient(180deg, var(--bg), #0a0f1a 60%);
+  color: var(--text);
+}
+
+.page {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+}
+
+.card {
+  width: min(720px, 100%);
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 24px;
+}
+
+h1 {
+  margin: 0 0 8px;
+}
+
+p {
+  margin: 0 0 16px;
+  color: var(--muted);
+}
+
+.label {
+  display: block;
+  margin-bottom: 8px;
+  font-weight: 600;
+}
+
+.input {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px;
+  background: #0a1428;
+  color: var(--text);
+  resize: vertical;
+  margin-bottom: 12px;
+  font: inherit;
+}
+
+.actions {
+  margin-bottom: 12px;
+}
+
+button {
+  border: none;
+  background: var(--accent);
+  color: #032118;
+  font-weight: 700;
+  border-radius: 10px;
+  padding: 10px 14px;
+  cursor: pointer;
+}
+
+button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.button-secondary {
+  background: #1e2a43;
+  color: #d7e0f1;
+  border: 1px solid var(--border);
+}
+
+.status {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px;
+  color: var(--muted);
+  margin-bottom: 12px;
+}
+
+.status.ok {
+  border-color: rgba(16, 185, 129, 0.6);
+  color: #7de8c3;
+}
+
+.status.error {
+  border-color: rgba(239, 68, 68, 0.6);
+  color: #fca5a5;
+}
+
+.result {
+  border-top: 1px solid var(--border);
+  padding-top: 14px;
+  margin-top: 14px;
+}
+
+h2 {
+  margin: 0 0 10px;
+  font-size: 1rem;
+}
+
+.answer {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: #0a1428;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px;
+  color: var(--text);
+  max-height: 360px;
+  overflow: auto;
+}
+
+.list {
+  margin: 0;
+  padding-left: 20px;
+}
+
+.list li {
+  margin-bottom: 6px;
+  color: var(--muted);
+}
+
+a {
+  color: #7de8c3;
+}
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.session-label {
+  color: var(--muted);
+  font-size: 0.95rem;
+}
+
+.hint {
+  margin-top: 4px;
+  font-size: 0.9rem;
+}
+
+.hidden {
+  display: none;
+}
