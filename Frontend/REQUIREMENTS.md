@@ -30,15 +30,18 @@ Denne mappe indeholder frontend for JAILA uden legacy UI.
 ## Filer der skal deployes
 - `clean-start/index.html`
 - `clean-start/css/styles.css`
-- `clean-start/js/app.js`
+- `clean-start/js/**` (hele JS-mappen inkl. undermapper)
 - `clean-start/REQUIREMENTS.md`
+- `clean-start/VERIFY_CLEAN_START.bat`
 
 ## Deploy script i mappen
 - `clean-start/DEPLOY_CLEAN_START.bat`
 - Scriptet:
-  1. uploader filer til home-folder paa server
+  1. uploader filer til staging i home-folder paa server
   2. kopierer dem til `/var/www/site/clean-start`
   3. reloader nginx
+- `clean-start/VERIFY_CLEAN_START.bat`
+  - tjekker live URL'er og simple markoerer i index/css/js
 
 ## Verifikation efter deploy
 - Side loader: `https://skat-chat.dk/clean-start/index.html`
@@ -46,3 +49,4 @@ Denne mappe indeholder frontend for JAILA uden legacy UI.
   - `https://skat-chat.dk/clean-start/css/styles.css`
   - `https://skat-chat.dk/clean-start/js/app.js`
 - Backend health (via nginx proxy): `https://skat-chat.dk/api/health`
+- Anbefalet: koer `VERIFY_CLEAN_START.bat`

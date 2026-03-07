@@ -3,3 +3,9 @@ streamlit
 reportlab
 fastapi
 uvicorn
+python-multipart
+python-docx
+pypdf
+openpyxl
+pymupdf
+xlrd

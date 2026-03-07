@@ -226,3 +226,59 @@ def save_pdf_log(question: str, parsed: dict[str, Any], used_model: str) -> Path
 
     doc.build(story)
     return output_path
+
+
+def save_chat_pdf_log(messages: list[dict[str, str]], used_model: str) -> Path:
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"chat_log_{timestamp}_{uuid4().hex[:8]}.pdf"
+    output_path = LOG_DIR / filename
+
+    doc = SimpleDocTemplate(
+        str(output_path),
+        pagesize=A4,
+        rightMargin=15 * mm,
+        leftMargin=15 * mm,
+        topMargin=15 * mm,
+        bottomMargin=15 * mm,
+        title="Chatlog",
+    )
+    styles = getSampleStyleSheet()
+    body_style = styles["BodyText"]
+    body_style.fontSize = 10
+    body_style.leading = 13
+    heading_style = styles["Heading2"]
+    heading_style.spaceBefore = 8
+    heading_style.spaceAfter = 4
+
+    story: list[Any] = []
+    story.append(Paragraph("Chatlog", styles["Title"]))
+    story.append(
+        Paragraph(
+            f"Tidspunkt: {escape(datetime.now().isoformat(timespec='seconds'))}",
+            body_style,
+        )
+    )
+    story.append(Paragraph(f"Model brugt: {escape(used_model)}", body_style))
+    story.append(Spacer(1, 8))
+
+    story.append(Paragraph("Samtale", heading_style))
+    if not messages:
+        story.append(Paragraph("Ingen beskeder at eksportere.", body_style))
+    else:
+        for idx, msg in enumerate(messages, start=1):
+            role = str(msg.get("role", "ukendt")).strip().lower()
+            if role == "user":
+                role_label = "Du"
+            elif role == "assistant":
+                role_label = "JAILA"
+            else:
+                role_label = "System"
+            text = normalize_mojibake_text(str(msg.get("text", "") or ""))
+            text = text.strip() or "(Tom besked)"
+            story.append(Paragraph(f"{idx}. {escape(role_label)}", heading_style))
+            story.append(Paragraph(escape(text).replace("\n", "<br/>"), body_style))
+            story.append(Spacer(1, 4))
+
+    doc.build(story)
+    return output_path

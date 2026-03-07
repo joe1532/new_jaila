@@ -16,13 +16,15 @@ set /p SUDO_PASS=Indtast sudo password for server:
 
 echo.
 echo [1/4] Uploader clean-start filer...
-scp -i "%SSH_KEY%" index.html %SSH_USER%@%SSH_HOST%:~/clean-start-index.html
+ssh -i "%SSH_KEY%" %SSH_USER%@%SSH_HOST% "mkdir -p ~/clean-start-staging"
 if errorlevel 1 goto :upload_failed
-scp -i "%SSH_KEY%" css\styles.css %SSH_USER%@%SSH_HOST%:~/clean-start-styles.css
+scp -i "%SSH_KEY%" index.html %SSH_USER%@%SSH_HOST%:~/clean-start-staging/index.html
 if errorlevel 1 goto :upload_failed
-scp -i "%SSH_KEY%" js\app.js %SSH_USER%@%SSH_HOST%:~/clean-start-app.js
+scp -i "%SSH_KEY%" REQUIREMENTS.md %SSH_USER%@%SSH_HOST%:~/clean-start-staging/REQUIREMENTS.md
 if errorlevel 1 goto :upload_failed
-scp -i "%SSH_KEY%" REQUIREMENTS.md %SSH_USER%@%SSH_HOST%:~/clean-start-REQUIREMENTS.md
+scp -r -i "%SSH_KEY%" css %SSH_USER%@%SSH_HOST%:~/clean-start-staging/
+if errorlevel 1 goto :upload_failed
+scp -r -i "%SSH_KEY%" js %SSH_USER%@%SSH_HOST%:~/clean-start-staging/
 if errorlevel 1 goto :upload_failed
 
 echo [2/4] Opretter target mappe paa server...
@@ -30,7 +32,7 @@ ssh -i "%SSH_KEY%" %SSH_USER%@%SSH_HOST% "echo %SUDO_PASS% | sudo -S mkdir -p %R
 if errorlevel 1 goto :remote_failed
 
 echo [3/4] Kopierer filer til webroot...
-ssh -i "%SSH_KEY%" %SSH_USER%@%SSH_HOST% "echo %SUDO_PASS% | sudo -S cp ~/clean-start-index.html %REMOTE_BASE%/index.html && echo %SUDO_PASS% | sudo -S cp ~/clean-start-styles.css %REMOTE_BASE%/css/styles.css && echo %SUDO_PASS% | sudo -S cp ~/clean-start-app.js %REMOTE_BASE%/js/app.js && echo %SUDO_PASS% | sudo -S cp ~/clean-start-REQUIREMENTS.md %REMOTE_BASE%/REQUIREMENTS.md"
+ssh -i "%SSH_KEY%" %SSH_USER%@%SSH_HOST% "echo %SUDO_PASS% | sudo -S rm -rf %REMOTE_BASE%/css %REMOTE_BASE%/js && echo %SUDO_PASS% | sudo -S mkdir -p %REMOTE_BASE%/css %REMOTE_BASE%/js && echo %SUDO_PASS% | sudo -S cp ~/clean-start-staging/index.html %REMOTE_BASE%/index.html && echo %SUDO_PASS% | sudo -S cp ~/clean-start-staging/index.html /var/www/site/index.html && echo %SUDO_PASS% | sudo -S cp ~/clean-start-staging/REQUIREMENTS.md %REMOTE_BASE%/REQUIREMENTS.md && echo %SUDO_PASS% | sudo -S cp -r ~/clean-start-staging/css/. %REMOTE_BASE%/css/ && echo %SUDO_PASS% | sudo -S cp -r ~/clean-start-staging/js/. %REMOTE_BASE%/js/"
 if errorlevel 1 goto :remote_failed
 
 echo [4/4] Reloader nginx...

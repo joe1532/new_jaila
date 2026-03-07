@@ -89,9 +89,20 @@ def normalize_mojibake_text(text: str) -> str:
 def clean_answer_text(text: str) -> str:
     """Remove raw inline filecite markers from model output text."""
     cleaned = re.sub(r"filecite.*?", "", text, flags=re.DOTALL)
+    # Remove markdown quote markers at line start.
+    cleaned = re.sub(r"(?m)^\s*>\s?", "", cleaned)
+    # Remove markdown bold markers because they add no legal value in output.
+    cleaned = re.sub(r"\*\*(.*?)\*\*", r"\1", cleaned, flags=re.DOTALL)
+    cleaned = cleaned.replace("**", "")
     cleaned = re.sub(
         r"(?i)\bkarnov[-\s]*noter?\b",
         "Note til relevant lovbestemmelse",
+        cleaned,
+    )
+    # Use lowercase "note til" when it appears mid-sentence.
+    cleaned = re.sub(
+        r"(?<=[A-Za-zÆØÅæøå0-9])\s+Note(\s*\(\d{2,4}\))?\s+til\b",
+        lambda m: f" note{m.group(1) or ''} til",
         cleaned,
     )
     cleaned = re.sub(r"[ \t]+\n", "\n", cleaned)

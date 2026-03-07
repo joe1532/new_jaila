@@ -29,6 +29,8 @@ Maalet er at holde frontend simpel, mens backend-haandtering af OpenAI/vector st
   - Renderer svar, citations og PDF-log link i UI.
 - `DEPLOY_CLEAN_START.bat`
   - Deploy-script til produktion.
+- `VERIFY_CLEAN_START.bat`
+  - Hurtig verifikation af live deployment (index/css/js/health + markoerer).
 - `REQUIREMENTS.md`
   - Miljoe- og driftskrav.
 - `README.md`
@@ -69,6 +71,20 @@ Scriptet:
 2. kopierer til `/var/www/site/clean-start`
 3. kan opdatere root-forsiden (afhaengigt af serverkommando)
 4. reloader `nginx`
+
+### Verifikation (efter deploy)
+
+Koer:
+
+`JAILA FRONTEND/clean-start/VERIFY_CLEAN_START.bat`
+
+Scriptet tjekker:
+
+1. `https://skat-chat.dk/clean-start/index.html`
+2. `https://skat-chat.dk/clean-start/css/styles.css`
+3. `https://skat-chat.dk/clean-start/js/app.js`
+4. `https://skat-chat.dk/api/health`
+5. Markoerer i filerne (fx "Upload kontekst til chat" og `.chat-context-panel`)
 
 ### Manuel metode (hvis noedvendigt)
 
@@ -111,6 +127,7 @@ echo '<SUDO_PASSWORD>' | sudo -S systemctl reload nginx
 
 - [ ] Læs `REQUIREMENTS.md`
 - [ ] Bekraeft at `https://skat-chat.dk/` viser clean-start
+- [ ] Koer `VERIFY_CLEAN_START.bat` og faa kun `[OK]`
 - [ ] Bekraeft at `js/app.js` kalder korrekt API-base (`/api`)
 - [ ] Aftal API-kontrakt for eventuelle nye felter
 - [ ] Byg foerste feature i separat, lille PR

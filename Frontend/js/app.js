@@ -1,370 +1,478 @@
-(function () {
-  "use strict";
+import { analyzeQuestion } from "./api/analyzeApi.js";
+import { exportChatPdf, sendChat } from "./api/chatApi.js";
+import {
+  clearChatContextFiles,
+  deleteChatContextFile,
+  getChatContextFiles,
+  uploadChatContextFile,
+} from "./api/contextApi.js";
+import {
+  clearActiveUser,
+  getActiveTab,
+  getActiveUser,
+  getOrCreateChatSessionId,
+  resetChatSessionId,
+  setActiveTab,
+  setActiveUser,
+} from "./state/session.js";
+import { getState, setState } from "./state/store.js";
+import { getInitialAnalyseState, renderAnalyse } from "./tabs/analyseTab.js";
+import { getInitialChatState, renderChat } from "./tabs/chatTab.js";
+import { renderSagsbehandling } from "./tabs/sagsbehandlingTab.js";
 
-  const API_BASE_URL = "/api";
-  const SESSION_KEY = "jaila_auth_user";
-  const VALID_USERS = {
-    jonas: "pepsimax",
-    allan: "pepsimax",
-  };
+const VALID_USERS = {
+  jonas: "pepsimax",
+  allan: "pepsimax",
+};
 
-  const elements = {
-    loginSection: document.getElementById("loginSection"),
-    appSection: document.getElementById("appSection"),
-    username: document.getElementById("username"),
-    password: document.getElementById("password"),
-    loginBtn: document.getElementById("loginBtn"),
-    logoutBtn: document.getElementById("logoutBtn"),
-    resetBtn: document.getElementById("resetBtn"),
-    sessionLabel: document.getElementById("sessionLabel"),
-    status: document.getElementById("status"),
-    question: document.getElementById("question"),
-    analyzeBtn: document.getElementById("analyzeBtn"),
-    answer: document.getElementById("answer"),
-    citations: document.getElementById("citations"),
-    pdfLogLink: document.getElementById("pdfLogLink"),
-    tabButtons: Array.from(document.querySelectorAll(".tab-button")),
-    tabPaneAnalyse: document.getElementById("tabPaneAnalyse"),
-    tabPaneSagsbehandling: document.getElementById("tabPaneSagsbehandling"),
-    tabPaneChat: document.getElementById("tabPaneChat"),
-    chatConversation: document.getElementById("chatConversation"),
-    chatInput: document.getElementById("chatInput"),
-    chatSendBtn: document.getElementById("chatSendBtn"),
-    chatResetBtn: document.getElementById("chatResetBtn"),
-  };
+const elements = {
+  loginSection: document.getElementById("loginSection"),
+  appSection: document.getElementById("appSection"),
+  username: document.getElementById("username"),
+  password: document.getElementById("password"),
+  loginBtn: document.getElementById("loginBtn"),
+  logoutBtn: document.getElementById("logoutBtn"),
+  resetBtn: document.getElementById("resetBtn"),
+  sessionLabel: document.getElementById("sessionLabel"),
+  status: document.getElementById("status"),
+  question: document.getElementById("question"),
+  analyzeBtn: document.getElementById("analyzeBtn"),
+  answer: document.getElementById("answer"),
+  citations: document.getElementById("citations"),
+  pdfLogLink: document.getElementById("pdfLogLink"),
+  tabButtons: Array.from(document.querySelectorAll(".tab-button")),
+  tabPaneAnalyse: document.getElementById("tabPaneAnalyse"),
+  tabPaneSagsbehandling: document.getElementById("tabPaneSagsbehandling"),
+  tabPaneChat: document.getElementById("tabPaneChat"),
+  chatConversation: document.getElementById("chatConversation"),
+  chatInput: document.getElementById("chatInput"),
+  chatSendBtn: document.getElementById("chatSendBtn"),
+  chatResetBtn: document.getElementById("chatResetBtn"),
+  chatSavePdfBtn: document.getElementById("chatSavePdfBtn"),
+  chatContextFile: document.getElementById("chatContextFile"),
+  chatContextUploadBtn: document.getElementById("chatContextUploadBtn"),
+  chatContextList: document.getElementById("chatContextList"),
+};
 
-  const state = {
+function renderStatus() {
+  if (!elements.status) {
+    return;
+  }
+  const state = getState();
+  elements.status.textContent = state.ui.statusMessage;
+  elements.status.classList.remove("ok", "error");
+  if (state.ui.statusMode === "ok") {
+    elements.status.classList.add("ok");
+  } else if (state.ui.statusMode === "error") {
+    elements.status.classList.add("error");
+  }
+}
+
+function setStatus(text, mode) {
+  setState({
     ui: {
-      activeTab: "analyse",
-      loading: false,
+      statusMessage: text,
+      statusMode: mode || "ok",
+      error: mode === "error" ? text : null,
     },
-    analyse: {
-      previousResponseId: null,
+  });
+  renderStatus();
+}
+
+function setLoading(isLoading) {
+  setState({
+    ui: {
+      loading: isLoading,
     },
-    chat: {
-      previousResponseId: null,
-    },
-  };
-
-  function normalizeDanishDisplayText(value) {
-    const text = String(value || "");
-    if (!text) {
-      return text;
-    }
-
-    // Only attempt repair when common mojibake markers are present.
-    if (!/[ÃÂâ]/.test(text)) {
-      return text;
-    }
-
-    try {
-      const bytes = new Uint8Array(Array.from(text, function (char) {
-        return char.charCodeAt(0) & 0xff;
-      }));
-      const decoded = new TextDecoder("utf-8", { fatal: false }).decode(bytes);
-
-      const mojibakeScore = function (input) {
-        const matches = input.match(/[ÃÂâ]/g);
-        return matches ? matches.length : 0;
-      };
-
-      return mojibakeScore(decoded) < mojibakeScore(text) ? decoded : text;
-    } catch (_err) {
-      return text;
-    }
-  }
-
-  function setStatus(text, mode) {
-    if (!elements.status) {
-      return;
-    }
-
-    elements.status.textContent = text;
-    elements.status.classList.remove("ok", "error");
-
-    if (mode === "ok") {
-      elements.status.classList.add("ok");
-    } else if (mode === "error") {
-      elements.status.classList.add("error");
-    }
-  }
-
-  function setLoading(isLoading) {
-    state.ui.loading = isLoading;
-    if (elements.analyzeBtn) {
-      elements.analyzeBtn.disabled = isLoading;
-      elements.analyzeBtn.textContent = isLoading ? "Arbejder..." : "Kør analyse";
-    }
-    if (elements.chatSendBtn) {
-      elements.chatSendBtn.disabled = isLoading;
-      elements.chatSendBtn.textContent = isLoading ? "Arbejder..." : "Send";
-    }
-    if (elements.chatResetBtn) {
-      elements.chatResetBtn.disabled = isLoading;
-    }
-  }
-
-  function renderCitations(citations) {
-    if (!elements.citations) {
-      return;
-    }
-    elements.citations.innerHTML = "";
-    if (!citations || citations.length === 0) {
-      const li = document.createElement("li");
-      li.textContent = "Ingen citations fundet.";
-      elements.citations.appendChild(li);
-      return;
-    }
-
-    citations.forEach((citation) => {
-      const li = document.createElement("li");
-      const filename = normalizeDanishDisplayText(citation.filename || "(ukendt filnavn)");
-      const fileId = citation.file_id || "(ukendt file_id)";
-      li.textContent = filename + " (file_id: " + fileId + ")";
-      elements.citations.appendChild(li);
-    });
-  }
-
-  function renderLogLink(url, label) {
-    if (!elements.pdfLogLink) {
-      return;
-    }
-    if (!url) {
-      elements.pdfLogLink.textContent = "Ingen PDF-log endnu.";
-      elements.pdfLogLink.removeAttribute("href");
-      return;
-    }
-    elements.pdfLogLink.textContent = label || "Åbn PDF-log";
-    elements.pdfLogLink.href = url;
-  }
-
-  function appendChatMessage(role, text) {
-    if (!elements.chatConversation) {
-      return;
-    }
-    const conversationEl = elements.chatConversation;
-    const isEmptyState = conversationEl.children.length === 1
-      && conversationEl.firstElementChild
-      && conversationEl.firstElementChild.classList.contains("msg-system");
-
-    if (isEmptyState) {
-      conversationEl.innerHTML = "";
-    }
-
-    const el = document.createElement("div");
-    el.classList.add("msg");
-    if (role === "user") {
-      el.classList.add("msg-user");
-      el.textContent = "Du: " + (text || "");
-    } else if (role === "assistant") {
-      el.classList.add("msg-assistant");
-      el.textContent = "JAILA: " + (text || "");
-    } else {
-      el.classList.add("msg-system");
-      el.textContent = text || "";
-    }
-    conversationEl.appendChild(el);
-    conversationEl.scrollTop = conversationEl.scrollHeight;
-  }
-
-  function resetAnalyse() {
-    state.analyse.previousResponseId = null;
-    if (elements.question) {
-      elements.question.value = "";
-    }
-    if (elements.answer) {
-      elements.answer.textContent = "Intet svar endnu.";
-    }
-    renderCitations([]);
-    renderLogLink("", "");
-    setStatus("Analyse nulstillet.", "ok");
-  }
-
-  function resetChat() {
-    state.chat.previousResponseId = null;
-    if (elements.chatInput) {
-      elements.chatInput.value = "";
-    }
-    if (elements.chatConversation) {
-      elements.chatConversation.innerHTML =
-        '<div class="msg msg-system">Start en rå chat uden vector store.</div>';
-    }
-    setStatus("Chat nulstillet.", "ok");
-  }
-
-  function switchTab(tabId) {
-    state.ui.activeTab = tabId;
-    const paneMap = {
-      analyse: elements.tabPaneAnalyse,
-      sagsbehandling: elements.tabPaneSagsbehandling,
-      chat: elements.tabPaneChat,
-    };
-
-    Object.keys(paneMap).forEach(function (key) {
-      const pane = paneMap[key];
-      if (!pane) {
-        return;
-      }
-      pane.classList.toggle("hidden", key !== tabId);
-    });
-
-    elements.tabButtons.forEach(function (btn) {
-      const isActive = btn.dataset.tab === tabId;
-      btn.classList.toggle("tab-button-active", isActive);
-    });
-  }
-
-  function showApp(user) {
-    if (elements.loginSection) {
-      elements.loginSection.classList.add("hidden");
-    }
-    if (elements.appSection) {
-      elements.appSection.classList.remove("hidden");
-    }
-    if (elements.sessionLabel) {
-      elements.sessionLabel.textContent = "Logget ind som: " + user;
-    }
-    switchTab(state.ui.activeTab);
-    setStatus("Klar til analyse.", "ok");
-  }
-
-  function showLogin(message, mode) {
-    if (elements.loginSection) {
-      elements.loginSection.classList.remove("hidden");
-    }
-    if (elements.appSection) {
-      elements.appSection.classList.add("hidden");
-    }
-    setStatus(message || "Log ind for at bruge systemet.", mode || "ok");
-  }
-
-  function tryLogin() {
-    if (!elements.username || !elements.password) {
-      return;
-    }
-
-    const username = elements.username.value.trim().toLowerCase();
-    const password = elements.password.value;
-    const expectedPassword = VALID_USERS[username];
-
-    if (!expectedPassword || password !== expectedPassword) {
-      showLogin("Forkert brugernavn eller adgangskode.", "error");
-      return;
-    }
-
-    localStorage.setItem(SESSION_KEY, username);
-    elements.password.value = "";
-    showApp(username);
-  }
-
-  function logout() {
-    localStorage.removeItem(SESSION_KEY);
-    resetAnalyse();
-    resetChat();
-    if (elements.password) {
-      elements.password.value = "";
-    }
-    showLogin("Du er logget ud.", "ok");
-  }
-
-  async function analyze() {
-    if (!elements.answer) {
-      return;
-    }
-    const question = (elements.question ? elements.question.value : "").trim();
-    if (!question) {
-      setStatus("Skriv et spørgsmål først.", "error");
-      return;
-    }
-
-    setLoading(true);
-    setStatus("Sender forespørgsel til backend...", "ok");
-
-    try {
-      const response = await fetch(API_BASE_URL + "/analyze", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          question: question,
-        }),
-      });
-
-      const data = await response.json();
-      if (!response.ok) {
-        throw new Error(data.detail || "Ukendt API-fejl");
-      }
-
-      state.analyse.previousResponseId = data.response_id || null;
-      elements.answer.textContent = data.answer || "Intet svar returneret.";
-      renderCitations(data.citations || []);
-      renderLogLink(data.log_pdf_url || "", data.log_pdf_filename || "Aabn PDF-log");
-      setStatus("Analyse færdig. Model: " + (data.used_model || "ukendt"), "ok");
-    } catch (err) {
-      elements.answer.textContent = "Kunne ikke hente svar.";
-      renderCitations([]);
-      renderLogLink("", "");
-      setStatus("Fejl: " + (err && err.message ? err.message : "Ukendt fejl"), "error");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function sendChatMessage() {
-    const message = (elements.chatInput ? elements.chatInput.value : "").trim();
-    if (!message) {
-      setStatus("Skriv en chatbesked først.", "error");
-      return;
-    }
-
-    appendChatMessage("user", message);
-    if (elements.chatInput) {
-      elements.chatInput.value = "";
-    }
-
-    setLoading(true);
-    setStatus("Sender chatbesked...", "ok");
-
-    try {
-      const response = await fetch(API_BASE_URL + "/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          message: message,
-          previous_response_id: state.chat.previousResponseId,
-        }),
-      });
-      const data = await response.json();
-      if (!response.ok) {
-        throw new Error(data.detail || "Ukendt API-fejl");
-      }
-
-      state.chat.previousResponseId = data.response_id || null;
-      appendChatMessage("assistant", data.answer || "Intet svar returneret.");
-      setStatus("Chat svar modtaget. Model: " + (data.used_model || "ukendt"), "ok");
-    } catch (err) {
-      appendChatMessage("system", "Fejl: " + (err && err.message ? err.message : "Ukendt fejl"));
-      setStatus("Fejl: " + (err && err.message ? err.message : "Ukendt fejl"), "error");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  if (elements.tabButtons.length) {
-    elements.tabButtons.forEach(function (btn) {
-      btn.addEventListener("click", function () {
-        switchTab(btn.dataset.tab || "analyse");
-      });
-    });
-  }
-
+  });
   if (elements.analyzeBtn) {
-    elements.analyzeBtn.addEventListener("click", analyze);
+    elements.analyzeBtn.disabled = isLoading;
+    elements.analyzeBtn.textContent = isLoading ? "Arbejder..." : "Kør analyse";
   }
   if (elements.chatSendBtn) {
-    elements.chatSendBtn.addEventListener("click", sendChatMessage);
+    elements.chatSendBtn.disabled = isLoading;
+    elements.chatSendBtn.textContent = isLoading ? "Arbejder..." : "Send";
   }
   if (elements.chatResetBtn) {
-    elements.chatResetBtn.addEventListener("click", resetChat);
+    elements.chatResetBtn.disabled = isLoading;
+  }
+  if (elements.chatSavePdfBtn) {
+    elements.chatSavePdfBtn.disabled = isLoading;
+  }
+  if (elements.pdfLogLink) {
+    const canDownload = Boolean(getState().analyse.logPdfUrl);
+    elements.pdfLogLink.disabled = isLoading || !canDownload;
+  }
+}
+
+function renderAllTabs() {
+  const state = getState();
+  renderAnalyse(elements, state);
+  renderChat(elements, state);
+  renderSagsbehandling(elements, state);
+}
+
+function switchTab(tabId) {
+  setState({
+    ui: {
+      activeTab: tabId,
+    },
+  });
+  setActiveTab(tabId);
+
+  const state = getState();
+  const paneMap = {
+    analyse: elements.tabPaneAnalyse,
+    sagsbehandling: elements.tabPaneSagsbehandling,
+    chat: elements.tabPaneChat,
+  };
+  Object.keys(paneMap).forEach((key) => {
+    const pane = paneMap[key];
+    if (!pane) {
+      return;
+    }
+    pane.classList.toggle("hidden", key !== state.ui.activeTab);
+  });
+
+  elements.tabButtons.forEach((btn) => {
+    const isActive = btn.dataset.tab === state.ui.activeTab;
+    btn.classList.toggle("tab-button-active", isActive);
+  });
+}
+
+function showApp(user) {
+  setState({
+    auth: {
+      user: user,
+      isLoggedIn: true,
+    },
+  });
+  elements.loginSection.classList.add("hidden");
+  elements.appSection.classList.remove("hidden");
+  elements.sessionLabel.textContent = "Logget ind som: " + user;
+  switchTab(getState().ui.activeTab || "chat");
+  renderAllTabs();
+  renderStatus();
+  setStatus("Klar til analyse.", "ok");
+}
+
+function showLogin(message, mode) {
+  setState({
+    auth: {
+      user: null,
+      isLoggedIn: false,
+    },
+  });
+  elements.loginSection.classList.remove("hidden");
+  elements.appSection.classList.add("hidden");
+  setStatus(message || "Log ind for at bruge systemet.", mode || "ok");
+}
+
+function resetAnalyse() {
+  setState({ analyse: getInitialAnalyseState() });
+  renderAnalyse(elements, getState());
+  setStatus("Analyse nulstillet.", "ok");
+}
+
+function resetChat() {
+  const currentContextFiles = getState().chat.contextFiles || [];
+  const initialChat = getInitialChatState();
+  initialChat.contextFiles = currentContextFiles;
+  setState({ chat: initialChat });
+  renderChat(elements, getState());
+}
+
+async function resetChatWithCleanup() {
+  setLoading(true);
+  setStatus("Nulstiller chat...", "ok");
+  try {
+    const sessionId = getOrCreateChatSessionId();
+    await clearChatContextFiles(sessionId);
+    resetChatSessionId();
+    await refreshChatContextFiles();
+    resetChat();
+    setStatus("Ny chat startet.", "ok");
+  } catch (err) {
+    resetChat();
+    setStatus("Chat nulstillet lokalt (oprydning fejlede): " + (err.message || "Ukendt fejl"), "error");
+  } finally {
+    setLoading(false);
+  }
+}
+
+function addChatMessage(role, text) {
+  const currentMessages = getState().chat.messages || [];
+  setState({
+    chat: {
+      messages: currentMessages.concat([{ role: role, text: text || "" }]),
+    },
+  });
+  renderChat(elements, getState());
+}
+
+function tryLogin() {
+  const username = (elements.username.value || "").trim().toLowerCase();
+  const password = elements.password.value || "";
+  const expectedPassword = VALID_USERS[username];
+
+  if (!expectedPassword || password !== expectedPassword) {
+    showLogin("Forkert brugernavn eller adgangskode.", "error");
+    return;
+  }
+
+  setActiveUser(username);
+  elements.password.value = "";
+  showApp(username);
+}
+
+async function logout() {
+  setLoading(true);
+  try {
+    const sessionId = getOrCreateChatSessionId();
+    try {
+      await clearChatContextFiles(sessionId);
+    } catch (_err) {
+      // Hvis cleanup fejler, må logout stadig gennemføres.
+    }
+    resetChatSessionId();
+    clearActiveUser();
+    resetAnalyse();
+    resetChat();
+    elements.password.value = "";
+    showLogin("Du er logget ud.", "ok");
+  } finally {
+    setLoading(false);
+  }
+}
+
+async function runAnalyse() {
+  const question = (elements.question ? elements.question.value : "").trim();
+  if (!question) {
+    setStatus("Skriv et spørgsmål først.", "error");
+    return;
+  }
+
+  setState({
+    analyse: {
+      question: question,
+    },
+  });
+
+  setLoading(true);
+  setStatus("Sender forespørgsel til backend...", "ok");
+
+  try {
+    const previousResponseId = getState().analyse.previousResponseId;
+    const data = await analyzeQuestion(question, previousResponseId);
+    setState({
+      analyse: {
+        answer: data.answer || "Intet svar returneret.",
+        usedModel: data.used_model || null,
+        citations: data.citations || [],
+        retrievalResults: data.retrieval_results || [],
+        logPdfUrl: data.log_pdf_url || "",
+        logPdfLabel: data.log_pdf_filename || "Åbn PDF-log",
+        previousResponseId: data.response_id || null,
+      },
+    });
+    renderAnalyse(elements, getState());
+    setStatus("Analyse færdig. Model: " + (data.used_model || "ukendt"), "ok");
+  } catch (err) {
+    setState({
+      analyse: {
+        answer: "Kunne ikke hente svar.",
+        citations: [],
+        logPdfUrl: "",
+        logPdfLabel: "",
+      },
+    });
+    renderAnalyse(elements, getState());
+    setStatus("Fejl: " + (err && err.message ? err.message : "Ukendt fejl"), "error");
+  } finally {
+    setLoading(false);
+  }
+}
+
+async function runChat() {
+  const message = (elements.chatInput ? elements.chatInput.value : "").trim();
+  if (!message) {
+    setStatus("Skriv en chatbesked først.", "error");
+    return;
+  }
+
+  addChatMessage("user", message);
+  setState({
+    chat: {
+      inputText: "",
+    },
+  });
+  renderChat(elements, getState());
+
+  setLoading(true);
+  setStatus("Sender chatbesked...", "ok");
+
+  try {
+    const previousResponseId = getState().chat.previousResponseId;
+    const sessionId = getOrCreateChatSessionId();
+    const data = await sendChat(message, previousResponseId, sessionId);
+    setState({
+      chat: {
+        previousResponseId: data.response_id || null,
+        usedModel: data.used_model || null,
+      },
+    });
+    addChatMessage("assistant", data.answer || "Intet svar returneret.");
+    setStatus("Chat svar modtaget. Model: " + (data.used_model || "ukendt"), "ok");
+  } catch (err) {
+    addChatMessage("system", "Fejl: " + (err && err.message ? err.message : "Ukendt fejl"));
+    setStatus("Fejl: " + (err && err.message ? err.message : "Ukendt fejl"), "error");
+  } finally {
+    setLoading(false);
+  }
+}
+
+async function refreshChatContextFiles() {
+  try {
+    const sessionId = getOrCreateChatSessionId();
+    const files = await getChatContextFiles(sessionId);
+    setState({
+      chat: {
+        contextFiles: files,
+      },
+    });
+    renderChat(elements, getState());
+  } catch (err) {
+    setStatus("Fejl ved hentning af kontekstfiler: " + (err.message || "Ukendt fejl"), "error");
+  }
+}
+
+async function uploadContextFromInput() {
+  const fileInput = elements.chatContextFile;
+  if (!fileInput || !fileInput.files || !fileInput.files.length) {
+    setStatus("Vælg en fil først.", "error");
+    return;
+  }
+  const file = fileInput.files[0];
+  await uploadContextFile(file, "upload");
+  fileInput.value = "";
+}
+
+async function uploadContextFile(file, sourceLabel) {
+  if (!file) {
+    setStatus("Ingen fil fundet.", "error");
+    return;
+  }
+
+  const actionLabel = sourceLabel === "paste" ? "Indsætter kontekstfil fra clipboard..." : "Uploader kontekstfil...";
+  setLoading(true);
+  setStatus(actionLabel, "ok");
+  try {
+    const sessionId = getOrCreateChatSessionId();
+    const files = await uploadChatContextFile(file, sessionId);
+    setState({
+      chat: {
+        contextFiles: files,
+      },
+    });
+    renderChat(elements, getState());
+    setStatus("Kontekstfil uploadet og aktiv i Chat.", "ok");
+  } catch (err) {
+    setStatus("Fejl ved upload af kontekstfil: " + (err.message || "Ukendt fejl"), "error");
+  } finally {
+    setLoading(false);
+  }
+}
+
+async function removeContextFile(contextId) {
+  if (!contextId) {
+    return;
+  }
+  setLoading(true);
+  setStatus("Fjerner kontekstfil...", "ok");
+  try {
+    const sessionId = getOrCreateChatSessionId();
+    const files = await deleteChatContextFile(contextId, sessionId);
+    setState({
+      chat: {
+        contextFiles: files,
+      },
+    });
+    if (elements.chatContextFile) {
+      elements.chatContextFile.value = "";
+    }
+    renderChat(elements, getState());
+    setStatus("Kontekstfil er fjernet.", "ok");
+  } catch (err) {
+    setStatus("Fejl ved fjernelse af kontekstfil: " + (err.message || "Ukendt fejl"), "error");
+  } finally {
+    setLoading(false);
+  }
+}
+
+async function saveChatToPdf() {
+  const messages = getState().chat.messages || [];
+  if (!messages.length) {
+    setStatus("Der er ingen chatbeskeder at gemme endnu.", "error");
+    return;
+  }
+
+  setLoading(true);
+  setStatus("Genererer chat-PDF...", "ok");
+  try {
+    const sessionId = getOrCreateChatSessionId();
+    const data = await exportChatPdf(messages, sessionId);
+    const link = document.createElement("a");
+    link.href = data.log_pdf_url || "#";
+    link.download = data.log_pdf_filename || "chat_log.pdf";
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setStatus("Chat-PDF er klar til download.", "ok");
+  } catch (err) {
+    setStatus("Fejl ved PDF-eksport: " + (err.message || "Ukendt fejl"), "error");
+  } finally {
+    setLoading(false);
+  }
+}
+
+function downloadAnalysePdf() {
+  const url = getState().analyse.logPdfUrl || "";
+  if (!url) {
+    setStatus("Der er ingen analyse-PDF at hente endnu.", "error");
+    return;
+  }
+  const link = document.createElement("a");
+  link.href = url;
+  link.target = "_blank";
+  link.rel = "noopener noreferrer";
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+}
+
+function bindEvents() {
+  elements.tabButtons.forEach((btn) => {
+    btn.addEventListener("click", () => {
+      switchTab(btn.dataset.tab || "analyse");
+    });
+  });
+
+  if (elements.analyzeBtn) {
+    elements.analyzeBtn.addEventListener("click", runAnalyse);
+  }
+  if (elements.chatSendBtn) {
+    elements.chatSendBtn.addEventListener("click", runChat);
+  }
+  if (elements.chatResetBtn) {
+    elements.chatResetBtn.addEventListener("click", resetChatWithCleanup);
+  }
+  if (elements.chatSavePdfBtn) {
+    elements.chatSavePdfBtn.addEventListener("click", saveChatToPdf);
+  }
+  if (elements.chatContextUploadBtn) {
+    elements.chatContextUploadBtn.addEventListener("click", uploadContextFromInput);
   }
   if (elements.loginBtn) {
     elements.loginBtn.addEventListener("click", tryLogin);
@@ -375,25 +483,103 @@
   if (elements.resetBtn) {
     elements.resetBtn.addEventListener("click", resetAnalyse);
   }
+  if (elements.pdfLogLink) {
+    elements.pdfLogLink.addEventListener("click", downloadAnalysePdf);
+  }
+  if (elements.chatContextList) {
+    elements.chatContextList.addEventListener("click", (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLElement)) {
+        return;
+      }
+      const contextId = target.getAttribute("data-context-id");
+      if (!contextId) {
+        return;
+      }
+      removeContextFile(contextId);
+    });
+  }
+
   if (elements.password) {
-    elements.password.addEventListener("keydown", function (event) {
+    elements.password.addEventListener("keydown", (event) => {
       if (event.key === "Enter") {
         tryLogin();
       }
     });
   }
-  if (elements.chatInput) {
-    elements.chatInput.addEventListener("keydown", function (event) {
-      if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
-        sendChatMessage();
+
+  if (elements.question) {
+    elements.question.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" && !event.shiftKey) {
+        event.preventDefault();
+        runAnalyse();
       }
     });
   }
 
-  const activeUser = localStorage.getItem(SESSION_KEY);
+  if (elements.chatInput) {
+    elements.chatInput.addEventListener("input", () => {
+      setState({
+        chat: {
+          inputText: elements.chatInput.value,
+        },
+      });
+    });
+
+    elements.chatInput.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" && !event.shiftKey) {
+        event.preventDefault();
+        runChat();
+      }
+    });
+
+    elements.chatInput.addEventListener("paste", (event) => {
+      const clipboard = event.clipboardData;
+      if (!clipboard) {
+        return;
+      }
+
+      const candidateFiles = [];
+      if (clipboard.files && clipboard.files.length) {
+        for (const file of clipboard.files) {
+          candidateFiles.push(file);
+        }
+      } else if (clipboard.items && clipboard.items.length) {
+        for (const item of clipboard.items) {
+          if (item.kind === "file") {
+            const file = item.getAsFile();
+            if (file) {
+              candidateFiles.push(file);
+            }
+          }
+        }
+      }
+
+      if (!candidateFiles.length) {
+        return;
+      }
+
+      event.preventDefault();
+      uploadContextFile(candidateFiles[0], "paste");
+    });
+  }
+}
+
+function init() {
+  setState({
+    ui: {
+      activeTab: getActiveTab("chat"),
+    },
+  });
+  bindEvents();
+  const activeUser = getActiveUser();
+  getOrCreateChatSessionId();
+  refreshChatContextFiles();
   if (activeUser && Object.prototype.hasOwnProperty.call(VALID_USERS, activeUser)) {
     showApp(activeUser);
   } else {
     showLogin("Log ind for at bruge systemet.", "ok");
   }
-})();
+}
+
+init();
