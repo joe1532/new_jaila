@@ -1,4 +1,5 @@
 import re
+import unicodedata
 from typing import Any
 
 from openai import OpenAI
@@ -8,8 +9,11 @@ from backend.config import (
     FALLBACK_MODEL,
     MAX_NUM_RESULTS,
     PRIMARY_MODEL,
+    STRICT_SOURCING,
     VECTOR_STORE_IDS,
 )
+
+MAX_VECTOR_STORES_PER_REQUEST = 2
 
 
 def get_value(obj: Any, key: str, default: Any = None) -> Any:
@@ -20,12 +24,92 @@ def get_value(obj: Any, key: str, default: Any = None) -> Any:
     return getattr(obj, key, default)
 
 
+def select_vector_store_ids_for_query(
+    client: OpenAI,
+    question: str,
+    vector_store_ids: list[str],
+) -> list[str]:
+    """
+    Respect API constraint: max 2 vector stores in file_search tools call.
+    """
+    if len(vector_store_ids) <= MAX_VECTOR_STORES_PER_REQUEST:
+        return vector_store_ids
+
+    scored: list[tuple[str, float]] = []
+    for store_id in vector_store_ids:
+        score = -1.0
+        try:
+            probe = client.vector_stores.search(
+                vector_store_id=store_id,
+                query=question,
+                max_num_results=1,
+                rewrite_query=True,
+            )
+            top_result = (get_value(probe, "data", []) or [None])[0]
+            if top_result is not None:
+                raw_score = get_value(top_result, "score", 0.0)
+                score = float(raw_score or 0.0)
+        except Exception:
+            score = -1.0
+        scored.append((store_id, score))
+
+    scored.sort(key=lambda item: item[1], reverse=True)
+    selected = [store_id for store_id, _ in scored[:MAX_VECTOR_STORES_PER_REQUEST]]
+    if not selected:
+        return vector_store_ids[:MAX_VECTOR_STORES_PER_REQUEST]
+    return selected
+
+
+def normalize_mojibake_text(text: str) -> str:
+    """Repair common UTF-8/latin1 mojibake such as Ã¸, Ã¦, Ã¥."""
+    if not text:
+        return text
+    if not any(marker in text for marker in ("Ã", "Â", "â")):
+        return text
+
+    candidates = [text]
+
+    try:
+        candidates.append(text.encode("latin1").decode("utf-8"))
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        pass
+
+    try:
+        candidates.append(text.encode("cp1252").decode("utf-8"))
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        pass
+
+    def mojibake_score(value: str) -> int:
+        return value.count("Ã") + value.count("Â") + value.count("â")
+
+    best = min(candidates, key=mojibake_score)
+    return unicodedata.normalize("NFC", best)
+
+
+def clean_answer_text(text: str) -> str:
+    """Remove raw inline filecite markers from model output text."""
+    cleaned = re.sub(r"filecite.*?", "", text, flags=re.DOTALL)
+    cleaned = re.sub(
+        r"(?i)\bkarnov[-\s]*noter?\b",
+        "Note til relevant lovbestemmelse",
+        cleaned,
+    )
+    cleaned = re.sub(r"[ \t]+\n", "\n", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    cleaned = normalize_mojibake_text(cleaned)
+    cleaned = unicodedata.normalize("NFC", cleaned)
+    return cleaned.strip()
+
+
 def parse_response(resp: Any) -> dict[str, Any]:
     output_text = get_value(resp, "output_text", "") or ""
+    output_text = clean_answer_text(output_text)
     output_items = get_value(resp, "output", []) or []
 
     citations: list[dict[str, str]] = []
     retrieved_chunks: list[dict[str, str]] = []
+    retrieved_sources: list[dict[str, str]] = []
+    retrieved_source_seen: set[tuple[str, str]] = set()
 
     for item in output_items:
         item_type = get_value(item, "type", "")
@@ -39,12 +123,16 @@ def parse_response(resp: Any) -> dict[str, Any]:
                         citations.append(
                             {
                                 "file_id": str(get_value(annotation, "file_id", "")),
-                                "filename": str(get_value(annotation, "filename", "")),
+                                "filename": normalize_mojibake_text(
+                                    str(get_value(annotation, "filename", ""))
+                                ),
                             }
                         )
 
         if item_type == "file_search_call":
             for result in get_value(item, "results", []) or []:
+                file_id = str(get_value(result, "file_id", ""))
+                filename = normalize_mojibake_text(str(get_value(result, "filename", "")))
                 chunk_text = str(get_value(result, "text", "")).strip()
                 if not chunk_text:
                     for part in get_value(result, "content", []) or []:
@@ -56,11 +144,17 @@ def parse_response(resp: Any) -> dict[str, Any]:
 
                 retrieved_chunks.append(
                     {
-                        "filename": str(get_value(result, "filename", "")),
+                        "file_id": file_id,
+                        "filename": filename,
                         "score": str(get_value(result, "score", "")),
-                        "text": chunk_text,
+                        "text": normalize_mojibake_text(chunk_text),
                     }
                 )
+
+                source_key = (file_id, filename)
+                if file_id and source_key not in retrieved_source_seen:
+                    retrieved_source_seen.add(source_key)
+                    retrieved_sources.append({"file_id": file_id, "filename": filename})
 
     seen: set[tuple[str, str]] = set()
     unique_citations: list[dict[str, str]] = []
@@ -75,6 +169,7 @@ def parse_response(resp: Any) -> dict[str, Any]:
         "output_text": output_text.strip(),
         "citations": unique_citations,
         "retrieved_chunks": retrieved_chunks,
+        "retrieved_sources": retrieved_sources,
     }
 
 
@@ -104,9 +199,126 @@ def extract_legal_references(chunks: list[dict[str, str]]) -> list[str]:
     return references
 
 
+def extract_note_refs_from_text(text: str) -> list[str]:
+    """Extract likely note references, e.g. (422), from source text."""
+    refs: list[str] = []
+    seen: set[str] = set()
+    for match in re.findall(r"\((\d{2,4})\)", text or ""):
+        normalized = f"({match})"
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        refs.append(normalized)
+        if len(refs) >= 12:
+            break
+    return refs
+
+
+def extract_section_refs_from_output(text: str) -> list[str]:
+    """Extract referenced legal sections from answer text, e.g. § 9 C."""
+    refs: list[str] = []
+    seen: set[str] = set()
+    for match in re.findall(r"§\s*\d+\s*[A-Za-z]?", text or "", flags=re.IGNORECASE):
+        normalized = re.sub(r"\s+", " ", match).strip()
+        key = normalized.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        refs.append(normalized)
+        if len(refs) >= 12:
+            break
+    return refs
+
+
+def extract_note_refs_near_sections(text: str, section_refs: list[str]) -> list[str]:
+    """
+    Extract note refs near cited section mentions.
+
+    This reduces noisy notes from unrelated parts of large chunks.
+    """
+    if not text:
+        return []
+    if not section_refs:
+        return extract_note_refs_from_text(text)
+
+    refs: list[str] = []
+    seen: set[str] = set()
+    lower_text = text.lower()
+    for section in section_refs:
+        needle = section.lower()
+        pos = lower_text.find(needle)
+        if pos == -1:
+            continue
+        start = max(0, pos - 350)
+        end = min(len(text), pos + len(needle) + 350)
+        window = text[start:end]
+        for ref in extract_note_refs_from_text(window):
+            if ref in seen:
+                continue
+            seen.add(ref)
+            refs.append(ref)
+            if len(refs) >= 8:
+                return refs
+
+    if refs:
+        return refs
+    return extract_note_refs_from_text(text)[:8]
+
+
+def enforce_note_number_format(
+    output_text: str,
+    citation_hit_mapping: list[dict[str, Any]],
+) -> str:
+    """
+    Ensure note bullets use explicit note-number format, e.g. "Note (454) til ...".
+
+    This post-processes only source-section bullet lines that start with "Note til"
+    and only if a note number is available from strict sourcing audit.
+    """
+    note_pool: list[str] = []
+    seen: set[str] = set()
+    for item in citation_hit_mapping:
+        for ref in item.get("note_refs", []) or []:
+            if ref in seen:
+                continue
+            seen.add(ref)
+            note_pool.append(ref)
+
+    if not note_pool:
+        return output_text
+
+    lines = output_text.splitlines()
+    next_note_idx = 0
+    updated_lines: list[str] = []
+    note_line_pattern = re.compile(r"^(\s*-\s*)note\s+til\b", flags=re.IGNORECASE)
+    already_numbered_pattern = re.compile(r"^(\s*-\s*)note\s*\(\d{2,4}\)\s*til\b", flags=re.IGNORECASE)
+
+    for line in lines:
+        if already_numbered_pattern.search(line):
+            updated_lines.append(line)
+            continue
+
+        match = note_line_pattern.search(line)
+        if not match or next_note_idx >= len(note_pool):
+            updated_lines.append(line)
+            continue
+
+        note_ref = note_pool[next_note_idx]
+        next_note_idx += 1
+        replaced = re.sub(
+            r"(?i)\bnote\s+til\b",
+            f"Note {note_ref} til",
+            line,
+            count=1,
+        )
+        updated_lines.append(replaced)
+
+    return "\n".join(updated_lines)
+
+
 def ensure_sources_section(parsed: dict[str, Any]) -> dict[str, Any]:
     output_text = (parsed.get("output_text", "") or "").strip()
-    if "anvendte kilder/love" in output_text.lower():
+    if re.search(r"anvendte\s+kilder(?:/love)?\s*:?", output_text, flags=re.IGNORECASE):
         return parsed
 
     lines: list[str] = []
@@ -125,28 +337,183 @@ def ensure_sources_section(parsed: dict[str, Any]) -> dict[str, Any]:
     return parsed
 
 
-def analyze_question(client: OpenAI, question: str) -> tuple[dict[str, Any], str]:
+def strip_sources_section(output_text: str) -> str:
+    cleaned = re.split(
+        r"\n\s*anvendte\s+kilder(?:/love)?\s*:?\s*\n",
+        output_text,
+        flags=re.IGNORECASE,
+        maxsplit=1,
+    )[0]
+    return cleaned.strip()
+
+
+def enforce_strict_sourcing(parsed: dict[str, Any]) -> dict[str, Any]:
+    """
+    Ensure citations only come from the actually retrieved file_search context.
+
+    If model-level citations are missing, fall back to deterministic citations
+    directly from retrieved sources to keep behavior stable.
+    """
+    retrieved_sources = parsed.get("retrieved_sources", []) or []
+    allowed_file_ids = {
+        str(item.get("file_id", "")).strip()
+        for item in retrieved_sources
+        if str(item.get("file_id", "")).strip()
+    }
+
+    raw_citations = parsed.get("citations", []) or []
+    rejected_citations: list[dict[str, str]] = []
+    filtered_citations: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for citation in raw_citations:
+        file_id = str(citation.get("file_id", "")).strip()
+        filename = normalize_mojibake_text(str(citation.get("filename", "")).strip())
+        if not file_id or file_id not in allowed_file_ids:
+            rejected_citations.append({"file_id": file_id, "filename": filename})
+            continue
+        key = (file_id, filename)
+        if key in seen:
+            continue
+        seen.add(key)
+        filtered_citations.append({"file_id": file_id, "filename": filename})
+
+    if not filtered_citations:
+        for source in retrieved_sources:
+            file_id = str(source.get("file_id", "")).strip()
+            filename = normalize_mojibake_text(str(source.get("filename", "")).strip())
+            if not file_id:
+                continue
+            key = (file_id, filename)
+            if key in seen:
+                continue
+            seen.add(key)
+            filtered_citations.append({"file_id": file_id, "filename": filename})
+
+    if not filtered_citations:
+        raise RuntimeError(
+            "Strict sourcing fejlede: ingen tilladte kilder fundet i file_search-resultater."
+        )
+
+    retrieved_chunks = parsed.get("retrieved_chunks", []) or []
+    answer_text_for_targeting = str(parsed.get("output_text", "") or "")
+    section_refs = extract_section_refs_from_output(answer_text_for_targeting)
+
+    hit_map: dict[str, list[int]] = {}
+    for idx, chunk in enumerate(retrieved_chunks, start=1):
+        chunk_file_id = str(chunk.get("file_id", "")).strip()
+        if not chunk_file_id:
+            continue
+        hit_map.setdefault(chunk_file_id, []).append(idx)
+
+    citation_hit_mapping: list[dict[str, Any]] = []
+    for citation in filtered_citations:
+        file_id = str(citation.get("file_id", "")).strip()
+        # Use only top hits per file to avoid noisy, unrelated note references.
+        hit_indices = hit_map.get(file_id, [])[:3]
+        note_refs: list[str] = []
+        note_seen: set[str] = set()
+        for hit_idx in hit_indices:
+            if not isinstance(hit_idx, int) or hit_idx < 1:
+                continue
+            if hit_idx > len(retrieved_chunks):
+                continue
+            chunk = retrieved_chunks[hit_idx - 1]
+            for ref in extract_note_refs_near_sections(
+                str(chunk.get("text", "")),
+                section_refs,
+            ):
+                if ref in note_seen:
+                    continue
+                note_seen.add(ref)
+                note_refs.append(ref)
+                if len(note_refs) >= 4:
+                    break
+            if len(note_refs) >= 4:
+                break
+        citation_hit_mapping.append(
+            {
+                "file_id": file_id,
+                "filename": normalize_mojibake_text(str(citation.get("filename", ""))),
+                "retrieval_hit_indices": hit_indices,
+                "note_refs": note_refs,
+            }
+        )
+
+    output_text = parsed.get("output_text", "") or ""
+    has_sources_header = re.search(
+        r"anvendte\s+kilder(?:/love)?\s*:?",
+        output_text,
+        flags=re.IGNORECASE,
+    )
+    if has_sources_header:
+        # Keep model's concise source section; strict filtering is still enforced
+        # on the structured citations payload.
+        parsed["output_text"] = output_text
+    else:
+        lines: list[str] = []
+        for citation in filtered_citations:
+            filename = citation.get("filename", "").strip()
+            if filename:
+                lines.append(f"- Kilde: {filename}")
+        if not lines:
+            lines.append("- Ingen eksplicitte kilder kunne udledes automatisk.")
+        base_answer = strip_sources_section(output_text)
+        parsed["output_text"] = base_answer + "\n\nAnvendte kilder/love\n" + "\n".join(lines)
+    parsed["raw_citations"] = raw_citations
+    parsed["citations"] = filtered_citations
+    parsed["strict_sourcing_audit"] = {
+        "allowed_file_ids": sorted(allowed_file_ids),
+        "raw_citation_count": len(raw_citations),
+        "filtered_citation_count": len(filtered_citations),
+        "rejected_citations": rejected_citations,
+        "citation_hit_mapping": citation_hit_mapping,
+    }
+    parsed["output_text"] = enforce_note_number_format(
+        parsed.get("output_text", "") or "",
+        citation_hit_mapping,
+    )
+    return parsed
+
+
+def analyze_question(
+    client: OpenAI, question: str, previous_response_id: str | None = None
+) -> tuple[dict[str, Any], str, str]:
+    selected_vector_store_ids = select_vector_store_ids_for_query(
+        client=client,
+        question=question,
+        vector_store_ids=VECTOR_STORE_IDS,
+    )
+
     models_to_try = [PRIMARY_MODEL, FALLBACK_MODEL]
     last_error: Exception | None = None
 
     for model in models_to_try:
         try:
-            resp = client.responses.create(
-                model=model,
-                instructions=ANSWER_INSTRUCTIONS,
-                input=question,
-                reasoning={"effort": "high"},
-                tools=[
+            request_payload: dict[str, Any] = {
+                "model": model,
+                "instructions": ANSWER_INSTRUCTIONS,
+                "input": question,
+                "reasoning": {"effort": "high"},
+                "tools": [
                     {
                         "type": "file_search",
-                        "vector_store_ids": VECTOR_STORE_IDS,
+                        "vector_store_ids": selected_vector_store_ids,
                         "max_num_results": MAX_NUM_RESULTS,
                     }
                 ],
-                include=["file_search_call.results"],
-            )
-            parsed = ensure_sources_section(parse_response(resp))
-            return parsed, model
+                "include": ["file_search_call.results"],
+            }
+            if previous_response_id:
+                request_payload["previous_response_id"] = previous_response_id
+
+            resp = client.responses.create(**request_payload)
+            parsed = parse_response(resp)
+            if STRICT_SOURCING:
+                parsed = enforce_strict_sourcing(parsed)
+            else:
+                parsed = ensure_sources_section(parsed)
+            response_id = str(get_value(resp, "id", ""))
+            return parsed, model, response_id
         except Exception as exc:
             last_error = exc
 

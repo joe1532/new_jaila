@@ -2,6 +2,7 @@ from datetime import datetime
 from html import escape
 from pathlib import Path
 from typing import Any
+import unicodedata
 from uuid import uuid4
 
 from reportlab.lib.pagesizes import A4
@@ -10,6 +11,32 @@ from reportlab.lib.units import mm
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer
 
 from backend.config import LOG_DIR, VECTOR_STORE_IDS
+
+
+def normalize_mojibake_text(text: str) -> str:
+    """Repair common UTF-8/latin1 mojibake such as Ã¸, Ã¦, Ã¥."""
+    if not text:
+        return text
+    if not any(marker in text for marker in ("Ã", "Â", "â")):
+        return text
+
+    candidates = [text]
+
+    try:
+        candidates.append(text.encode("latin1").decode("utf-8"))
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        pass
+
+    try:
+        candidates.append(text.encode("cp1252").decode("utf-8"))
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        pass
+
+    def mojibake_score(value: str) -> int:
+        return value.count("Ã") + value.count("Â") + value.count("â")
+
+    best = min(candidates, key=mojibake_score)
+    return unicodedata.normalize("NFC", best)
 
 
 def save_pdf_log(question: str, parsed: dict[str, Any], used_model: str) -> Path:
@@ -55,19 +82,27 @@ def save_pdf_log(question: str, parsed: dict[str, Any], used_model: str) -> Path
     story.append(Spacer(1, 6))
 
     story.append(Paragraph("Spørgsmål", heading_style))
-    story.append(Paragraph(escape(question).replace("\n", "<br/>"), body_style))
+    story.append(
+        Paragraph(
+            escape(normalize_mojibake_text(question)).replace("\n", "<br/>"),
+            body_style,
+        )
+    )
     story.append(Spacer(1, 6))
 
     story.append(Paragraph("Svar", heading_style))
-    answer = parsed.get("output_text", "") or "(Tomt svar)"
+    answer = normalize_mojibake_text(parsed.get("output_text", "") or "(Tomt svar)")
     story.append(Paragraph(escape(answer).replace("\n", "<br/>"), body_style))
     story.append(Spacer(1, 6))
 
     story.append(Paragraph("Kilder (citations)", heading_style))
     citations = parsed.get("citations", []) or []
+    chunks = parsed.get("retrieved_chunks", []) or []
     if citations:
         for idx, citation in enumerate(citations, start=1):
-            filename_text = citation.get("filename", "(ukendt filnavn)")
+            filename_text = normalize_mojibake_text(
+                citation.get("filename", "(ukendt filnavn)")
+            )
             file_id_text = citation.get("file_id", "(ukendt file_id)")
             story.append(
                 Paragraph(
@@ -79,16 +114,104 @@ def save_pdf_log(question: str, parsed: dict[str, Any], used_model: str) -> Path
         story.append(Paragraph("Ingen citations fundet.", body_style))
     story.append(Spacer(1, 6))
 
-    story.append(Paragraph("Retrieval-træf (debug)", heading_style))
-    chunks = parsed.get("retrieved_chunks", []) or []
-    if chunks:
-        for idx, chunk in enumerate(chunks, start=1):
-            chunk_file = chunk.get("filename", "(ukendt fil)")
-            chunk_score = chunk.get("score", "n/a")
-            chunk_text = (chunk.get("text", "") or "").strip()
+    raw_citations = parsed.get("raw_citations", []) or []
+    strict_audit = parsed.get("strict_sourcing_audit", {}) or {}
+    if raw_citations or strict_audit:
+        story.append(Paragraph("Strict sourcing (audit)", heading_style))
+        allowed_file_ids = strict_audit.get("allowed_file_ids", []) or []
+        filtered_count = strict_audit.get("filtered_citation_count", len(citations))
+        raw_count = strict_audit.get("raw_citation_count", len(raw_citations))
+        rejected = strict_audit.get("rejected_citations", []) or []
+        status_text = (
+            "OK - alle model-citations er inden for funden kontekst."
+            if raw_count == filtered_count and not rejected
+            else "ADVARSEL - nogle model-citations blev afvist af strict filter."
+        )
+        story.append(Paragraph(escape(status_text), body_style))
+        story.append(
+            Paragraph(
+                f"Rå citations: {raw_count} | Efter filter: {filtered_count}",
+                body_style,
+            )
+        )
+        if allowed_file_ids:
             story.append(
                 Paragraph(
-                    f"{idx}. {escape(chunk_file)} - score: {escape(str(chunk_score))}",
+                    "Tilladte file_id fra retrieval: "
+                    + escape(", ".join(allowed_file_ids)),
+                    body_style,
+                )
+            )
+        if rejected:
+            story.append(Paragraph("Afviste citations:", body_style))
+            for item in rejected:
+                fname = normalize_mojibake_text(str(item.get("filename", "")))
+                fid = str(item.get("file_id", ""))
+                story.append(
+                    Paragraph(
+                        f"- {escape(fname)} (file_id: {escape(fid)})",
+                        body_style,
+                    )
+                )
+        citation_hit_mapping = strict_audit.get("citation_hit_mapping", []) or []
+        if citation_hit_mapping:
+            story.append(Paragraph("Citations -> retrieval-hit #:", body_style))
+            for item in citation_hit_mapping:
+                fname = normalize_mojibake_text(str(item.get("filename", "")))
+                fid = str(item.get("file_id", ""))
+                hit_indices = item.get("retrieval_hit_indices", []) or []
+                hit_text = ", ".join(str(x) for x in hit_indices) if hit_indices else "ingen match"
+                note_refs = item.get("note_refs", []) or []
+                note_text = ", ".join(str(x) for x in note_refs) if note_refs else "ingen"
+                story.append(
+                    Paragraph(
+                        f"- {escape(fname)} (file_id: {escape(fid)}) -> hit #{escape(hit_text)} | noter: {escape(note_text)}",
+                        body_style,
+                    )
+                )
+            story.append(Spacer(1, 4))
+            story.append(Paragraph("Retrieval-tekst for citerede hits:", body_style))
+            rendered_hits: set[int] = set()
+            for item in citation_hit_mapping:
+                for hit_idx in item.get("retrieval_hit_indices", []) or []:
+                    if not isinstance(hit_idx, int) or hit_idx < 1:
+                        continue
+                    if hit_idx in rendered_hits:
+                        continue
+                    if hit_idx > len(chunks):
+                        continue
+                    rendered_hits.add(hit_idx)
+                    chunk = chunks[hit_idx - 1]
+                    chunk_file = normalize_mojibake_text(chunk.get("filename", "(ukendt fil)"))
+                    chunk_file_id = str(chunk.get("file_id", ""))
+                    chunk_score = chunk.get("score", "n/a")
+                    chunk_text = normalize_mojibake_text((chunk.get("text", "") or "").strip())
+                    story.append(
+                        Paragraph(
+                            f"Hit #{hit_idx}: {escape(chunk_file)} - file_id: {escape(chunk_file_id)} - score: {escape(str(chunk_score))}",
+                            body_style,
+                        )
+                    )
+                    if chunk_text:
+                        preview = chunk_text[:1800]
+                        story.append(
+                            Paragraph(escape(preview).replace("\n", "<br/>"), mono_style)
+                        )
+                    else:
+                        story.append(Paragraph("Intet tekstuddrag i resultatet.", body_style))
+                    story.append(Spacer(1, 3))
+        story.append(Spacer(1, 6))
+
+    story.append(Paragraph("Retrieval-træf (debug)", heading_style))
+    if chunks:
+        for idx, chunk in enumerate(chunks, start=1):
+            chunk_file = normalize_mojibake_text(chunk.get("filename", "(ukendt fil)"))
+            chunk_file_id = str(chunk.get("file_id", ""))
+            chunk_score = chunk.get("score", "n/a")
+            chunk_text = normalize_mojibake_text((chunk.get("text", "") or "").strip())
+            story.append(
+                Paragraph(
+                    f"{idx}. {escape(chunk_file)} - file_id: {escape(chunk_file_id)} - score: {escape(str(chunk_score))}",
                     body_style,
                 )
             )

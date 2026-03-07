@@ -28,39 +28,77 @@
       <section id="appSection" class="hidden">
         <div class="toolbar">
           <span id="sessionLabel" class="session-label"></span>
-          <button id="logoutBtn" type="button" class="button-secondary">Log ud</button>
+          <div class="toolbar-actions">
+            <button id="resetBtn" type="button" class="button-secondary">Ny analyse</button>
+            <button id="logoutBtn" type="button" class="button-secondary">Log ud</button>
+          </div>
         </div>
 
-      <label class="label" for="question">Spørgsmål</label>
-      <textarea
-        id="question"
-        class="input"
-        rows="6"
-        placeholder="Skriv dit juridiske spørgsmål her..."
-      >Lav en juridisk analyse af, om en person er fuldt skattepligtig til Danmark.</textarea>
+        <nav class="tabs" aria-label="Hovedfaner">
+          <button id="tabAnalyse" type="button" class="tab-button tab-button-active" data-tab="analyse">Analyse</button>
+          <button id="tabSagsbehandling" type="button" class="tab-button" data-tab="sagsbehandling">Sagsbehandling</button>
+          <button id="tabChat" type="button" class="tab-button" data-tab="chat">Chat</button>
+        </nav>
 
-      <div class="actions">
-        <button id="analyzeBtn" type="button">Kør analyse</button>
-      </div>
+        <div id="status" class="status">Klar.</div>
 
-      <div id="status" class="status">Klar.</div>
+        <section id="tabPaneAnalyse" class="tab-pane">
+          <label class="label" for="question">Spørgsmål</label>
+          <textarea
+            id="question"
+            class="input"
+            rows="6"
+            placeholder="Skriv dit juridiske spørgsmål her..."
+          >Lav en juridisk analyse af, om en person er fuldt skattepligtig til Danmark.</textarea>
 
-      <section class="result">
-        <h2>Svar</h2>
-        <pre id="answer" class="answer">Intet svar endnu.</pre>
-      </section>
+          <div class="actions">
+            <button id="analyzeBtn" type="button">Kør analyse</button>
+          </div>
 
-      <section class="result">
-        <h2>Kilder (citations)</h2>
-        <ul id="citations" class="list">
-          <li>Ingen kilder endnu.</li>
-        </ul>
-      </section>
+          <section class="result">
+            <h2>Svar</h2>
+            <pre id="answer" class="answer">Intet svar endnu.</pre>
+          </section>
 
-      <section class="result">
-        <h2>Log</h2>
-        <a id="pdfLogLink" href="#" target="_blank" rel="noopener noreferrer">Ingen PDF-log endnu.</a>
-      </section>
+          <section class="result">
+            <h2>Kilder (citations)</h2>
+            <ul id="citations" class="list">
+              <li>Ingen kilder endnu.</li>
+            </ul>
+          </section>
+
+          <section class="result">
+            <h2>Log</h2>
+            <a id="pdfLogLink" href="#" target="_blank" rel="noopener noreferrer">Ingen PDF-log endnu.</a>
+          </section>
+        </section>
+
+        <section id="tabPaneSagsbehandling" class="tab-pane hidden">
+          <section class="result">
+            <h2>Sagsbehandling</h2>
+            <p class="hint">Dummy-fane for nu. Funktionalitet kommer senere.</p>
+          </section>
+        </section>
+
+        <section id="tabPaneChat" class="tab-pane hidden">
+          <section class="result">
+            <h2>Chat</h2>
+            <div id="chatConversation" class="conversation">
+              <div class="msg msg-system">Start en rå chat uden vector store.</div>
+            </div>
+            <label class="label" for="chatInput">Besked</label>
+            <textarea
+              id="chatInput"
+              class="input"
+              rows="4"
+              placeholder="Skriv din besked til chat..."
+            ></textarea>
+            <div class="actions">
+              <button id="chatSendBtn" type="button">Send</button>
+              <button id="chatResetBtn" type="button" class="button-secondary">Ny chat</button>
+            </div>
+          </section>
+        </section>
       </section>
     </section>
   </main>

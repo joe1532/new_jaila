@@ -12,12 +12,14 @@ FastAPI backend that exposes vector-store powered legal analysis for the `skat-c
 
 - `OPENAI_API_KEY` (required)
 - `FRONTEND_ORIGINS` (optional, comma-separated; default includes `https://skat-chat.dk`)
+- `STRICT_SOURCING` (optional, `true/false`; default `false`)
 
 Example:
 
 ```
 OPENAI_API_KEY=sk-...
 FRONTEND_ORIGINS=https://skat-chat.dk,http://localhost:3000
+STRICT_SOURCING=true
 ```
 
 ## Local run
@@ -44,6 +46,7 @@ python -m uvicorn backend.main:app --host 127.0.0.1 --port 8010
 {
   "answer": "...",
   "used_model": "gpt-5.4",
+  "response_id": "resp_...",
   "citations": [{"file_id":"file_...","filename":"...pdf"}],
   "retrieval_results": [{"filename":"...pdf","score":"0.95","text":"..."}],
   "log_pdf_filename": "query_log_....pdf",
