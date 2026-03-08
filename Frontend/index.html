@@ -51,39 +51,90 @@
               </div>
             </aside>
             <section class="result analyse-main-panel">
+              <h2>Analyse</h2>
+              <div id="analyseConversation" class="conversation"></div>
               <label class="label" for="question">Spørgsmål</label>
               <textarea
                 id="question"
                 class="input"
-                rows="6"
+                rows="4"
                 placeholder="Skriv dit juridiske spørgsmål her..."
-              >Lav en juridisk analyse af, om en person er fuldt skattepligtig til Danmark.</textarea>
+              ></textarea>
 
               <div class="actions">
                 <button id="analyzeBtn" type="button">Kør analyse</button>
               </div>
-
-              <section class="result">
-                <h2>Svar</h2>
-                <pre id="answer" class="answer">Intet svar endnu.</pre>
-              </section>
-
-              <section class="result">
-                <h2>Kilder (citations)</h2>
-                <ul id="citations" class="list">
-                  <li>Ingen kilder endnu.</li>
-                </ul>
-              </section>
 
             </section>
           </div>
         </section>
 
         <section id="tabPaneSagsbehandling" class="tab-pane hidden">
-          <section class="result">
-            <h2>Sagsbehandling</h2>
-            <p class="hint">Dummy-fane for nu. Funktionalitet kommer senere.</p>
-          </section>
+          <div class="sagsbehandling-layout">
+            <aside class="sagsbehandling-side-panel">
+              <h2>Sagsbehandling handlinger</h2>
+              <div class="sagsbehandling-side-actions">
+                <button
+                  type="button"
+                  class="button-secondary sags-subtab-button sags-subtab-button-active"
+                  data-sags-subtab="skattepligt_ligningsfrist"
+                >
+                  Skattepligt og ligningsfrist
+                </button>
+                <button
+                  type="button"
+                  class="button-secondary sags-subtab-button"
+                  data-sags-subtab="opgoerelse_indkomst"
+                >
+                  Opgørelse af indkomst
+                </button>
+                <button
+                  type="button"
+                  class="button-secondary sags-subtab-button"
+                  data-sags-subtab="beskatningsret_indkomst"
+                >
+                  Beskatningsret til indkomst
+                </button>
+                <button
+                  type="button"
+                  class="button-secondary sags-subtab-button"
+                  data-sags-subtab="lempelse"
+                >
+                  Lempelse
+                </button>
+                <button
+                  type="button"
+                  class="button-secondary sags-subtab-button"
+                  data-sags-subtab="andet"
+                >
+                  Andet
+                </button>
+              </div>
+              <div class="sags-divider" aria-hidden="true"></div>
+              <h2>Funktioner</h2>
+              <div id="sagsFunctionList" class="sags-function-actions">
+                <button type="button" class="button-secondary" disabled>Vælg undertab...</button>
+              </div>
+            </aside>
+            <section class="result sagsbehandling-main-panel">
+              <h2 id="sagsbehandlingTitle">Sagsbehandling - Skattepligt og ligningsfrist</h2>
+              <div id="sagsbehandlingConversation" class="conversation">
+                <div class="msg msg-system">
+                  Dummy-fane for nu. Vælg undertab i højre side for at skifte funktion.
+                </div>
+              </div>
+              <label class="label" for="sagsbehandlingInput">Besked</label>
+              <textarea
+                id="sagsbehandlingInput"
+                class="input"
+                rows="4"
+                placeholder="Sagsbehandling kommer i næste trin..."
+              ></textarea>
+              <div class="actions">
+                <button id="sagsbehandlingSendBtn" type="button" disabled>Send (dummy)</button>
+              </div>
+            </section>
+          </div>
         </section>
 
         <section id="tabPaneChat" class="tab-pane hidden">

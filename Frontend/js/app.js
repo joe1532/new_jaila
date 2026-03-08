@@ -35,15 +35,20 @@ const elements = {
   resetBtn: document.getElementById("resetBtn"),
   sessionLabel: document.getElementById("sessionLabel"),
   status: document.getElementById("status"),
+  analyseConversation: document.getElementById("analyseConversation"),
   question: document.getElementById("question"),
   analyzeBtn: document.getElementById("analyzeBtn"),
-  answer: document.getElementById("answer"),
-  citations: document.getElementById("citations"),
   pdfLogLink: document.getElementById("pdfLogLink"),
   tabButtons: Array.from(document.querySelectorAll(".tab-button")),
   tabPaneAnalyse: document.getElementById("tabPaneAnalyse"),
   tabPaneSagsbehandling: document.getElementById("tabPaneSagsbehandling"),
   tabPaneChat: document.getElementById("tabPaneChat"),
+  sagsbehandlingTitle: document.getElementById("sagsbehandlingTitle"),
+  sagsbehandlingConversation: document.getElementById("sagsbehandlingConversation"),
+  sagsbehandlingInput: document.getElementById("sagsbehandlingInput"),
+  sagsbehandlingSendBtn: document.getElementById("sagsbehandlingSendBtn"),
+  sagsFunctionList: document.getElementById("sagsFunctionList"),
+  sagsSubtabButtons: Array.from(document.querySelectorAll(".sags-subtab-button")),
   chatConversation: document.getElementById("chatConversation"),
   chatInput: document.getElementById("chatInput"),
   chatSendBtn: document.getElementById("chatSendBtn"),
@@ -210,6 +215,16 @@ function addChatMessage(role, text) {
   renderChat(elements, getState());
 }
 
+function addAnalyseMessage(role, text) {
+  const currentMessages = getState().analyse.messages || [];
+  setState({
+    analyse: {
+      messages: currentMessages.concat([{ role: role, text: text || "" }]),
+    },
+  });
+  renderAnalyse(elements, getState());
+}
+
 function tryLogin() {
   const username = (elements.username.value || "").trim().toLowerCase();
   const password = elements.password.value || "";
@@ -257,6 +272,13 @@ async function runAnalyse() {
       question: question,
     },
   });
+  addAnalyseMessage("user", question);
+  setState({
+    analyse: {
+      question: "",
+    },
+  });
+  renderAnalyse(elements, getState());
 
   setLoading(true);
   setStatus("Sender forespørgsel til backend...", "ok");
@@ -275,19 +297,22 @@ async function runAnalyse() {
         previousResponseId: data.response_id || null,
       },
     });
+    addAnalyseMessage("assistant", data.answer || "Intet svar returneret.");
     renderAnalyse(elements, getState());
     setStatus("Analyse færdig. Model: " + (data.used_model || "ukendt"), "ok");
   } catch (err) {
+    const errorText = err && err.message ? err.message : "Ukendt fejl";
     setState({
       analyse: {
-        answer: "Kunne ikke hente svar.",
+        answer: "Kunne ikke hente svar: " + errorText,
         citations: [],
         logPdfUrl: "",
         logPdfLabel: "",
       },
     });
+    addAnalyseMessage("system", "Fejl: " + errorText);
     renderAnalyse(elements, getState());
-    setStatus("Fejl: " + (err && err.message ? err.message : "Ukendt fejl"), "error");
+    setStatus("Fejl: " + errorText, "error");
   } finally {
     setLoading(false);
   }
@@ -500,6 +525,24 @@ function bindEvents() {
     });
   }
 
+  if (elements.sagsSubtabButtons && elements.sagsSubtabButtons.length) {
+    elements.sagsSubtabButtons.forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const subtab = btn.dataset.sagsSubtab || "skattepligt_ligningsfrist";
+        setState({
+          sagsbehandling: {
+            activeSubtab: subtab,
+            activeFunction: "",
+            inputText: "",
+            messages: [],
+          },
+        });
+        renderSagsbehandling(elements, getState());
+        setStatus("Sagsbehandling undertab valgt (dummy): " + btn.textContent, "ok");
+      });
+    });
+  }
+
   if (elements.password) {
     elements.password.addEventListener("keydown", (event) => {
       if (event.key === "Enter") {
@@ -509,6 +552,14 @@ function bindEvents() {
   }
 
   if (elements.question) {
+    elements.question.addEventListener("input", () => {
+      setState({
+        analyse: {
+          question: elements.question.value,
+        },
+      });
+    });
+
     elements.question.addEventListener("keydown", (event) => {
       if (event.key === "Enter" && !event.shiftKey) {
         event.preventDefault();
@@ -561,6 +612,40 @@ function bindEvents() {
 
       event.preventDefault();
       uploadContextFile(candidateFiles[0], "paste");
+    });
+  }
+
+  if (elements.sagsbehandlingInput) {
+    elements.sagsbehandlingInput.addEventListener("input", () => {
+      setState({
+        sagsbehandling: {
+          inputText: elements.sagsbehandlingInput.value,
+        },
+      });
+    });
+  }
+
+  if (elements.sagsFunctionList) {
+    elements.sagsFunctionList.addEventListener("click", (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLElement)) {
+        return;
+      }
+      const button = target.closest("[data-sags-function]");
+      if (!(button instanceof HTMLElement)) {
+        return;
+      }
+      const functionLabel = button.dataset.sagsFunction || "";
+      if (!functionLabel) {
+        return;
+      }
+      setState({
+        sagsbehandling: {
+          activeFunction: functionLabel,
+        },
+      });
+      renderSagsbehandling(elements, getState());
+      setStatus("Sagsbehandling funktion valgt (dummy): " + functionLabel, "ok");
     });
   }
 }

@@ -13,6 +13,7 @@ const state = {
   analyse: {
     question: "",
     answer: "Intet svar endnu.",
+    messages: [],
     usedModel: null,
     citations: [],
     retrievalResults: [],
@@ -21,8 +22,10 @@ const state = {
     previousResponseId: null,
   },
   sagsbehandling: {
-    selectedCaseId: null,
-    cases: [],
+    activeSubtab: "skattepligt_ligningsfrist",
+    activeFunction: "",
+    inputText: "",
+    messages: [],
   },
   chat: {
     messages: [],
