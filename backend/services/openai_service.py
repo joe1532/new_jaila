@@ -487,22 +487,29 @@ def enforce_strict_sourcing(parsed: dict[str, Any]) -> dict[str, Any]:
 
 
 def analyze_question(
-    client: OpenAI, question: str, previous_response_id: str | None = None
+    client: OpenAI,
+    question: str,
+    previous_response_id: str | None = None,
+    vector_store_ids: list[str] | None = None,
+    instructions: str | None = None,
+    models_to_try: list[str] | None = None,
 ) -> tuple[dict[str, Any], str, str]:
+    effective_vector_store_ids = vector_store_ids or VECTOR_STORE_IDS
+    effective_instructions = instructions or ANSWER_INSTRUCTIONS
     selected_vector_store_ids = select_vector_store_ids_for_query(
         client=client,
         question=question,
-        vector_store_ids=VECTOR_STORE_IDS,
+        vector_store_ids=effective_vector_store_ids,
     )
 
-    models_to_try = [PRIMARY_MODEL, FALLBACK_MODEL]
+    effective_models_to_try = models_to_try or [PRIMARY_MODEL, FALLBACK_MODEL]
     last_error: Exception | None = None
 
-    for model in models_to_try:
+    for model in effective_models_to_try:
         try:
             request_payload: dict[str, Any] = {
                 "model": model,
-                "instructions": ANSWER_INSTRUCTIONS,
+                "instructions": effective_instructions,
                 "input": question,
                 "reasoning": {"effort": "high"},
                 "tools": [
@@ -523,11 +530,12 @@ def analyze_question(
                 parsed = enforce_strict_sourcing(parsed)
             else:
                 parsed = ensure_sources_section(parsed)
+            parsed["used_vector_store_ids"] = selected_vector_store_ids
             response_id = str(get_value(resp, "id", ""))
             return parsed, model, response_id
         except Exception as exc:
             last_error = exc
 
     raise RuntimeError(
-        f"Kald fejlede for modellerne {PRIMARY_MODEL} og {FALLBACK_MODEL}: {last_error}"
+        f"Kald fejlede for modellerne {', '.join(effective_models_to_try)}: {last_error}"
     )

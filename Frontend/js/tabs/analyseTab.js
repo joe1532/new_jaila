@@ -16,7 +16,7 @@ export function renderAnalyse(elements, state) {
         el.textContent = "Du: " + (msg.text || "");
       } else if (msg.role === "assistant") {
         el.classList.add("msg-assistant");
-        el.textContent = "JAILA: " + (msg.text || "");
+        el.textContent = "JAILA:\n\n" + (msg.text || "");
       } else {
         el.classList.add("msg-system");
         el.textContent = msg.text || "";

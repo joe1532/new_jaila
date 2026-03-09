@@ -78,7 +78,8 @@ def save_pdf_log(question: str, parsed: dict[str, Any], used_model: str) -> Path
         )
     )
     story.append(Paragraph(f"Model brugt: {escape(used_model)}", body_style))
-    story.append(Paragraph(f"Vector stores: {escape(', '.join(VECTOR_STORE_IDS))}", body_style))
+    used_vector_stores = parsed.get("used_vector_store_ids", VECTOR_STORE_IDS) or VECTOR_STORE_IDS
+    story.append(Paragraph(f"Vector stores: {escape(', '.join(used_vector_stores))}", body_style))
     story.append(Spacer(1, 6))
 
     story.append(Paragraph("Spørgsmål", heading_style))

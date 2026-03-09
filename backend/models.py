@@ -1,4 +1,5 @@
 from pydantic import BaseModel, Field
+from typing import Any
 
 
 class AnalyzeRequest(BaseModel):
@@ -6,6 +7,18 @@ class AnalyzeRequest(BaseModel):
     previous_response_id: str | None = Field(
         default=None,
         description="Response ID fra forrige analysekald til opfølgende spørgsmål",
+    )
+    source_tab: str | None = Field(
+        default=None,
+        description="UI-kontekst, fx analyse eller sagsbehandling",
+    )
+    subtab: str | None = Field(
+        default=None,
+        description="Undertab i source_tab, fx skattepligt_ligningsfrist",
+    )
+    case_facts: dict[str, Any] | None = Field(
+        default=None,
+        description="Strukturerede faktafelter fra sagsbehandling",
     )
 
 
@@ -72,3 +85,9 @@ class ChatContextFileResponse(BaseModel):
 
 class ChatContextListResponse(BaseModel):
     files: list[ChatContextFileResponse]
+
+
+class SagsLegalBasisResponse(BaseModel):
+    subtab: str
+    vector_store_id: str | None = None
+    documents: list[str] = Field(default_factory=list)

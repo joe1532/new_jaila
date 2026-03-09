@@ -16,7 +16,16 @@ from fastapi.responses import FileResponse
 from openai import OpenAI
 from pypdf import PdfReader
 
-from backend.config import BASE_DIR, CHAT_INSTRUCTIONS, LOG_DIR, PRIMARY_MODEL, get_allowed_origins
+from backend.config import (
+    BASE_DIR,
+    CHAT_INSTRUCTIONS,
+    LOG_DIR,
+    PRIMARY_MODEL,
+    SAGSBEHANDLING_MODELS,
+    SAGSBEHANDLING_PROMPTS,
+    SAGSBEHANDLING_VECTOR_STORES,
+    get_allowed_origins,
+)
 from backend.models import (
     AnalyzeRequest,
     AnalyzeResponse,
@@ -26,6 +35,7 @@ from backend.models import (
     ChatExportResponse,
     ChatRequest,
     ChatResponse,
+    SagsLegalBasisResponse,
 )
 from backend.services.openai_service import analyze_question
 from backend.services.pdf_log import save_chat_pdf_log, save_pdf_log
@@ -77,6 +87,436 @@ def truncate_text(text: str, max_chars: int) -> tuple[str, bool]:
     if len(text) <= max_chars:
         return text, False
     return text[:max_chars] + "\n\n[NOTE: Indhold afkortet pga. længde.]", True
+
+
+def strip_pdf_suffix(filename: str) -> str:
+    return re.sub(r"\.pdf$", "", str(filename or "").strip(), flags=re.IGNORECASE).strip()
+
+
+def list_vector_store_document_names(client: OpenAI, vector_store_id: str) -> list[str]:
+    names: list[str] = []
+    seen: set[str] = set()
+    after: str | None = None
+
+    # NOTE: Keep pagination defensive because SDK response shape may vary by version.
+    for _ in range(10):
+        kwargs = {"vector_store_id": vector_store_id, "limit": 100}
+        if after:
+            kwargs["after"] = after
+        page = client.vector_stores.files.list(**kwargs)
+        data = getattr(page, "data", None) or []
+        if not data:
+            break
+
+        for item in data:
+            item_filename = str(getattr(item, "filename", "") or "")
+            file_id = str(getattr(item, "file_id", "") or "")
+            item_id = str(getattr(item, "id", "") or "")
+
+            candidate_name = item_filename
+            if not candidate_name:
+                openai_file_id = file_id or (item_id if item_id.startswith("file-") else "")
+                if openai_file_id:
+                    try:
+                        file_obj = client.files.retrieve(openai_file_id)
+                        candidate_name = str(getattr(file_obj, "filename", "") or "")
+                    except Exception:
+                        candidate_name = ""
+
+            cleaned = strip_pdf_suffix(candidate_name)
+            if not cleaned:
+                continue
+            key = cleaned.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            names.append(cleaned)
+
+        has_more = bool(getattr(page, "has_more", False))
+        if not has_more:
+            break
+        last_item = data[-1]
+        after = str(getattr(last_item, "id", "") or "")
+        if not after:
+            break
+
+    return sorted(names, key=lambda value: value.casefold())
+
+
+def normalize_fact_value(value: object) -> str:
+    text = str(value or "").strip()
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def format_case_facts_for_llm(subtab: str, case_facts: dict[str, object] | None) -> str:
+    facts = case_facts or {}
+    if subtab != "skattepligt_ligningsfrist":
+        return ""
+
+    mapping: list[tuple[str, str]] = [
+        ("income_years", "Indkomstår"),
+        ("foreign_income", "Forhold der kan begrunde ordinær ligningsfrist"),
+        ("foreign_assets_liabilities", "Aktiver/passiver i udlandet"),
+        ("residence_fact", "Bopælsfaktum"),
+    ]
+
+    lines: list[str] = []
+    for key, label in mapping:
+        value = normalize_fact_value(facts.get(key, ""))
+        if not value:
+            continue
+        lines.append(f"- {label}: {value}")
+
+    if not lines:
+        return ""
+
+    return (
+        "Faktiske oplysninger fra sagsbehandler (skal indgå i vurderingen):\n"
+        + "\n".join(lines)
+    )
+
+
+def parse_income_years(value: object) -> list[int]:
+    raw = str(value or "").strip()
+    years = re.findall(r"\b((?:19|20)\d{2})\b", raw)
+    if not years:
+        raise HTTPException(status_code=400, detail="Angiv mindst ét indkomstår (YYYY)")
+    unique_sorted_years = sorted({int(year) for year in years})
+    return unique_sorted_years
+
+
+def calculate_ordinær_frist_year(income_year: int) -> int:
+    return income_year + 4
+
+
+def get_short_deadline_regulations(income_years: list[int]) -> list[str]:
+    regulations: list[str] = []
+    if any(year <= 2023 for year in income_years):
+        regulations.append("1305 af 14. november 2018")
+    if any(year >= 2024 for year in income_years):
+        regulations.append("49 af 24. januar 2025")
+    return regulations
+
+
+def format_danish_list(values: list[str]) -> str:
+    if not values:
+        return ""
+    if len(values) == 1:
+        return values[0]
+    if len(values) == 2:
+        return f"{values[0]} og {values[1]}"
+    return f"{', '.join(values[:-1])} og {values[-1]}"
+
+
+def format_income_years_display(income_years: list[int]) -> str:
+    """Årstal til indkomstperiode: 1 år = '2023', 2 år = '2022 og 2023', 3+ år = '2022-2024'."""
+    year_texts = [str(y) for y in income_years]
+    if not year_texts:
+        return ""
+    if len(year_texts) == 1:
+        return year_texts[0]
+    if len(year_texts) == 2:
+        return f"{year_texts[0]} og {year_texts[1]}"
+    return f"{year_texts[0]}-{year_texts[-1]}"
+
+
+def format_income_years_label(income_years: list[int]) -> str:
+    years_display = format_income_years_display(income_years)
+    if not years_display:
+        return ""
+    if len(income_years) == 1:
+        return f"For indkomståret {years_display}"
+    return f"For indkomstårene {years_display}"
+
+
+def format_deadline_lines(income_years: list[int]) -> str:
+    if len(income_years) == 1:
+        income_year = income_years[0]
+        frist_year = calculate_ordinær_frist_year(income_year)
+        return (
+            f"For indkomståret {income_year} kan vi derfor varsle ændring senest den 1. maj {frist_year} "
+            f"og foretage ansættelsen senest den 1. august {frist_year}."
+        )
+
+    lines: list[str] = []
+    lines.append(f"{format_income_years_label(income_years)} kan vi derfor varsle og ansætte således:")
+    for year in income_years:
+        frist_year = calculate_ordinær_frist_year(year)
+        lines.append(
+            f"- Indkomståret {year}: varsling senest den 1. maj {frist_year} og ansættelse senest den 1. august {frist_year}."
+        )
+    return "\n".join(lines)
+
+
+def select_single_trigger(case_facts: dict[str, object]) -> str:
+    selected_trigger = str(case_facts.get("selected_trigger", "")).strip()
+    selected_factors_raw = case_facts.get("selected_factors")
+    selected_factors: list[str] = []
+    if isinstance(selected_factors_raw, list):
+        for value in selected_factors_raw:
+            normalized = str(value or "").strip()
+            if normalized:
+                selected_factors.append(normalized)
+
+    candidates = {selected_trigger} if selected_trigger else set()
+    candidates.update(selected_factors)
+    if len(candidates) != 1:
+        raise HTTPException(status_code=400, detail="Vælg præcis én trigger")
+    return next(iter(candidates))
+
+
+def build_residence_clause(case_facts: dict[str, object]) -> str:
+    mode = str(case_facts.get("residence_mode", "")).strip()
+    since_year_raw = str(case_facts.get("residence_since_year", "")).strip()
+
+    if mode == "always":
+        return "Da du altid har haft bopæl i Danmark"
+
+    if mode == "since_year":
+        if not re.search(r"\b(?:19|20)\d{2}\b", since_year_raw):
+            raise HTTPException(
+                status_code=400,
+                detail="Angiv gyldigt årstal for bopæl i Danmark siden",
+            )
+        return f"Da du har haft bopæl i Danmark siden {since_year_raw}"
+
+    # Backward compatibility for existing payloads with free text.
+    legacy_text = str(case_facts.get("residence_fact", "")).strip()
+    if not legacy_text:
+        return ""
+    legacy_text = legacy_text.rstrip(". ")
+    if re.match(r"^\s*da\s+du\b", legacy_text, flags=re.IGNORECASE):
+        return legacy_text
+    legacy_text = re.sub(r"^\s*du\s+", "", legacy_text, flags=re.IGNORECASE)
+    return f"Da du {legacy_text.strip()}"
+
+
+def get_trigger_detail(case_facts: dict[str, object], trigger_id: str) -> str:
+    selected_detail = str(case_facts.get("selected_trigger_detail", "")).strip()
+    if selected_detail:
+        return selected_detail
+    detail_by_trigger_key = f"{trigger_id}_detail"
+    return str(case_facts.get(detail_by_trigger_key, "")).strip()
+
+
+def build_trigger_text(
+    trigger_id: str,
+    trigger_detail: str,
+    self_employed_mode: str,
+) -> tuple[str, bool, str, str, bool]:
+    detail = str(trigger_detail or "").strip()
+    mode_map = {
+        "not_covered_by_section_2": "oplysningsskema",
+        "with_annual_statement_exception_rule": "undtagelse",
+    }
+    normalized_self_employed_mode = mode_map.get(self_employed_mode, self_employed_mode)
+
+    if trigger_id == "self_employed_business":
+        # Ingen tekstboks længere – brug standardformulering når detail er tom
+        effective_detail = detail or "enkeltmandsvirksomhed eller deltagelse i interessentskab"
+        if normalized_self_employed_mode == "oplysningsskema":
+            return (
+                f"Da du har haft selvstændig erhvervsvirksomhed i form af {effective_detail}",
+                True,
+                "§ 1, stk. 2, nr. 1",
+                "1",
+                True,
+            )
+        if normalized_self_employed_mode == "undtagelse":
+            return (
+                f"Da du har haft selvstændig erhvervsvirksomhed i form af {effective_detail}",
+                True,
+                "§ 2",
+                "2",
+                True,
+            )
+        raise HTTPException(
+            status_code=400,
+            detail="Ugyldig underkategori for selvstændig erhvervsvirksomhed",
+        )
+    # Juridisk mapping (v1, deterministisk):
+    # - uses_1302=True: self_employed_business, foreign_income, foreign_real_estate,
+    #   work_abroad_with_relief, special_tax_liability_conditions
+    # - uses_1302=False: major_shareholder_status,
+    #   foreign_assets_liabilities_significant, cross_border_commuter_taxation
+    trigger_map: dict[str, tuple[str, bool, str, str, bool]] = {
+        "foreign_income": (
+            f"Da du har haft indkomst fra udlandet i form af {detail}",
+            True,
+            "§ 3",
+            "2",
+            True,
+        ),
+        "foreign_real_estate": (
+            "Da du har haft fast ejendom i udlandet",
+            True,
+            "§ 3",
+            "2",
+            False,
+        ),
+        "work_abroad_with_relief": (
+            "Da du har haft lønindkomst for arbejde udført i udlandet, hvor der gives nedslag i dansk skat efter en dobbeltbeskatningsoverenskomst eller efter danske regler",
+            True,
+            "§ 1, stk. 2, nr. 5",
+            "1",
+            False,
+        ),
+        "special_tax_liability_conditions": (
+            f"Da du har haft {detail}",
+            True,
+            "§ 1, stk. 3",
+            "1",
+            True,
+        ),
+        "major_shareholder_status": (
+            f"Da du har haft hovedaktionærstatus i selskabet {detail}",
+            False,
+            "",
+            "3",
+            True,
+        ),
+        "foreign_assets_liabilities_significant": (
+            f"Da du har haft formueforhold i udlandet af betydning for skatteansættelsen i form af {detail}",
+            False,
+            "",
+            "4",
+            True,
+        ),
+        "cross_border_commuter_taxation": (
+            "Da du har været omfattet af grænsegængerbeskatning efter kildeskattelovens § 5 A til § 5 D",
+            False,
+            "",
+            "5",
+            False,
+        ),
+    }
+    if trigger_id not in trigger_map:
+        raise HTTPException(status_code=400, detail="Ugyldig trigger valgt")
+    return trigger_map[trigger_id]
+
+
+def build_standard_text_ligningsfrist(case_facts: dict[str, object] | None) -> str:
+    facts = case_facts or {}
+    income_years = parse_income_years(facts.get("income_years", ""))
+    selected_trigger = select_single_trigger(facts)
+    trigger_detail = get_trigger_detail(facts, selected_trigger)
+    self_employed_mode = str(facts.get("self_employed_business_mode", "")).strip()
+    if selected_trigger == "self_employed_business" and not self_employed_mode:
+        raise HTTPException(
+            status_code=400,
+            detail="Vælg underkategori for selvstændig erhvervsvirksomhed",
+        )
+    trigger_text, uses_1302, relevant_bestemmelse, relevant_nummer, requires_detail = build_trigger_text(
+        selected_trigger,
+        trigger_detail,
+        self_employed_mode,
+    )
+    if requires_detail and not trigger_detail:
+        raise HTTPException(status_code=400, detail="Triggeren kræver supplerende tekst")
+
+    bopæl_clause = build_residence_clause(facts) if selected_trigger != "cross_border_commuter_taxation" else ""
+    if selected_trigger != "cross_border_commuter_taxation" and not bopæl_clause:
+        raise HTTPException(status_code=400, detail="Bopælsfaktum skal udfyldes")
+
+    regulation_labels = get_short_deadline_regulations(income_years)
+    regulation_label_text = " og ".join(
+        [f"bekendtgørelse nr. {label}" for label in regulation_labels]
+    )
+    income_years_text = format_income_years_display(income_years)
+    income_period_label = (
+        f"indkomståret {income_years_text}"
+        if len(income_years) == 1
+        else f"indkomstårene {income_years_text}"
+    )
+    deadline_lines = format_deadline_lines(income_years)
+
+    if selected_trigger == "foreign_income":
+        trigger_text = f"Da du har haft {trigger_detail} fra udlandet i {income_period_label}"
+    elif selected_trigger == "foreign_real_estate":
+        trigger_text = f"Da du har haft fast ejendom fra udlandet i {income_period_label}"
+    elif selected_trigger == "work_abroad_with_relief":
+        trigger_text = (
+            "Da du har haft lønindkomst for arbejde udført i udlandet, "
+            "hvor der gives nedslag i dansk skat efter en dobbeltbeskatningsoverenskomst "
+            f"eller efter danske regler i {income_period_label}"
+        )
+    elif selected_trigger == "major_shareholder_status":
+        trigger_text = f"Da du har haft hovedaktionærstatus i selskabet {trigger_detail} i {income_period_label}"
+    elif selected_trigger == "foreign_assets_liabilities_significant":
+        trigger_text = (
+            f"Da du har haft formueforhold i udlandet som vi vurderer har betydning for "
+            f"skatteansættelsen i form af {trigger_detail} i {income_period_label}"
+        )
+    elif selected_trigger == "special_tax_liability_conditions":
+        special_mode = str(facts.get("special_tax_liability_mode", "")).strip()
+        years_special = format_income_years_display(income_years)
+        period_special = (
+            f"indkomståret {years_special}"
+            if len(income_years) == 1
+            else f"indkomstårene {years_special}"
+        ) if years_special else income_period_label
+        if special_mode == "shift_full_limited":
+            trigger_text = (
+                f"Da du både har været fuldt og begrænset skattepligtig til Danmark i {period_special}"
+            )
+        elif special_mode == "tax_resident_abroad":
+            trigger_text = (
+                f"Da du har været skattemæssigt hjemmehørende i udlandet i {period_special}"
+            )
+        elif special_mode == "offset_income_year":
+            trigger_text = f"Da du har forskudt indkomstår i {years_special}"
+        elif special_mode == "duty_under_section_8_2":
+            trigger_text = (
+                f"Da du har haft oplysningspligt efter skattekontrollovens § 8, stk. 2 i {period_special}"
+            )
+        elif special_mode == "request_information_schema":
+            trigger_text = (
+                f"Da du har anmodet om oplysningsskema i {period_special}"
+            )
+        else:
+            trigger_text = f"Da du har haft {trigger_detail} i {period_special}"
+
+    if uses_1302:
+        first_paragraph = (
+            f"{trigger_text}, er det vores vurdering, at du er omfattet af {relevant_bestemmelse} i bekendtgørelse nr. 1302 af 14. november 2018 om fysiske personers modtagelse af en årsopgørelse i stedet for et oplysningsskema."
+        )
+        second_paragraph = (
+            f"Efter § 2, stk. 1, nr. {relevant_nummer}, i {regulation_label_text} om en kort frist for skatteansættelse af personer med enkle økonomiske forhold anses du derfor ikke for at have enkle økonomiske forhold."
+        )
+    else:
+        first_paragraph = (
+            f"{trigger_text}, er det vores vurdering, at du er omfattet af § 2, stk. 1, nr. {relevant_nummer} i {regulation_label_text} om en kort frist for skatteansættelse af personer med enkle økonomiske forhold."
+        )
+        second_paragraph = "Du anses derfor ikke for at have enkle økonomiske forhold."
+
+    if selected_trigger == "cross_border_commuter_taxation":
+        return (
+            "Med hjemmel i skatteforvaltningslovens § 26, stk. 1, har skatteministeren fastsat en kortere ligningsfrist for fysiske personer med enkle økonomiske forhold."
+            + "\n\n"
+            + first_paragraph
+            + "\n\n"
+            + second_paragraph
+            + "\n\n"
+            "Den korte ligningsfrist finder derfor ikke anvendelse, og du er dermed omfattet af den ordinære ligningsfrist i skatteforvaltningslovens § 26, stk. 1.\n\n"
+            + deadline_lines
+            + "\n\n"
+            "Det fremgår af kildeskattelovens § 2, stk. 1, at personer, der ikke er fuldt skattepligtige til Danmark, men som erhverver indkomst fra arbejde udført her i landet, er begrænset skattepligtige til Danmark af denne indkomst.\n\n"
+            "Personer, der er begrænset skattepligtige efter kildeskattelovens § 2, kan vælge beskatning efter grænsegængerreglerne i kildeskattelovens §§ 5 A-5 D, hvis betingelserne herfor er opfyldt. Efter disse regler behandles den skattepligtige ved indkomstopgørelsen i vidt omfang som en fuldt skattepligtig person.\n\n"
+            "Beskatningen i Danmark omfatter dog fortsat kun den indkomst, som er skattepligtig til Danmark efter kildeskattelovens § 2."
+        )
+    return (
+        "Med hjemmel i skatteforvaltningslovens § 26, stk. 1, har skatteministeren fastsat en kortere ligningsfrist for fysiske personer med enkle økonomiske forhold."
+        + "\n\n"
+        + first_paragraph
+        + "\n\n"
+        + second_paragraph
+        + "\n\n"
+        "Den korte ligningsfrist finder derfor ikke anvendelse, og du er dermed omfattet af den ordinære ligningsfrist i skatteforvaltningslovens § 26, stk. 1.\n\n"
+        + deadline_lines
+        + "\n\n"
+        "Det fremgår af kildeskattelovens § 1, stk. 1, nr. 1, at personer, der har bopæl her i landet, er fuldt skattepligtige til Danmark. Ved afgørelsen af, om en person har bopæl i Danmark, lægges der blandt andet vægt på, om den pågældende faktisk har en bopælsmulighed i Danmark.\n\n"
+        f"{bopæl_clause}, anser vi dig for at være fuldt skattepligtig til Danmark i {income_period_label} og omfattet af globalindkomstprincippet efter statsskattelovens § 4. Globalindkomstprincippet betyder, at alle indtægter er skattepligtige, uanset hvor de er optjent."
+    )
 
 
 def get_session_id(raw_session_id: str | None) -> str:
@@ -504,15 +944,75 @@ def analyze(payload: AnalyzeRequest) -> AnalyzeResponse:
     question = payload.question.strip()
     if not question:
         raise HTTPException(status_code=400, detail="Spørgsmål må ikke være tomt")
+
+    source_tab = (payload.source_tab or "").strip().lower()
+    subtab = (payload.subtab or "").strip().lower()
+    if source_tab == "sagsbehandling" and subtab == "skattepligt_ligningsfrist":
+        try:
+            answer = build_standard_text_ligningsfrist(payload.case_facts)
+            parsed = {
+                "output_text": answer,
+                "citations": [],
+                "retrieved_chunks": [],
+                "used_vector_store_ids": [],
+            }
+            used_model = "regelmotor-ligningsfrist-v1"
+            response_id = f"rule_{uuid4().hex}"
+            log_question = (
+                "Regelmotor input\n"
+                f"- source_tab: {source_tab}\n"
+                f"- subtab: {subtab}\n"
+                f"- case_facts: {json.dumps(payload.case_facts or {}, ensure_ascii=False)}"
+            )
+            log_path = save_pdf_log(log_question, parsed, used_model)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Regelmotor fejlede: {exc}") from exc
+
+        log_filename = log_path.name
+        return AnalyzeResponse(
+            answer=answer,
+            used_model=used_model,
+            response_id=response_id,
+            citations=[],
+            retrieval_results=[],
+            log_pdf_filename=log_filename,
+            log_pdf_url=f"/api/logs/{log_filename}",
+        )
+
     if not os.getenv("OPENAI_API_KEY"):
         raise HTTPException(status_code=500, detail="OPENAI_API_KEY mangler på server")
+
+    vector_store_ids_override: list[str] | None = None
+    models_override: list[str] | None = None
+    instructions_override: str | None = None
+    llm_question = question
+    if source_tab == "sagsbehandling" and subtab in SAGSBEHANDLING_VECTOR_STORES:
+        vector_store_ids_override = SAGSBEHANDLING_VECTOR_STORES[subtab]
+        models_override = SAGSBEHANDLING_MODELS.get(subtab)
+        instructions_override = SAGSBEHANDLING_PROMPTS.get(subtab)
+        facts_block = format_case_facts_for_llm(subtab, payload.case_facts)
+        if facts_block:
+            llm_question = (
+                question
+                + "\n\n---\n"
+                + facts_block
+                + "\n---\n"
+                + "Brug disse faktiske oplysninger sammen med de fundne kilder i file_search."
+            )
 
     try:
         client = OpenAI()
         parsed, used_model, response_id = analyze_question(
-            client, question, payload.previous_response_id
+            client=client,
+            question=llm_question,
+            previous_response_id=payload.previous_response_id,
+            vector_store_ids=vector_store_ids_override,
+            instructions=instructions_override,
+            models_to_try=models_override,
         )
-        log_path = save_pdf_log(question, parsed, used_model)
+        log_path = save_pdf_log(llm_question, parsed, used_model)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Analyse fejlede: {exc}") from exc
 
@@ -526,6 +1026,28 @@ def analyze(payload: AnalyzeRequest) -> AnalyzeResponse:
         log_pdf_filename=log_filename,
         log_pdf_url=f"/api/logs/{log_filename}",
     )
+
+
+@app.get("/api/sagsbehandling/legal-basis", response_model=SagsLegalBasisResponse)
+def sagsbehandling_legal_basis(subtab: str) -> SagsLegalBasisResponse:
+    subtab_key = (subtab or "").strip().lower()
+    vector_store_ids = SAGSBEHANDLING_VECTOR_STORES.get(subtab_key, [])
+    vector_store_id = vector_store_ids[0] if vector_store_ids else None
+    if not vector_store_id:
+        return SagsLegalBasisResponse(subtab=subtab_key, vector_store_id=None, documents=[])
+    if not os.getenv("OPENAI_API_KEY"):
+        raise HTTPException(status_code=500, detail="OPENAI_API_KEY mangler på server")
+
+    try:
+        client = OpenAI()
+        documents = list_vector_store_document_names(client, vector_store_id)
+        return SagsLegalBasisResponse(
+            subtab=subtab_key,
+            vector_store_id=vector_store_id,
+            documents=documents,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Kunne ikke hente retsgrundlag: {exc}") from exc
 
 
 @app.post("/api/chat", response_model=ChatResponse)

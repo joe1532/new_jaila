@@ -17,18 +17,18 @@ set /p SUDO_PASS=Indtast sudo password for server:
 
 echo.
 echo [1/7] Pakker backend filer lokalt...
-if exist backend-deploy.zip del /f /q backend-deploy.zip
-powershell -NoProfile -Command "Compress-Archive -Force -Path backend,requirements.txt -DestinationPath backend-deploy.zip"
+if exist backend-deploy.tar.gz del /f /q backend-deploy.tar.gz
+tar -czf backend-deploy.tar.gz backend requirements.txt
 if errorlevel 1 goto :local_failed
 
 echo [2/7] Uploader archive og service-fil...
-scp -i "%SSH_KEY%" backend-deploy.zip %SSH_USER%@%SSH_HOST%:~/backend-deploy.zip
+scp -i "%SSH_KEY%" backend-deploy.tar.gz %SSH_USER%@%SSH_HOST%:~/backend-deploy.tar.gz
 if errorlevel 1 goto :upload_failed
 scp -i "%SSH_KEY%" backend\deploy\jaila-backend.service %SSH_USER%@%SSH_HOST%:~/jaila-backend.service
 if errorlevel 1 goto :upload_failed
 
 echo [3/7] Opretter app mappe og udpakker...
-ssh -i "%SSH_KEY%" %SSH_USER%@%SSH_HOST% "echo %SUDO_PASS% | sudo -S mkdir -p %REMOTE_APP% && rm -rf %REMOTE_TMP% && mkdir -p %REMOTE_TMP% && unzip -o ~/backend-deploy.zip -d %REMOTE_TMP%"
+ssh -i "%SSH_KEY%" %SSH_USER%@%SSH_HOST% "echo %SUDO_PASS% | sudo -S mkdir -p %REMOTE_APP% && rm -rf %REMOTE_TMP% && mkdir -p %REMOTE_TMP% && tar -xzf ~/backend-deploy.tar.gz -C %REMOTE_TMP%"
 if errorlevel 1 goto :remote_failed
 
 echo [4/7] Synkroniserer filer...
@@ -71,6 +71,6 @@ echo Remote setup fejlede. Tjek sudo password, python3, unzip og rsync paa serve
 echo.
 
 :done
-if exist backend-deploy.zip del /f /q backend-deploy.zip
+if exist backend-deploy.tar.gz del /f /q backend-deploy.tar.gz
 endlocal
 pause

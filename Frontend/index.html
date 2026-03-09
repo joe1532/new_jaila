@@ -39,8 +39,6 @@
           <button id="tabChat" type="button" class="tab-button" data-tab="chat">Chat</button>
         </nav>
 
-        <div id="status" class="status">Klar.</div>
-
         <section id="tabPaneAnalyse" class="tab-pane">
           <div class="analyse-layout">
             <aside class="analyse-side-panel">
@@ -48,6 +46,9 @@
               <div class="analyse-side-actions">
                 <button id="resetBtn" type="button" class="button-secondary">Ny analyse</button>
                 <button id="pdfLogLink" type="button" class="button-secondary">Download analyse</button>
+              </div>
+              <div class="side-status-block">
+                <div class="status status-compact" data-connection-status>Forbindelse til database</div>
               </div>
             </aside>
             <section class="result analyse-main-panel">
@@ -63,6 +64,7 @@
 
               <div class="actions">
                 <button id="analyzeBtn" type="button">Kør analyse</button>
+                <button id="analyzeAbortBtn" type="button" class="button-secondary" disabled>Afbryd</button>
               </div>
 
             </section>
@@ -112,8 +114,16 @@
               </div>
               <div class="sags-divider" aria-hidden="true"></div>
               <h2>Funktioner</h2>
+              <div class="sags-facts-actions">
+                <button id="sagsFactsToggleBtn" type="button" class="button-secondary sags-facts-toggle">
+                  Tilføj fakta
+                </button>
+              </div>
               <div id="sagsFunctionList" class="sags-function-actions">
                 <button type="button" class="button-secondary" disabled>Vælg undertab...</button>
+              </div>
+              <div class="side-status-block">
+                <div class="status status-compact" data-connection-status>Forbindelse til database</div>
               </div>
             </aside>
             <section class="result sagsbehandling-main-panel">
@@ -123,16 +133,81 @@
                   Dummy-fane for nu. Vælg undertab i højre side for at skifte funktion.
                 </div>
               </div>
-              <label class="label" for="sagsbehandlingInput">Besked</label>
-              <textarea
-                id="sagsbehandlingInput"
-                class="input"
-                rows="4"
-                placeholder="Sagsbehandling kommer i næste trin..."
-              ></textarea>
               <div class="actions">
                 <button id="sagsbehandlingSendBtn" type="button" disabled>Send (dummy)</button>
+                <button id="sagsbehandlingClearBtn" type="button" class="button-secondary">Ryd</button>
               </div>
+              <section id="sagsFactsPanel" class="sags-facts-panel sags-facts-overlay hidden" aria-label="Fakta til analyse">
+                <div class="sags-facts-overlay-header">
+                  <h3 id="sagsFactsPanelTitle" class="sags-facts-title">Fakta</h3>
+                  <div class="sags-facts-overlay-actions">
+                    <button id="sagsFactsClearBtn" type="button" class="button-secondary sags-facts-mini">Ryd</button>
+                    <button id="sagsFactsCloseBtn" type="button" class="button-secondary sags-facts-close">Luk</button>
+                  </div>
+                </div>
+                <label id="sagsFactsIncomeYearsLabel" class="label" for="sagsFactsIncomeYears">Indkomstår</label>
+                <input
+                  id="sagsFactsIncomeYears"
+                  class="input sags-facts-input"
+                  type="text"
+                  placeholder="Fx 2022, 2023"
+                />
+
+                <label id="sagsFactsFactorSelectionLabel" class="label" for="sagsFactsFactorChecklist">
+                  Relevante forhold
+                </label>
+                <div id="sagsFactsFactorChecklist" class="sags-facts-factor-list"></div>
+
+                <label id="sagsFactsForeignIncomeLabel" class="label" for="sagsFactsForeignIncome">Indkomst fra udlandet</label>
+                <input
+                  id="sagsFactsForeignIncome"
+                  class="input sags-facts-input"
+                  type="text"
+                  placeholder="Ja/nej + kort faktum"
+                />
+
+                <label
+                  id="sagsFactsForeignAssetsLiabilitiesLabel"
+                  class="label"
+                  for="sagsFactsForeignAssetsLiabilities"
+                >
+                  Aktiver/passiver i udlandet
+                </label>
+                <textarea
+                  id="sagsFactsForeignAssetsLiabilities"
+                  class="input sags-facts-textarea"
+                  rows="3"
+                  placeholder="Fx ejendom, bankkonti, værdipapirer, pension, gæld"
+                ></textarea>
+
+                <label id="sagsFactsResidenceLabel" class="label" for="sagsFactsResidence">Bopælsfaktum</label>
+                <div id="sagsFactsResidenceOptions" class="sags-facts-suboptions hidden"></div>
+                <input
+                  id="sagsFactsResidenceSinceYear"
+                  class="input sags-facts-input hidden"
+                  type="text"
+                  placeholder="Angiv årstal, fx 2021"
+                />
+                <textarea
+                  id="sagsFactsResidence"
+                  class="input sags-facts-textarea"
+                  rows="3"
+                  placeholder="Kort faktuel beskrivelse af bopælsforhold"
+                ></textarea>
+
+                <label id="sagsFactsNotesLabel" class="label" for="sagsFactsNotes">Supplerende fakta</label>
+                <textarea
+                  id="sagsFactsNotes"
+                  class="input sags-facts-textarea"
+                  rows="4"
+                  placeholder="Evt. yderligere faktiske oplysninger"
+                ></textarea>
+                <div class="sags-facts-bottom-actions">
+                  <button id="sagsFactsSaveBtn" type="button" class="button-secondary sags-facts-mini">
+                    Gem fakta
+                  </button>
+                </div>
+              </section>
             </section>
           </div>
         </section>
@@ -150,6 +225,9 @@
                 <button id="chatResetBtn" type="button" class="button-secondary">Ny chat</button>
                 <button id="chatSavePdfBtn" type="button" class="button-secondary">Gem chat (PDF)</button>
               </div>
+              <div class="side-status-block">
+                <div class="status status-compact" data-connection-status>Forbindelse til database</div>
+              </div>
               <ul id="chatContextList" class="context-file-list">
                 <li class="context-file-item-empty">Ingen filer uploadet endnu.</li>
               </ul>
@@ -166,6 +244,7 @@
               ></textarea>
               <div class="actions">
                 <button id="chatSendBtn" type="button">Send</button>
+                <button id="chatAbortBtn" type="button" class="button-secondary" disabled>Afbryd</button>
               </div>
             </section>
           </div>
@@ -174,6 +253,6 @@
     </section>
   </main>
 
-  <script type="module" src="/clean-start/js/app.js"></script>
+  <script type="module" src="/clean-start/js/app.js?v=20260309f"></script>
 </body>
 </html>

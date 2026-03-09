@@ -26,6 +26,13 @@ const state = {
     activeFunction: "",
     inputText: "",
     messages: [],
+    previousResponseId: null,
+    usedModel: null,
+    factsPanelOpen: false,
+    factsBySubtab: {},
+    legalBasisBySubtab: {},
+    legalBasisLoadingBySubtab: {},
+    autoLegalBasisTextBySubtab: {},
   },
   chat: {
     messages: [],
