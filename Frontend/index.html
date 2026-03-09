@@ -42,13 +42,21 @@
         <section id="tabPaneAnalyse" class="tab-pane">
           <div class="analyse-layout">
             <aside class="analyse-side-panel">
-              <h2>Analyse handlinger</h2>
+              <div class="analyse-side-top">
+                <h2>Analyse handlinger</h2>
               <div class="analyse-side-actions">
                 <button id="resetBtn" type="button" class="button-secondary">Ny analyse</button>
                 <button id="pdfLogLink" type="button" class="button-secondary">Download analyse</button>
+                <button id="analyseExtraBtn" type="button" class="button-secondary" disabled>Ekstra (dummy)</button>
               </div>
-              <div class="side-status-block">
-                <div class="status status-compact" data-connection-status>Forbindelse til database</div>
+                <div class="side-status-block">
+                  <div class="status status-compact" data-connection-status>Forbindelse til database</div>
+                </div>
+              </div>
+              <div class="analyse-divider" aria-hidden="true"></div>
+              <div class="analyse-side-log">
+                <h2>Forespørgselslog</h2>
+                <div id="analyseLogContent" class="analyse-log-content"></div>
               </div>
             </aside>
             <section class="result analyse-main-panel">

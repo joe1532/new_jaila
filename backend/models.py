@@ -91,3 +91,50 @@ class SagsLegalBasisResponse(BaseModel):
     subtab: str
     vector_store_id: str | None = None
     documents: list[str] = Field(default_factory=list)
+
+
+class AnalyseLogSaveRequest(BaseModel):
+    user: str = Field(..., min_length=1, description="Brugernavn")
+    question: str = Field(..., description="Spørgsmål")
+    answer: str = Field(..., description="Svar")
+    citations: list[dict] = Field(default_factory=list)
+    retrieval_results: list[dict] = Field(default_factory=list)
+    used_model: str = Field(..., description="Model brugt")
+    log_question: str | None = Field(default=None, description="Fuld log-spørgsmål")
+    used_vector_store_ids: list[str] | None = Field(default=None)
+    log_pdf_filename: str | None = Field(default=None)
+    log_pdf_url: str | None = Field(default=None)
+
+
+class AnalyseLogSaveResponse(BaseModel):
+    id: str
+    title: str
+    created_at: str
+    log_pdf_filename: str | None = None
+    log_pdf_url: str | None = None
+
+
+class AnalyseLogEntry(BaseModel):
+    id: str
+    created_at: str
+    title: str
+    log_pdf_filename: str | None = None
+    log_pdf_url: str | None = None
+
+
+class AnalyseLogListResponse(BaseModel):
+    entries: list[AnalyseLogEntry]
+
+
+class AnalyseLogGetResponse(BaseModel):
+    id: str
+    created_at: str
+    title: str
+    question: str
+    answer: str
+    citations: list[dict]
+    retrieval_results: list[dict]
+    used_model: str
+    used_vector_store_ids: list[str]
+    log_pdf_filename: str | None = None
+    log_pdf_url: str | None = None

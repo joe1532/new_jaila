@@ -58,7 +58,14 @@ export function renderChat(elements, state) {
     });
   }
 
-  conversationEl.scrollTop = conversationEl.scrollHeight;
+  // Auto-scroll kun hvis brugeren allerede er nær bunden (fx under streaming).
+  // Så kan man scrolle op og læse uden at blive trukket ned.
+  const threshold = 80;
+  const atBottom =
+    conversationEl.scrollHeight - conversationEl.scrollTop - conversationEl.clientHeight <= threshold;
+  if (atBottom) {
+    conversationEl.scrollTop = conversationEl.scrollHeight;
+  }
 
   if (elements.chatInput && elements.chatInput.value !== state.chat.inputText) {
     elements.chatInput.value = state.chat.inputText || "";

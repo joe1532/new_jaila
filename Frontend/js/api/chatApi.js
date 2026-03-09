@@ -1,4 +1,4 @@
-import { requestJson } from "./client.js";
+import { requestJson, requestStream } from "./client.js";
 
 function buildSessionHeaders(chatSessionId) {
   return {
@@ -20,6 +20,24 @@ export function sendChat(message, previousResponseId, chatSessionId, options) {
       previous_response_id: previousResponseId || null,
     },
     opts,
+  );
+}
+
+export function sendChatStream(message, previousResponseId, chatSessionId, options, onEvent) {
+  const opts = {
+    headers: buildSessionHeaders(chatSessionId),
+  };
+  if (options && options.signal) {
+    opts.signal = options.signal;
+  }
+  return requestStream(
+    "/chat",
+    {
+      message: message,
+      previous_response_id: previousResponseId || null,
+    },
+    opts,
+    onEvent,
   );
 }
 

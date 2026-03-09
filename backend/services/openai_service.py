@@ -1,19 +1,66 @@
+import logging
 import re
+import time
 import unicodedata
 from typing import Any
 
 from openai import OpenAI
+
+from backend.services.pdf_log import save_pdf_log
 
 from backend.config import (
     ANSWER_INSTRUCTIONS,
     FALLBACK_MODEL,
     MAX_NUM_RESULTS,
     PRIMARY_MODEL,
+    PROMPT_CACHE_KEY_ANALYSE,
+    PROMPT_CACHE_RETENTION,
+    REASONING_EFFORT_ANALYSE,
     STRICT_SOURCING,
     VECTOR_STORE_IDS,
 )
 
 MAX_VECTOR_STORES_PER_REQUEST = 2
+_log = logging.getLogger(__name__)
+
+
+def _log_performance(
+    flow: str,
+    model: str,
+    duration_ms: float,
+    resp: Any,
+    reasoning_effort: str,
+    num_retrieval_results: int = 0,
+) -> None:
+    """Log performance data for debugging og optimering."""
+    usage = get_value(resp, "usage")
+    input_tokens = get_value(usage, "input_tokens", 0) if usage else 0
+    output_tokens = get_value(usage, "output_tokens", 0) if usage else 0
+    cached_tokens = 0
+    if usage:
+        details = get_value(usage, "prompt_tokens_details")
+        if isinstance(details, dict):
+            cached_tokens = details.get("cached_tokens", 0)
+    request_id = getattr(resp, "_request_id", None) or getattr(resp, "request_id", None)
+    processing_ms = getattr(resp, "_headers", None)
+    if processing_ms and hasattr(processing_ms, "get"):
+        processing_ms = processing_ms.get("openai-processing-ms")
+    else:
+        processing_ms = None
+    _log.info(
+        "perf flow=%s model=%s duration_ms=%.0f openai_processing_ms=%s x_request_id=%s "
+        "input_tokens=%s output_tokens=%s cached_tokens=%s reasoning_effort=%s retrieval_results=%s",
+        flow,
+        model,
+        duration_ms,
+        processing_ms or "?",
+        request_id or "?",
+        input_tokens,
+        output_tokens,
+        cached_tokens,
+        reasoning_effort,
+        num_retrieval_results,
+    )
 
 
 def get_value(obj: Any, key: str, default: Any = None) -> Any:
@@ -493,9 +540,13 @@ def analyze_question(
     vector_store_ids: list[str] | None = None,
     instructions: str | None = None,
     models_to_try: list[str] | None = None,
+    reasoning_effort: str | None = None,
+    prompt_cache_key: str | None = None,
 ) -> tuple[dict[str, Any], str, str]:
     effective_vector_store_ids = vector_store_ids or VECTOR_STORE_IDS
     effective_instructions = instructions or ANSWER_INSTRUCTIONS
+    effective_reasoning = reasoning_effort or REASONING_EFFORT_ANALYSE
+    effective_cache_key = prompt_cache_key or PROMPT_CACHE_KEY_ANALYSE
     selected_vector_store_ids = select_vector_store_ids_for_query(
         client=client,
         question=question,
@@ -511,7 +562,7 @@ def analyze_question(
                 "model": model,
                 "instructions": effective_instructions,
                 "input": question,
-                "reasoning": {"effort": "high"},
+                "reasoning": {"effort": effective_reasoning},
                 "tools": [
                     {
                         "type": "file_search",
@@ -520,12 +571,24 @@ def analyze_question(
                     }
                 ],
                 "include": ["file_search_call.results"],
+                "prompt_cache_key": effective_cache_key,
+                "prompt_cache_retention": PROMPT_CACHE_RETENTION,
             }
             if previous_response_id:
                 request_payload["previous_response_id"] = previous_response_id
 
+            t0 = time.perf_counter()
             resp = client.responses.create(**request_payload)
+            duration_ms = (time.perf_counter() - t0) * 1000
             parsed = parse_response(resp)
+            _log_performance(
+                flow="analyse",
+                model=model,
+                duration_ms=duration_ms,
+                resp=resp,
+                reasoning_effort=effective_reasoning,
+                num_retrieval_results=len(parsed.get("retrieved_chunks", [])),
+            )
             if STRICT_SOURCING:
                 parsed = enforce_strict_sourcing(parsed)
             else:
@@ -533,6 +596,102 @@ def analyze_question(
             parsed["used_vector_store_ids"] = selected_vector_store_ids
             response_id = str(get_value(resp, "id", ""))
             return parsed, model, response_id
+        except Exception as exc:
+            last_error = exc
+
+    raise RuntimeError(
+        f"Kald fejlede for modellerne {', '.join(effective_models_to_try)}: {last_error}"
+    )
+
+
+def analyze_question_stream(
+    client: OpenAI,
+    question: str,
+    log_question: str | None = None,
+    previous_response_id: str | None = None,
+    vector_store_ids: list[str] | None = None,
+    instructions: str | None = None,
+    models_to_try: list[str] | None = None,
+    reasoning_effort: str | None = None,
+    prompt_cache_key: str | None = None,
+):
+    """
+    Streaming variant af analyze_question. Yielder dict-events: delta, done, error.
+    """
+    effective_vector_store_ids = vector_store_ids or VECTOR_STORE_IDS
+    effective_instructions = instructions or ANSWER_INSTRUCTIONS
+    effective_reasoning = reasoning_effort or REASONING_EFFORT_ANALYSE
+    effective_cache_key = prompt_cache_key or PROMPT_CACHE_KEY_ANALYSE
+    selected_vector_store_ids = select_vector_store_ids_for_query(
+        client=client,
+        question=question,
+        vector_store_ids=effective_vector_store_ids,
+    )
+    effective_models_to_try = models_to_try or [PRIMARY_MODEL, FALLBACK_MODEL]
+    last_error: Exception | None = None
+
+    for model in effective_models_to_try:
+        try:
+            request_payload: dict[str, Any] = {
+                "model": model,
+                "instructions": effective_instructions,
+                "input": question,
+                "reasoning": {"effort": effective_reasoning},
+                "tools": [
+                    {
+                        "type": "file_search",
+                        "vector_store_ids": selected_vector_store_ids,
+                        "max_num_results": MAX_NUM_RESULTS,
+                    }
+                ],
+                "include": ["file_search_call.results"],
+                "prompt_cache_key": effective_cache_key,
+                "prompt_cache_retention": PROMPT_CACHE_RETENTION,
+                "stream": True,
+            }
+            if previous_response_id:
+                request_payload["previous_response_id"] = previous_response_id
+
+            t0 = time.perf_counter()
+            stream = client.responses.create(**request_payload)
+            for event in stream:
+                event_type = get_value(event, "type", "")
+                if event_type == "response.output_text.delta":
+                    delta = get_value(event, "delta", "")
+                    if delta:
+                        yield {"type": "delta", "text": delta}
+                elif event_type == "response.completed":
+                    resp = get_value(event, "response")
+                    duration_ms = (time.perf_counter() - t0) * 1000
+                    parsed = parse_response(resp)
+                    _log_performance(
+                        flow="analyse",
+                        model=model,
+                        duration_ms=duration_ms,
+                        resp=resp,
+                        reasoning_effort=effective_reasoning,
+                        num_retrieval_results=len(parsed.get("retrieved_chunks", [])),
+                    )
+                    if STRICT_SOURCING:
+                        parsed = enforce_strict_sourcing(parsed)
+                    else:
+                        parsed = ensure_sources_section(parsed)
+                    parsed["used_vector_store_ids"] = selected_vector_store_ids
+                    response_id = str(get_value(resp, "id", ""))
+                    log_path = save_pdf_log(log_question or question, parsed, model)
+                    yield {
+                        "type": "done",
+                        "answer": parsed.get("output_text", ""),
+                        "used_model": model,
+                        "response_id": response_id,
+                        "citations": parsed.get("citations", []),
+                        "retrieval_results": parsed.get("retrieved_chunks", []),
+                        "used_vector_store_ids": selected_vector_store_ids,
+                        "log_pdf_filename": log_path.name,
+                        "log_pdf_url": f"/api/logs/{log_path.name}",
+                    }
+                    return
+            last_error = RuntimeError("Stream sluttede uden response.completed")
         except Exception as exc:
             last_error = exc
 

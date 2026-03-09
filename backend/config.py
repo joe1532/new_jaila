@@ -202,6 +202,18 @@ STRICT_SOURCING = os.getenv("STRICT_SOURCING", "false").strip().lower() in {
     "on",
 }
 
+# Reasoning effort per flow (none, minimal, low, medium, high, xhigh).
+# Lavere effort = hurtigere svar, færre reasoning tokens.
+REASONING_EFFORT_ANALYSE = "medium"
+REASONING_EFFORT_CHAT = "low"
+REASONING_EFFORT_LIGNINGSFRIST = "low"
+
+# Prompt caching: stabile nøgler for cache routing, 24h retention for faste instruktioner.
+PROMPT_CACHE_KEY_ANALYSE = "jaila-analyse-v1"
+PROMPT_CACHE_KEY_CHAT = "jaila-chat-v1"
+PROMPT_CACHE_KEY_LIGNINGSFRIST = "jaila-ligningsfrist-v1"
+PROMPT_CACHE_RETENTION = "24h"
+
 ANSWER_INSTRUCTIONS = """Rolle
 
 Du er en juridisk assistent med speciale i skatteret.

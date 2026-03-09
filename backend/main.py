@@ -1,8 +1,10 @@
 import base64
 import io
 import json
+import logging
 import os
 import re
+import time
 from pathlib import Path
 from uuid import uuid4
 
@@ -10,9 +12,9 @@ import fitz
 import openpyxl
 import xlrd
 from docx import Document
-from fastapi import FastAPI, File, Header, HTTPException, UploadFile
+from fastapi import FastAPI, File, Header, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from openai import OpenAI
 from pypdf import PdfReader
 
@@ -21,6 +23,11 @@ from backend.config import (
     CHAT_INSTRUCTIONS,
     LOG_DIR,
     PRIMARY_MODEL,
+    PROMPT_CACHE_KEY_CHAT,
+    PROMPT_CACHE_KEY_LIGNINGSFRIST,
+    PROMPT_CACHE_RETENTION,
+    REASONING_EFFORT_CHAT,
+    REASONING_EFFORT_LIGNINGSFRIST,
     SAGSBEHANDLING_MODELS,
     SAGSBEHANDLING_PROMPTS,
     SAGSBEHANDLING_VECTOR_STORES,
@@ -28,6 +35,10 @@ from backend.config import (
 )
 from backend.models import (
     AnalyzeRequest,
+    AnalyseLogGetResponse,
+    AnalyseLogListResponse,
+    AnalyseLogSaveRequest,
+    AnalyseLogSaveResponse,
     AnalyzeResponse,
     ChatContextFileResponse,
     ChatContextListResponse,
@@ -37,11 +48,18 @@ from backend.models import (
     ChatResponse,
     SagsLegalBasisResponse,
 )
-from backend.services.openai_service import analyze_question
+from backend.services.analyse_logs import (
+    format_log_as_text,
+    get_analyse_log,
+    list_analyse_logs,
+    save_analyse_log,
+)
+from backend.services.openai_service import analyze_question, analyze_question_stream
 from backend.services.pdf_log import save_chat_pdf_log, save_pdf_log
 
 
 app = FastAPI(title="JAILA Backend API", version="1.0.0")
+_log = logging.getLogger(__name__)
 CHAT_CONTEXT_DIR = BASE_DIR / "chat_context"
 DEFAULT_CHAT_GUIDE_PATH = BASE_DIR / "backend" / "default_context" / "Skriveguide.md"
 MAX_CHAT_CONTEXT_CHARS = 20000
@@ -939,8 +957,17 @@ def clear_chat_context(
     return build_chat_context_list_response(session_id)
 
 
+def _sse_line(data: dict | str) -> str:
+    """Formatér dict som SSE data-linje."""
+    import json as _json
+    return f"data: {_json.dumps(data, ensure_ascii=False)}\n\n"
+
+
 @app.post("/api/analyze", response_model=AnalyzeResponse)
-def analyze(payload: AnalyzeRequest) -> AnalyzeResponse:
+def analyze(
+    payload: AnalyzeRequest,
+    stream: bool = Query(False, description="Stream svar som SSE"),
+) -> AnalyzeResponse | StreamingResponse:
     question = payload.question.strip()
     if not question:
         raise HTTPException(status_code=400, detail="Spørgsmål må ikke være tomt")
@@ -1002,8 +1029,37 @@ def analyze(payload: AnalyzeRequest) -> AnalyzeResponse:
                 + "Brug disse faktiske oplysninger sammen med de fundne kilder i file_search."
             )
 
+    if stream:
+        def gen():
+            try:
+                client = OpenAI()
+                reasoning_effort = REASONING_EFFORT_LIGNINGSFRIST if instructions_override else None
+                prompt_cache_key = PROMPT_CACHE_KEY_LIGNINGSFRIST if instructions_override else None
+                for evt in analyze_question_stream(
+                    client=client,
+                    question=llm_question,
+                    log_question=llm_question,
+                    previous_response_id=payload.previous_response_id,
+                    vector_store_ids=vector_store_ids_override,
+                    instructions=instructions_override,
+                    models_to_try=models_override,
+                    reasoning_effort=reasoning_effort,
+                    prompt_cache_key=prompt_cache_key,
+                ):
+                    yield _sse_line(evt)
+            except Exception as exc:
+                yield _sse_line({"type": "error", "detail": str(exc)})
+
+        return StreamingResponse(
+            gen(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
     try:
         client = OpenAI()
+        reasoning_effort = REASONING_EFFORT_LIGNINGSFRIST if instructions_override else None
+        prompt_cache_key = PROMPT_CACHE_KEY_LIGNINGSFRIST if instructions_override else None
         parsed, used_model, response_id = analyze_question(
             client=client,
             question=llm_question,
@@ -1011,6 +1067,8 @@ def analyze(payload: AnalyzeRequest) -> AnalyzeResponse:
             vector_store_ids=vector_store_ids_override,
             instructions=instructions_override,
             models_to_try=models_override,
+            reasoning_effort=reasoning_effort,
+            prompt_cache_key=prompt_cache_key,
         )
         log_path = save_pdf_log(llm_question, parsed, used_model)
     except Exception as exc:
@@ -1054,7 +1112,8 @@ def sagsbehandling_legal_basis(subtab: str) -> SagsLegalBasisResponse:
 def chat(
     payload: ChatRequest,
     x_chat_session_id: str | None = Header(default=None, alias="X-Chat-Session-Id"),
-) -> ChatResponse:
+    stream: bool = Query(False, description="Stream svar som SSE"),
+) -> ChatResponse | StreamingResponse:
     session_id = get_session_id(x_chat_session_id)
     message = payload.message.strip()
     if not message:
@@ -1073,17 +1132,84 @@ def chat(
                 + context_text
             )
 
+        if stream:
+            def chat_gen():
+                try:
+                    req = {
+                        "model": PRIMARY_MODEL,
+                        "instructions": chat_instructions,
+                        "input": message,
+                        "reasoning": {"effort": REASONING_EFFORT_CHAT},
+                        "prompt_cache_key": PROMPT_CACHE_KEY_CHAT,
+                        "prompt_cache_retention": PROMPT_CACHE_RETENTION,
+                        "stream": True,
+                    }
+                    if payload.previous_response_id:
+                        req["previous_response_id"] = payload.previous_response_id
+                    t0 = time.perf_counter()
+                    stream_resp = client.responses.create(**req)
+                    for event in stream_resp:
+                        ev_type = getattr(event, "type", None) or (event.get("type") if isinstance(event, dict) else None)
+                        if ev_type == "response.output_text.delta":
+                            delta = getattr(event, "delta", None) or (event.get("delta", "") if isinstance(event, dict) else "")
+                            if delta:
+                                yield _sse_line({"type": "delta", "text": delta})
+                        elif ev_type == "response.completed":
+                            resp_obj = getattr(event, "response", None) or (event.get("response") if isinstance(event, dict) else None)
+                            duration_ms = (time.perf_counter() - t0) * 1000
+                            answer = str(getattr(resp_obj, "output_text", "") or "") if resp_obj else ""
+                            response_id = str(getattr(resp_obj, "id", "") or "") if resp_obj else ""
+                            usage = getattr(resp_obj, "usage", None) if resp_obj else None
+                            inp_tok = getattr(usage, "input_tokens", 0) if usage else 0
+                            out_tok = getattr(usage, "output_tokens", 0) if usage else 0
+                            req_id = getattr(resp_obj, "_request_id", None) if resp_obj else None
+                            _log.info(
+                                "perf flow=chat model=%s duration_ms=%.0f x_request_id=%s input_tokens=%s output_tokens=%s",
+                                PRIMARY_MODEL, duration_ms, req_id or "?", inp_tok, out_tok,
+                            )
+                            yield _sse_line({
+                                "type": "done",
+                                "answer": answer.strip(),
+                                "used_model": PRIMARY_MODEL,
+                                "response_id": response_id,
+                            })
+                except Exception as exc:
+                    yield _sse_line({"type": "error", "detail": str(exc)})
+
+            return StreamingResponse(
+                chat_gen(),
+                media_type="text/event-stream",
+                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+            )
+
         request_payload: dict[str, object] = {
             "model": PRIMARY_MODEL,
             "instructions": chat_instructions,
             "input": message,
-            "reasoning": {"effort": "high"},
+            "reasoning": {"effort": REASONING_EFFORT_CHAT},
+            "prompt_cache_key": PROMPT_CACHE_KEY_CHAT,
+            "prompt_cache_retention": PROMPT_CACHE_RETENTION,
         }
         if payload.previous_response_id:
             request_payload["previous_response_id"] = payload.previous_response_id
+        t0 = time.perf_counter()
         resp = client.responses.create(**request_payload)
+        duration_ms = (time.perf_counter() - t0) * 1000
         answer = str(getattr(resp, "output_text", "") or "").strip()
         response_id = str(getattr(resp, "id", "") or "")
+        usage = getattr(resp, "usage", None)
+        input_tokens = getattr(usage, "input_tokens", 0) if usage else 0
+        output_tokens = getattr(usage, "output_tokens", 0) if usage else 0
+        req_id = getattr(resp, "_request_id", None)
+        _log.info(
+            "perf flow=chat model=%s duration_ms=%.0f x_request_id=%s input_tokens=%s output_tokens=%s reasoning_effort=%s",
+            PRIMARY_MODEL,
+            duration_ms,
+            req_id or "?",
+            input_tokens,
+            output_tokens,
+            REASONING_EFFORT_CHAT,
+        )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Chat fejlede: {exc}") from exc
 
@@ -1117,6 +1243,58 @@ def export_chat_pdf(
     return ChatExportResponse(
         log_pdf_filename=log_filename,
         log_pdf_url=f"/api/logs/{log_filename}",
+    )
+
+
+@app.post("/api/analyse-logs", response_model=AnalyseLogSaveResponse)
+def save_analyse_log_endpoint(payload: AnalyseLogSaveRequest) -> AnalyseLogSaveResponse:
+    """Gem analyse-log med LLM-genereret titel."""
+    try:
+        result = save_analyse_log(
+            username=payload.user,
+            question=payload.question,
+            answer=payload.answer,
+            citations=payload.citations,
+            retrieval_results=payload.retrieval_results,
+            used_model=payload.used_model,
+            log_question=payload.log_question,
+            used_vector_store_ids=payload.used_vector_store_ids,
+            log_pdf_filename=payload.log_pdf_filename,
+            log_pdf_url=payload.log_pdf_url,
+        )
+        return AnalyseLogSaveResponse(**result)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Kunne ikke gemme log: {exc}") from exc
+
+
+@app.get("/api/analyse-logs", response_model=AnalyseLogListResponse)
+def list_analyse_logs_endpoint(user: str = Query(..., min_length=1)) -> AnalyseLogListResponse:
+    """Liste gemte analyse-logs for bruger."""
+    entries = list_analyse_logs(user)
+    return AnalyseLogListResponse(entries=entries)
+
+
+@app.get("/api/analyse-logs/{entry_id}", response_model=AnalyseLogGetResponse)
+def get_analyse_log_endpoint(
+    entry_id: str,
+    user: str = Query(..., min_length=1),
+) -> AnalyseLogGetResponse:
+    """Hent fuld analyse-log efter id."""
+    entry = get_analyse_log(user, entry_id)
+    if not entry:
+        raise HTTPException(status_code=404, detail="Log ikke fundet")
+    return AnalyseLogGetResponse(
+        id=entry["id"],
+        created_at=entry["created_at"],
+        title=entry.get("title", "Uden titel"),
+        question=entry.get("question", ""),
+        answer=entry.get("answer", ""),
+        citations=entry.get("citations", []),
+        retrieval_results=entry.get("retrieval_results", []),
+        used_model=entry.get("used_model", ""),
+        used_vector_store_ids=entry.get("used_vector_store_ids", []),
+        log_pdf_filename=entry.get("log_pdf_filename"),
+        log_pdf_url=entry.get("log_pdf_url"),
     )
 
 

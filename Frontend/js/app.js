@@ -1,6 +1,7 @@
-import { analyzeQuestion } from "./api/analyzeApi.js";
+import { analyzeQuestion, analyzeQuestionStream } from "./api/analyzeApi.js";
+import { getAnalyseLog, listAnalyseLogs, saveAnalyseLog } from "./api/analyseLogsApi.js";
 import { getSagsLegalBasis } from "./api/sagsbehandlingApi.js";
-import { exportChatPdf, sendChat } from "./api/chatApi.js";
+import { exportChatPdf, sendChat, sendChatStream } from "./api/chatApi.js";
 import {
   clearChatContextFiles,
   deleteChatContextFile,
@@ -135,10 +136,12 @@ const elements = {
   sessionLabel: document.getElementById("sessionLabel"),
   statusTargets: Array.from(document.querySelectorAll("[data-connection-status]")),
   analyseConversation: document.getElementById("analyseConversation"),
+  analyseLogContent: document.getElementById("analyseLogContent"),
   question: document.getElementById("question"),
   analyzeBtn: document.getElementById("analyzeBtn"),
   analyzeAbortBtn: document.getElementById("analyzeAbortBtn"),
   pdfLogLink: document.getElementById("pdfLogLink"),
+  analyseExtraBtn: document.getElementById("analyseExtraBtn"),
   tabButtons: Array.from(document.querySelectorAll(".tab-button")),
   tabPaneAnalyse: document.getElementById("tabPaneAnalyse"),
   tabPaneSagsbehandling: document.getElementById("tabPaneSagsbehandling"),
@@ -287,6 +290,10 @@ function switchTab(tabId) {
     const isActive = btn.dataset.tab === state.ui.activeTab;
     btn.classList.toggle("tab-button-active", isActive);
   });
+
+  if (tabId === "analyse") {
+    loadAnalyseSavedLogs();
+  }
 }
 
 function showWelcomeModalForAllan() {
@@ -343,9 +350,55 @@ function showLogin(message, mode) {
 }
 
 function resetAnalyse() {
-  setState({ analyse: getInitialAnalyseState() });
+  const prev = getState().analyse || {};
+  setState({
+    analyse: {
+      ...getInitialAnalyseState(),
+      savedLogs: prev.savedLogs || [],
+    },
+  });
   renderAnalyse(elements, getState());
   setStatus("Analyse nulstillet.", "ok");
+}
+
+async function loadAnalyseSavedLogs() {
+  const user = (getActiveUser() || "").trim();
+  if (!user) return;
+  try {
+    const res = await listAnalyseLogs(user);
+    const prev = getState().analyse || {};
+    setState({ analyse: { ...prev, savedLogs: res.entries || [] } });
+    renderAnalyse(elements, getState());
+  } catch (err) {
+    setStatus("Kunne ikke hente gemte logs: " + (err.message || "Fejl"), "error");
+  }
+}
+
+async function onAnalyseLogEntryClick(entryId) {
+  const user = getActiveUser();
+  if (!user) return;
+  try {
+    const entry = await getAnalyseLog(user, entryId);
+    setState({
+      analyse: {
+        selectedLogId: entryId,
+        selectedLogContent: entry,
+      },
+    });
+    renderAnalyse(elements, getState());
+  } catch (err) {
+    setStatus("Kunne ikke hente log: " + (err.message || "Fejl"), "error");
+  }
+}
+
+function onAnalyseLogBackClick() {
+  setState({
+    analyse: {
+      selectedLogId: null,
+      selectedLogContent: null,
+    },
+  });
+  renderAnalyse(elements, getState());
 }
 
 function resetChat() {
@@ -384,6 +437,15 @@ function addChatMessage(role, text) {
   renderChat(elements, getState());
 }
 
+function updateLastChatMessageText(text) {
+  const currentMessages = getState().chat.messages || [];
+  if (currentMessages.length === 0) return;
+  const last = currentMessages[currentMessages.length - 1];
+  if (last.role !== "assistant") return;
+  const updated = currentMessages.slice(0, -1).concat([{ ...last, text: text || "" }]);
+  setState({ chat: { messages: updated } });
+}
+
 function addAnalyseMessage(role, text) {
   const currentMessages = getState().analyse.messages || [];
   setState({
@@ -392,6 +454,15 @@ function addAnalyseMessage(role, text) {
     },
   });
   renderAnalyse(elements, getState());
+}
+
+function updateLastAnalyseMessageText(text) {
+  const currentMessages = getState().analyse.messages || [];
+  if (currentMessages.length === 0) return;
+  const last = currentMessages[currentMessages.length - 1];
+  if (last.role !== "assistant") return;
+  const updated = currentMessages.slice(0, -1).concat([{ ...last, text: text || "" }]);
+  setState({ analyse: { messages: updated } });
 }
 
 function addSagsbehandlingMessage(role, text) {
@@ -698,27 +769,122 @@ async function runAnalyse() {
   analyseAbortController = new AbortController();
   if (elements.analyzeAbortBtn) elements.analyzeAbortBtn.disabled = false;
 
+  const useStream = true;
   try {
     const previousResponseId = getState().analyse.previousResponseId;
-    const data = await analyzeQuestion(question, previousResponseId, {
+    const ctx = {
       sourceTab: "analyse",
       subtab: null,
       signal: analyseAbortController.signal,
-    });
-    setState({
-      analyse: {
-        answer: data.answer || "Intet svar returneret.",
-        usedModel: data.used_model || null,
-        citations: data.citations || [],
-        retrievalResults: data.retrieval_results || [],
-        logPdfUrl: data.log_pdf_url || "",
-        logPdfLabel: data.log_pdf_filename || "Åbn PDF-log",
-        previousResponseId: data.response_id || null,
-      },
-    });
-    addAnalyseMessage("assistant", data.answer || "Intet svar returneret.");
-    renderAnalyse(elements, getState());
-    setStatus("Analyse færdig. Model: " + (data.used_model || "ukendt"), "ok");
+    };
+    if (useStream) {
+      addAnalyseMessage("assistant", "");
+      renderAnalyse(elements, getState());
+      let accumulated = "";
+      await analyzeQuestionStream(question, previousResponseId, ctx, (evt) => {
+        if (evt.type === "delta" && evt.text) {
+          accumulated += evt.text;
+          updateLastAnalyseMessageText(accumulated);
+          renderAnalyse(elements, getState());
+        } else if (evt.type === "done") {
+          const answer = evt.answer || accumulated || "Intet svar returneret.";
+          const prev = getState().analyse || {};
+          setState({
+            analyse: {
+              ...prev,
+              answer,
+              usedModel: evt.used_model || null,
+              citations: evt.citations || [],
+              retrievalResults: evt.retrieval_results || [],
+              logPdfUrl: evt.log_pdf_url || "",
+              logPdfLabel: evt.log_pdf_filename || "Åbn PDF-log",
+              previousResponseId: evt.response_id || null,
+            },
+          });
+          updateLastAnalyseMessageText(answer);
+          renderAnalyse(elements, getState());
+          setStatus("Analyse færdig. Model: " + (evt.used_model || "ukendt"), "ok");
+          const user = getActiveUser();
+          if (user) {
+            saveAnalyseLog(user, {
+              question,
+              answer,
+              citations: evt.citations || [],
+              retrieval_results: evt.retrieval_results || [],
+              used_model: evt.used_model || "",
+              used_vector_store_ids: evt.used_vector_store_ids || null,
+              log_pdf_filename: evt.log_pdf_filename || null,
+              log_pdf_url: evt.log_pdf_url || null,
+            })
+              .then((saved) => {
+                const prev = getState().analyse || {};
+                const logs = [
+                  {
+                    id: saved.id,
+                    created_at: saved.created_at,
+                    title: saved.title,
+                    log_pdf_filename: saved.log_pdf_filename || null,
+                    log_pdf_url: saved.log_pdf_url || null,
+                  },
+                  ...(prev.savedLogs || []),
+                ];
+                setState({ analyse: { savedLogs: logs } });
+                renderAnalyse(elements, getState());
+              })
+              .catch(() => {});
+          }
+        } else if (evt.type === "error") {
+          throw new Error(evt.detail || "Streamfejl");
+        }
+      });
+    } else {
+      const data = await analyzeQuestion(question, previousResponseId, ctx);
+      const prev = getState().analyse || {};
+      setState({
+        analyse: {
+          ...prev,
+          answer: data.answer || "Intet svar returneret.",
+          usedModel: data.used_model || null,
+          citations: data.citations || [],
+          retrievalResults: data.retrieval_results || [],
+          logPdfUrl: data.log_pdf_url || "",
+          logPdfLabel: data.log_pdf_filename || "Åbn PDF-log",
+          previousResponseId: data.response_id || null,
+        },
+      });
+      addAnalyseMessage("assistant", data.answer || "Intet svar returneret.");
+      renderAnalyse(elements, getState());
+      setStatus("Analyse færdig. Model: " + (data.used_model || "ukendt"), "ok");
+      const user = getActiveUser();
+      if (user) {
+        saveAnalyseLog(user, {
+          question,
+          answer: data.answer || "",
+          citations: data.citations || [],
+          retrieval_results: data.retrieval_results || [],
+          used_model: data.used_model || "",
+          used_vector_store_ids: null,
+          log_pdf_filename: data.log_pdf_filename || null,
+          log_pdf_url: data.log_pdf_url || null,
+        })
+          .then((saved) => {
+            const prev = getState().analyse || {};
+            const logs = [
+              {
+                id: saved.id,
+                created_at: saved.created_at,
+                title: saved.title,
+                log_pdf_filename: saved.log_pdf_filename || null,
+                log_pdf_url: saved.log_pdf_url || null,
+              },
+              ...(prev.savedLogs || []),
+            ];
+            setState({ analyse: { savedLogs: logs } });
+            renderAnalyse(elements, getState());
+          })
+          .catch(() => {});
+      }
+    }
   } catch (err) {
     const isAborted = err && err.name === "AbortError";
     const errorText = isAborted ? "Afbrudt" : (err && err.message ? err.message : "Ukendt fejl");
@@ -925,20 +1091,45 @@ async function runChat() {
   chatAbortController = new AbortController();
   if (elements.chatAbortBtn) elements.chatAbortBtn.disabled = false;
 
+  const useStream = true;
   try {
     const previousResponseId = getState().chat.previousResponseId;
     const sessionId = getOrCreateChatSessionId();
-    const data = await sendChat(message, previousResponseId, sessionId, {
-      signal: chatAbortController.signal,
-    });
-    setState({
-      chat: {
-        previousResponseId: data.response_id || null,
-        usedModel: data.used_model || null,
-      },
-    });
-    addChatMessage("assistant", data.answer || "Intet svar returneret.");
-    setStatus("Chat svar modtaget. Model: " + (data.used_model || "ukendt"), "ok");
+    const opts = { signal: chatAbortController.signal };
+    if (useStream) {
+      addChatMessage("assistant", "");
+      renderChat(elements, getState());
+      let accumulated = "";
+      await sendChatStream(message, previousResponseId, sessionId, opts, (evt) => {
+        if (evt.type === "delta" && evt.text) {
+          accumulated += evt.text;
+          updateLastChatMessageText(accumulated);
+          renderChat(elements, getState());
+        } else if (evt.type === "done") {
+          setState({
+            chat: {
+              previousResponseId: evt.response_id || null,
+              usedModel: evt.used_model || null,
+            },
+          });
+          updateLastChatMessageText(evt.answer || accumulated || "Intet svar returneret.");
+          renderChat(elements, getState());
+          setStatus("Chat svar modtaget. Model: " + (evt.used_model || "ukendt"), "ok");
+        } else if (evt.type === "error") {
+          throw new Error(evt.detail || "Streamfejl");
+        }
+      });
+    } else {
+      const data = await sendChat(message, previousResponseId, sessionId, opts);
+      setState({
+        chat: {
+          previousResponseId: data.response_id || null,
+          usedModel: data.used_model || null,
+        },
+      });
+      addChatMessage("assistant", data.answer || "Intet svar returneret.");
+      setStatus("Chat svar modtaget. Model: " + (data.used_model || "ukendt"), "ok");
+    }
   } catch (err) {
     const isAborted = err && err.name === "AbortError";
     const msg = isAborted ? "Afbrudt af bruger." : "Fejl: " + (err && err.message ? err.message : "Ukendt fejl");
@@ -1132,6 +1323,21 @@ function bindEvents() {
         return;
       }
       removeContextFile(contextId);
+    });
+  }
+
+  if (elements.analyseLogContent) {
+    elements.analyseLogContent.addEventListener("click", (event) => {
+      const el = event.target.nodeType === Node.ELEMENT_NODE ? event.target : event.target.parentElement;
+      if (!el) return;
+      const entryBtn = el.closest(".analyse-log-entry");
+      if (entryBtn?.dataset?.entryId) {
+        onAnalyseLogEntryClick(entryBtn.dataset.entryId);
+        return;
+      }
+      if (el.closest("[data-action=log-back]")) {
+        onAnalyseLogBackClick();
+      }
     });
   }
 
