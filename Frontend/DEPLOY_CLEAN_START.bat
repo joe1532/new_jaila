@@ -12,7 +12,7 @@ set "SSH_USER=maestro"
 set "SSH_HOST=168.119.63.168"
 set "REMOTE_BASE=/var/www/site/clean-start"
 
-set /p SUDO_PASS=Indtast sudo password for server: 
+if not defined SUDO_PASS set /p SUDO_PASS=Indtast sudo password for server: 
 
 echo.
 echo [1/4] Uploader clean-start filer...
@@ -58,4 +58,4 @@ echo.
 
 :done
 endlocal
-pause
+if not defined SKIP_PAUSE pause

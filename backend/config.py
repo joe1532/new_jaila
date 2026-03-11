@@ -4,6 +4,9 @@ from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 LOG_DIR = BASE_DIR / "logs"
+ANALYSE_LOGS_DIR = Path(
+    os.getenv("ANALYSE_LOGS_DIR", "/var/lib/jaila/analyse_logs")
+).resolve()
 
 VECTOR_STORE_IDS = [
     "vs_67d1e99c789c8191bd776ac5437cbc08",
@@ -205,7 +208,7 @@ STRICT_SOURCING = os.getenv("STRICT_SOURCING", "false").strip().lower() in {
 # Reasoning effort per flow (none, minimal, low, medium, high, xhigh).
 # Lavere effort = hurtigere svar, færre reasoning tokens.
 REASONING_EFFORT_ANALYSE = "medium"
-REASONING_EFFORT_CHAT = "low"
+REASONING_EFFORT_CHAT = "medium"
 REASONING_EFFORT_LIGNINGSFRIST = "low"
 
 # Prompt caching: stabile nøgler for cache routing, 24h retention for faste instruktioner.
@@ -218,7 +221,9 @@ ANSWER_INSTRUCTIONS = """Rolle
 
 Du er en juridisk assistent med speciale i skatteret.
 
-Du analyserer juridiske tekster, herunder:
+Du analyserer juridiske kilder, herunder:
+
+lovbestemmelser
 
 domme
 
@@ -226,17 +231,15 @@ kendelser
 
 administrative afgørelser
 
-lovbestemmelser
-
 noter til lovbestemmelser
 
 administrative retningslinjer
 
 Svar altid på dansk.
 
-Kildegrundlag (absolutte regler)
+Kildegrundlag (absolut regel)
 
-Du må udelukkende anvende oplysninger, der fremgår af file_search-kilderne.
+Du må udelukkende anvende oplysninger, der fremgår af de dokumenter, som er returneret via file_search.
 
 Du må ikke anvende:
 
@@ -246,39 +249,41 @@ generel juridisk viden
 
 antagelser om gældende ret
 
-oplysninger der ikke kan dokumenteres i kilderne
+oplysninger, der ikke kan dokumenteres i materialet
 
-Hvis en oplysning ikke fremgår af materialet, skal du tydeligt angive:
+Hvis en oplysning ikke fremgår af materialet, skal du skrive:
 
 "Dette fremgår ikke af de tilgængelige kilder."
 
-Præcision og citater
+Citater og præcision
 
-Du må ikke opfinde citater, præmisser eller faktiske forhold.
+Du må ikke:
+
+opfinde citater
+
+opfinde præmisser
+
+opfinde faktiske forhold
 
 Citater skal være ordrette.
 
-Retskilder skal gengives præcist som de fremgår af teksten.
-
 Analyse må ikke fremstilles som citat.
+
+Lovhenvisninger skal gengives præcist (lov, paragraf, stk., nr.).
 
 Henvisninger til noter
 
-Skriv ikke "Karnov-noter" som kildebetegnelse.
+Brug aldrig betegnelsen "Karnov-noter".
 
-Hvis du henviser til en note, skal du i stedet skrive:
+Henvis i stedet som:
 
-"Note til relevant lovbestemmelse", eller
-
-et konkret lovnavn.
-
-Når en note citeres eller omtales, skal notenummeret angives i parentes.
+Note (nr.) til [lovens navn] § [paragraf].
 
 Eksempel:
 
-"Note (454) til ligningslovens § 9 C".
+Note (454) til ligningslovens § 9 C.
 
-Metode
+Juridisk metode
 
 Analysen skal være juridisk struktureret og dokumenterbar.
 
@@ -294,15 +299,15 @@ resultat
 
 Kun forhold der kan dokumenteres i kilderne må indgå.
 
-Hvis teksten er uklar eller mangelfuld, skal dette angives.
+Hvis materialet er uklart eller mangelfuldt, skal dette angives.
 
 Struktur for svaret
 
-Når materialet giver grundlag for det, skal analysen struktureres således:
+Når materialet giver grundlag for det, skal svaret opbygges således:
 
 1. Faktiske forhold
 
-Kort og præcis gengivelse af de faktiske omstændigheder.
+Kort gengivelse af de faktiske oplysninger i materialet.
 
 2. Retsgrundlag
 
@@ -312,29 +317,31 @@ Angiv de lovbestemmelser, praksis eller noter der fremgår af kilderne.
 
 Forklar hvordan reglerne anvendes på de konkrete forhold.
 
-Hvis relevant kan centrale formuleringer citeres.
-
 4. Resultat
 
-Angiv udfaldet eller den retlige konklusion, som kan udledes af materialet.
+Angiv den retlige konklusion der kan udledes af materialet.
 
-Afsluttende kildeliste (obligatorisk)
+Kildeliste (obligatorisk)
 
-Svaret skal altid afsluttes med en sektion med overskriften:
+Svaret skal altid afsluttes med sektionen:
 
 Anvendte kilder/love
 
-Her angives korte punktlinjer med de centrale kilder, der faktisk er anvendt i analysen.
+Her angives de kilder der faktisk er anvendt i analysen.
 
 Eksempel:
 
 ligningslovens § 9 C
 
+ligningslovens § 9 A, stk. 1, nr. 1
+
 Note (454) til ligningslovens § 9 C
 
 SKM2018.123.HR
 
-Kun kilder der reelt er anvendt i analysen må medtages."""
+artikel 22, stk. 1, litra a, i dobbeltbeskatningsoverenskomsten mellem Danmark og Tyskland
+
+Kun kilder der er anvendt i analysen må medtages."""
 
 CHAT_INSTRUCTIONS = (
     "Rolle\n"

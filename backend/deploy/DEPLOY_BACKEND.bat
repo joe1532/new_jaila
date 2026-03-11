@@ -12,8 +12,9 @@ set "SSH_USER=maestro"
 set "SSH_HOST=168.119.63.168"
 set "REMOTE_APP=/opt/jaila_backend"
 set "REMOTE_TMP=~/jaila_backend_tmp"
+set "REMOTE_DATA_DIR=/var/lib/jaila/analyse_logs"
 
-set /p SUDO_PASS=Indtast sudo password for server: 
+if not defined SUDO_PASS set /p SUDO_PASS=Indtast sudo password for server: 
 
 echo.
 echo [1/7] Pakker backend filer lokalt...
@@ -33,6 +34,10 @@ if errorlevel 1 goto :remote_failed
 
 echo [4/7] Synkroniserer filer...
 ssh -i "%SSH_KEY%" %SSH_USER%@%SSH_HOST% "echo %SUDO_PASS% | sudo -S rsync -a --delete %REMOTE_TMP%/ %REMOTE_APP%/ && echo %SUDO_PASS% | sudo -S chown -R www-data:www-data %REMOTE_APP%"
+if errorlevel 1 goto :remote_failed
+
+echo [4b/7] Sikrer persistent datamappe for analyse-logs...
+ssh -i "%SSH_KEY%" %SSH_USER%@%SSH_HOST% "echo %SUDO_PASS% | sudo -S mkdir -p %REMOTE_DATA_DIR% && echo %SUDO_PASS% | sudo -S chown -R www-data:www-data /var/lib/jaila"
 if errorlevel 1 goto :remote_failed
 
 echo [5/7] Installerer Python dependencies i venv...
@@ -73,4 +78,4 @@ echo.
 :done
 if exist backend-deploy.tar.gz del /f /q backend-deploy.tar.gz
 endlocal
-pause
+if not defined SKIP_PAUSE pause

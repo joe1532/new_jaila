@@ -84,6 +84,13 @@
             <aside class="sagsbehandling-side-panel">
               <h2>Sagsbehandling handlinger</h2>
               <div class="sagsbehandling-side-actions">
+                <button id="sagsStartCaseBtn" type="button" class="button-secondary">Start ny sag</button>
+                <select id="sagsCaseSelect" class="input">
+                  <option value="">Ingen sag valgt</option>
+                </select>
+              </div>
+              <div class="sags-divider" aria-hidden="true"></div>
+              <div class="sagsbehandling-side-actions">
                 <button
                   type="button"
                   class="button-secondary sags-subtab-button sags-subtab-button-active"
@@ -136,6 +143,13 @@
             </aside>
             <section class="result sagsbehandling-main-panel">
               <h2 id="sagsbehandlingTitle">Sagsbehandling - Skattepligt og ligningsfrist</h2>
+              <div id="sagsContextPanel" class="sags-context-panel hidden">
+                <div class="sags-context-header">
+                  <strong id="sagsContextTitle">Analyse-kontekst</strong>
+                  <button id="sagsContextClearBtn" type="button" class="button-secondary sags-facts-mini">Fjern alle</button>
+                </div>
+                <div id="sagsContextList" class="sags-context-list" aria-label="Valgte analyse-kontekster"></div>
+              </div>
               <div id="sagsbehandlingConversation" class="conversation">
                 <div class="msg msg-system">
                   Dummy-fane for nu. Vælg undertab i højre side for at skifte funktion.
@@ -143,6 +157,8 @@
               </div>
               <div class="actions">
                 <button id="sagsbehandlingSendBtn" type="button" disabled>Send (dummy)</button>
+                <button id="sagsbehandlingCopyAnswerBtn" type="button" class="button-secondary" disabled>Kopier svar</button>
+                <button id="sagsbehandlingLockBtn" type="button" class="button-secondary" disabled>Lås</button>
                 <button id="sagsbehandlingClearBtn" type="button" class="button-secondary">Ryd</button>
               </div>
               <section id="sagsFactsPanel" class="sags-facts-panel sags-facts-overlay hidden" aria-label="Fakta til analyse">
@@ -239,6 +255,11 @@
               <ul id="chatContextList" class="context-file-list">
                 <li class="context-file-item-empty">Ingen filer uploadet endnu.</li>
               </ul>
+              <div class="analyse-divider" aria-hidden="true"></div>
+              <div class="analyse-side-log">
+                <h2>Chat-historik</h2>
+                <div id="chatLogContent" class="analyse-log-content"></div>
+              </div>
             </aside>
             <section class="result chat-main-panel">
               <h2>Chat</h2>
@@ -261,6 +282,6 @@
     </section>
   </main>
 
-  <script type="module" src="/clean-start/js/app.js?v=20260309f"></script>
+  <script type="module" src="/clean-start/js/app.js?v=20260311e"></script>
 </body>
 </html>

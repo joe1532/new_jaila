@@ -660,6 +660,102 @@ a {
   position: relative;
 }
 
+.sags-context-panel {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px;
+  background: rgba(154, 166, 191, 0.08);
+  margin-bottom: 10px;
+}
+
+.sags-context-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.sags-context-meta {
+  margin: 0 0 8px;
+  font-size: 0.85rem;
+}
+
+.sags-context-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.sags-context-item {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.sags-context-item-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.sags-context-item-title {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.sags-context-item-meta {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+.sags-context-item-preview-wrap {
+  margin: 8px 0;
+}
+
+.sags-context-item-preview-wrap summary {
+  cursor: pointer;
+  font-size: 0.9rem;
+}
+
+.sags-context-picker-box {
+  max-width: 560px;
+}
+
+.sags-context-picker-options {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 10px 0 14px;
+}
+
+.sags-context-picker-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sags-context-item-preview-wrap .sags-context-preview {
+  margin-top: 6px;
+  width: 100%;
+}
+
+.sags-context-preview {
+  min-height: 100px;
+  max-height: 180px;
+}
+
+.sags-context-approve {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  margin-top: 8px;
+  font-size: 0.9rem;
+}
+
 .chat-layout {
   display: flex;
   flex-direction: row;
@@ -879,6 +975,18 @@ a {
 .msg-assistant {
   background: rgba(59, 130, 246, 0.12);
   border: 1px solid rgba(59, 130, 246, 0.35);
+}
+
+.msg-assistant .sags-output-editable {
+  min-height: 200px;
+  font-family: inherit;
+  white-space: pre-wrap;
+  margin-bottom: 0;
+}
+
+.msg-assistant-label {
+  font-weight: 700;
+  margin-bottom: 8px;
 }
 
 .msg-system {

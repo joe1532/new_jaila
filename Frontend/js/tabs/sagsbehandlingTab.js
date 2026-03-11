@@ -37,7 +37,7 @@ const SUBTAB_CONFIG = {
       "Beregn credit/exemption (dummy)",
       "Dokumentationscheck (dummy)",
     ],
-    enabled: false,
+    enabled: true,
   },
   andet: {
     title: "Sagsbehandling - Andet",
@@ -47,7 +47,7 @@ const SUBTAB_CONFIG = {
       "Klassificer problemstilling (dummy)",
       "Lav handlingsplan (dummy)",
     ],
-    enabled: false,
+    enabled: true,
   },
 };
 
@@ -284,12 +284,24 @@ function withRequiredMarker(label, isRequired) {
 }
 
 export function renderSagsbehandling(elements, state) {
+  const activeCaseId = String(state.sagsbehandling.activeCaseId || "").trim();
+  const activeCaseTitle = (() => {
+    const cases = Array.isArray(state.sagsbehandling.cases) ? state.sagsbehandling.cases : [];
+    const found = cases.find((entry) => String(entry.id || "") === activeCaseId);
+    return found ? String(found.title || "Ny sag") : "";
+  })();
   const activeSubtab = state.sagsbehandling.activeSubtab || "skattepligt_ligningsfrist";
   const cfg = SUBTAB_CONFIG[activeSubtab] || SUBTAB_CONFIG.skattepligt_ligningsfrist;
   const factsUiCfg =
     FACTS_UI_CONFIG[activeSubtab] || FACTS_UI_CONFIG.skattepligt_ligningsfrist;
   const requiredFields = new Set(factsUiCfg.requiredFields || []);
   const factsBySubtab = state.sagsbehandling.factsBySubtab || {};
+  const contextBySubtab = state.sagsbehandling.contextBySubtab || {};
+  const contextList = Array.isArray(contextBySubtab[activeSubtab])
+    ? contextBySubtab[activeSubtab]
+    : contextBySubtab[activeSubtab]
+      ? [contextBySubtab[activeSubtab]]
+      : [];
   const facts = {
     incomeYears: "",
     foreignIncome: "",
@@ -306,9 +318,13 @@ export function renderSagsbehandling(elements, state) {
     residenceSinceYear: "",
     ...(factsBySubtab[activeSubtab] || {}),
   };
+  const messages = state.sagsbehandling.messages || [];
+  const subtabOutputLocked = state.sagsbehandling.subtabOutputLocked || {};
+  const isOutputLocked = Boolean(subtabOutputLocked[activeSubtab]);
 
   if (elements.sagsbehandlingTitle) {
-    elements.sagsbehandlingTitle.textContent = cfg.title;
+    const caseLabel = activeCaseId ? ` [Sag: ${activeCaseTitle || activeCaseId}]` : " [Ingen aktiv sag]";
+    elements.sagsbehandlingTitle.textContent = `${cfg.title}${caseLabel}`;
   }
 
   if (elements.sagsbehandlingInput) {
@@ -375,12 +391,87 @@ export function renderSagsbehandling(elements, state) {
         hasSpecialTaxLiabilitySubtype &&
         hasRequiredDetailForSelectedFactor &&
         hasValidResidenceFact;
-    elements.sagsbehandlingSendBtn.disabled = !cfg.enabled || !requiredFactsComplete;
+    const contextReady =
+      contextList.length === 0 || contextList.every((c) => Boolean(c.approved));
+    const hasCase = Boolean(activeCaseId);
+    elements.sagsbehandlingSendBtn.disabled = !cfg.enabled || !requiredFactsComplete || !hasCase;
+    if (elements.sagsbehandlingSendBtn.disabled === false && !contextReady) {
+      elements.sagsbehandlingSendBtn.disabled = true;
+    }
     elements.sagsbehandlingSendBtn.textContent = cfg.enabled ? "Send" : "Send (kommer snart)";
+  }
+  if (elements.sagsbehandlingCopyAnswerBtn) {
+    const hasAssistantAnswer = messages.some(
+      (entry) => entry.role === "assistant" && String(entry.text || "").trim().length > 0,
+    );
+    elements.sagsbehandlingCopyAnswerBtn.disabled = !hasAssistantAnswer;
+  }
+
+  if (elements.sagsbehandlingLockBtn) {
+    const hasAssistantAnswer = messages.some(
+      (entry) => entry.role === "assistant" && String(entry.text || "").trim().length > 0,
+    );
+    elements.sagsbehandlingLockBtn.disabled = !hasAssistantAnswer;
+    elements.sagsbehandlingLockBtn.textContent = isOutputLocked ? "Lås op" : "Lås";
+    elements.sagsbehandlingLockBtn.setAttribute("data-sags-lock-action", isOutputLocked ? "unlock" : "lock");
+  }
+
+  if (elements.sagsContextPanel && elements.sagsContextList) {
+    const hasContext = contextList.length > 0;
+    elements.sagsContextPanel.classList.toggle("hidden", !hasContext);
+    if (hasContext) {
+      elements.sagsContextList.innerHTML = "";
+      contextList.forEach((ctx) => {
+        const item = document.createElement("div");
+        item.className = "sags-context-item";
+        item.setAttribute("data-context-log-id", ctx.logId || "");
+        const header = document.createElement("div");
+        header.className = "sags-context-item-header";
+        const title = document.createElement("strong");
+        title.className = "sags-context-item-title";
+        title.textContent = ctx.title || "Uden titel";
+        header.appendChild(title);
+        const meta = document.createElement("span");
+        meta.className = "sags-context-item-meta";
+        meta.textContent = `${ctx.createdAt || ""}`;
+        header.appendChild(meta);
+        const removeBtn = document.createElement("button");
+        removeBtn.type = "button";
+        removeBtn.className = "button-secondary sags-facts-mini";
+        removeBtn.textContent = "Fjern";
+        removeBtn.setAttribute("data-action", "remove-sags-context");
+        removeBtn.setAttribute("data-context-log-id", ctx.logId || "");
+        header.appendChild(removeBtn);
+        item.appendChild(header);
+        const previewWrap = document.createElement("details");
+        previewWrap.className = "sags-context-item-preview-wrap";
+        const summary = document.createElement("summary");
+        summary.textContent = "Vis kontekst";
+        previewWrap.appendChild(summary);
+        const preview = document.createElement("textarea");
+        preview.className = "input sags-context-preview";
+        preview.rows = 4;
+        preview.readOnly = true;
+        preview.value = ctx.previewText || "";
+        previewWrap.appendChild(preview);
+        item.appendChild(previewWrap);
+        const approveLabel = document.createElement("label");
+        approveLabel.className = "sags-context-approve";
+        const approveCheck = document.createElement("input");
+        approveCheck.type = "checkbox";
+        approveCheck.checked = Boolean(ctx.approved);
+        approveCheck.setAttribute("data-context-log-id", ctx.logId || "");
+        approveLabel.appendChild(approveCheck);
+        approveLabel.appendChild(
+          document.createTextNode(" Jeg har gennemgået konteksten og vil bruge den"),
+        );
+        item.appendChild(approveLabel);
+        elements.sagsContextList.appendChild(item);
+      });
+    }
   }
 
   if (elements.sagsbehandlingConversation) {
-    const messages = state.sagsbehandling.messages || [];
     const container = elements.sagsbehandlingConversation;
     container.innerHTML = "";
     if (!messages.length) {
@@ -391,7 +482,13 @@ export function renderSagsbehandling(elements, state) {
         : "Denne undertab er ikke aktiveret endnu.";
       container.appendChild(msg);
     } else {
-      messages.forEach((entry) => {
+      const lastAssistantIdx = (() => {
+        for (let i = messages.length - 1; i >= 0; i -= 1) {
+          if (messages[i].role === "assistant") return i;
+        }
+        return -1;
+      })();
+      messages.forEach((entry, idx) => {
         const msg = document.createElement("div");
         msg.classList.add("msg");
         if (entry.role === "user") {
@@ -399,7 +496,37 @@ export function renderSagsbehandling(elements, state) {
           msg.textContent = "Du: " + (entry.text || "");
         } else if (entry.role === "assistant") {
           msg.classList.add("msg-assistant");
-          msg.textContent = "JAILA:\n\n" + (entry.text || "");
+          const isLastAssistant = idx === lastAssistantIdx;
+          const isEditable = isLastAssistant && !isOutputLocked;
+          if (isEditable) {
+            const label = document.createElement("div");
+            label.className = "msg-assistant-label";
+            label.textContent = "JAILA:";
+            msg.appendChild(label);
+            const textarea = document.createElement("textarea");
+            textarea.className = "input sags-output-editable msg-assistant-text";
+            textarea.rows = 12;
+            textarea.placeholder = "Rediger JAILA-svar her...";
+            textarea.dataset.sagsSubtab = activeSubtab;
+            textarea.value = entry.text || "";
+            textarea.addEventListener("blur", () => {
+              const text = String(textarea.value || "").trim();
+              container.dispatchEvent(new CustomEvent("sags-output-edit", {
+                detail: { subtab: activeSubtab, text },
+                bubbles: true,
+              }));
+            });
+            msg.appendChild(textarea);
+          } else {
+            const label = document.createElement("div");
+            label.className = "msg-assistant-label";
+            label.textContent = "JAILA:";
+            msg.appendChild(label);
+            const pre = document.createElement("pre");
+            pre.className = "msg-assistant-text";
+            pre.textContent = entry.text || "";
+            msg.appendChild(pre);
+          }
         } else {
           msg.classList.add("msg-system");
           msg.textContent = entry.text || "";

@@ -1,5 +1,12 @@
 import { analyzeQuestion, analyzeQuestionStream } from "./api/analyzeApi.js";
-import { getAnalyseLog, listAnalyseLogs, saveAnalyseLog } from "./api/analyseLogsApi.js";
+import {
+  deleteAnalyseLog,
+  getAnalyseLog,
+  listAnalyseLogs,
+  saveAnalyseLog,
+} from "./api/analyseLogsApi.js";
+import { deleteChatLog, getChatLog, listChatLogs, saveChatLog } from "./api/chatLogsApi.js";
+import { createCase, getCase, listCases, updateCase } from "./api/casesApi.js";
 import { getSagsLegalBasis } from "./api/sagsbehandlingApi.js";
 import { exportChatPdf, sendChat, sendChatStream } from "./api/chatApi.js";
 import {
@@ -14,6 +21,7 @@ import {
   getActiveUser,
   getOrCreateChatSessionId,
   resetChatSessionId,
+  setChatSessionId,
   setActiveTab,
   setActiveUser,
 } from "./state/session.js";
@@ -125,6 +133,13 @@ const SPECIAL_TAX_LIABILITY_MODE_DETAILS = {
   request_information_schema: "anmodning om oplysningsskema",
 };
 
+const SAGS_CONTEXT_TARGET_SUBTABS = [
+  { id: "opgoerelse_indkomst", label: "Opgørelse af indkomst" },
+  { id: "beskatningsret_indkomst", label: "Beskatningsret til indkomst" },
+  { id: "lempelse", label: "Lempelse" },
+  { id: "andet", label: "Andet" },
+];
+
 const elements = {
   loginSection: document.getElementById("loginSection"),
   appSection: document.getElementById("appSection"),
@@ -150,7 +165,15 @@ const elements = {
   sagsbehandlingConversation: document.getElementById("sagsbehandlingConversation"),
   sagsbehandlingInput: document.getElementById("sagsbehandlingInput"),
   sagsbehandlingSendBtn: document.getElementById("sagsbehandlingSendBtn"),
+  sagsbehandlingCopyAnswerBtn: document.getElementById("sagsbehandlingCopyAnswerBtn"),
+  sagsbehandlingLockBtn: document.getElementById("sagsbehandlingLockBtn"),
   sagsbehandlingClearBtn: document.getElementById("sagsbehandlingClearBtn"),
+  sagsStartCaseBtn: document.getElementById("sagsStartCaseBtn"),
+  sagsCaseSelect: document.getElementById("sagsCaseSelect"),
+  sagsContextPanel: document.getElementById("sagsContextPanel"),
+  sagsContextTitle: document.getElementById("sagsContextTitle"),
+  sagsContextList: document.getElementById("sagsContextList"),
+  sagsContextClearBtn: document.getElementById("sagsContextClearBtn"),
   sagsFunctionList: document.getElementById("sagsFunctionList"),
   sagsSubtabButtons: Array.from(document.querySelectorAll(".sags-subtab-button")),
   sagsFactsToggleBtn: document.getElementById("sagsFactsToggleBtn"),
@@ -184,6 +207,7 @@ const elements = {
   chatContextFile: document.getElementById("chatContextFile"),
   chatContextUploadBtn: document.getElementById("chatContextUploadBtn"),
   chatContextList: document.getElementById("chatContextList"),
+  chatLogContent: document.getElementById("chatLogContent"),
 };
 
 function renderStatus() {
@@ -216,6 +240,31 @@ function setStatus(text, mode) {
 
 let analyseAbortController = null;
 let chatAbortController = null;
+let sagsCaseSaveChain = Promise.resolve();
+let sagsCaseSaveDebounceTimer = null;
+const SAGS_CASE_SAVE_DEBOUNCE_MS = 400;
+
+function generateLocalSessionId(prefix) {
+  const safePrefix = String(prefix || "session");
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return `${safePrefix}_${crypto.randomUUID()}`;
+  }
+  return `${safePrefix}_${Date.now()}_${Math.floor(Math.random() * 1_000_000)}`;
+}
+
+function getOrCreateAnalyseSessionId() {
+  const current = String((getState().analyse || {}).sessionId || "").trim();
+  if (current) {
+    return current;
+  }
+  const created = generateLocalSessionId("analyse");
+  setState({
+    analyse: {
+      sessionId: created,
+    },
+  });
+  return created;
+}
 
 function setLoading(isLoading) {
   setState({
@@ -251,6 +300,12 @@ function setLoading(isLoading) {
   if (elements.sagsbehandlingClearBtn) {
     elements.sagsbehandlingClearBtn.disabled = isLoading;
   }
+  if (elements.sagsbehandlingCopyAnswerBtn && isLoading) {
+    elements.sagsbehandlingCopyAnswerBtn.disabled = true;
+  }
+  if (elements.sagsbehandlingLockBtn && isLoading) {
+    elements.sagsbehandlingLockBtn.disabled = true;
+  }
   if (elements.pdfLogLink) {
     const canDownload = Boolean(getState().analyse.logPdfUrl);
     elements.pdfLogLink.disabled = isLoading || !canDownload;
@@ -262,6 +317,7 @@ function renderAllTabs() {
   renderAnalyse(elements, state);
   renderChat(elements, state);
   renderSagsbehandling(elements, state);
+  updateSagsCaseSelector();
 }
 
 function switchTab(tabId) {
@@ -293,6 +349,10 @@ function switchTab(tabId) {
 
   if (tabId === "analyse") {
     loadAnalyseSavedLogs();
+  } else if (tabId === "chat") {
+    loadChatSavedLogs();
+  } else if (tabId === "sagsbehandling") {
+    refreshSagsCases();
   }
 }
 
@@ -329,6 +389,7 @@ function showApp(user) {
   elements.sessionLabel.textContent = "Logget ind som: " + user;
   switchTab(getState().ui.activeTab || "chat");
   renderAllTabs();
+  refreshSagsCases();
   loadLegalBasisForSubtab(getState().sagsbehandling.activeSubtab || "skattepligt_ligningsfrist");
   renderStatus();
   setStatus("Klar til analyse.", "ok");
@@ -355,6 +416,7 @@ function resetAnalyse() {
     analyse: {
       ...getInitialAnalyseState(),
       savedLogs: prev.savedLogs || [],
+      sessionId: generateLocalSessionId("analyse"),
     },
   });
   renderAnalyse(elements, getState());
@@ -401,10 +463,386 @@ function onAnalyseLogBackClick() {
   renderAnalyse(elements, getState());
 }
 
+async function onDeleteAnalyseLog(entryId) {
+  const user = getActiveUser();
+  if (!user || !entryId) return;
+  if (!window.confirm("Vil du slette denne gemte analyse?")) {
+    return;
+  }
+  try {
+    const res = await deleteAnalyseLog(user, entryId);
+    const prev = getState().analyse || {};
+    setState({
+      analyse: {
+        ...prev,
+        savedLogs: res.entries || [],
+        selectedLogId: null,
+        selectedLogContent: null,
+      },
+    });
+    renderAnalyse(elements, getState());
+    setStatus("Gemt analyse er slettet.", "ok");
+  } catch (err) {
+    setStatus("Kunne ikke slette analyse-log: " + (err.message || "Fejl"), "error");
+  }
+}
+
+async function loadChatSavedLogs() {
+  const user = (getActiveUser() || "").trim();
+  if (!user) return;
+  try {
+    const res = await listChatLogs(user);
+    const prev = getState().chat || {};
+    setState({ chat: { ...prev, savedLogs: res.entries || [] } });
+    renderChat(elements, getState());
+  } catch (err) {
+    setStatus("Kunne ikke hente gemte chats: " + (err.message || "Fejl"), "error");
+  }
+}
+
+async function onChatLogEntryClick(entryId) {
+  const user = getActiveUser();
+  if (!user) return;
+  try {
+    const entry = await getChatLog(user, entryId);
+    setState({
+      chat: {
+        selectedLogId: entryId,
+        selectedLogContent: entry,
+      },
+    });
+    renderChat(elements, getState());
+  } catch (err) {
+    setStatus("Kunne ikke hente chat-log: " + (err.message || "Fejl"), "error");
+  }
+}
+
+function onChatLogBackClick() {
+  setState({
+    chat: {
+      selectedLogId: null,
+      selectedLogContent: null,
+    },
+  });
+  renderChat(elements, getState());
+}
+
+async function onDeleteChatLog(entryId) {
+  const user = getActiveUser();
+  if (!user || !entryId) return;
+  if (!window.confirm("Vil du slette denne gemte chat?")) {
+    return;
+  }
+  try {
+    const res = await deleteChatLog(user, entryId);
+    const prev = getState().chat || {};
+    setState({
+      chat: {
+        ...prev,
+        savedLogs: res.entries || [],
+        selectedLogId: null,
+        selectedLogContent: null,
+      },
+    });
+    renderChat(elements, getState());
+    setStatus("Gemt chat er slettet.", "ok");
+  } catch (err) {
+    setStatus("Kunne ikke slette chat-log: " + (err.message || "Fejl"), "error");
+  }
+}
+
+function loadAnalyseFromLogEntry(entry) {
+  const messages = Array.isArray(entry?.messages) && entry.messages.length
+    ? entry.messages
+        .map((msg) => ({
+          role: String(msg.role || "").trim(),
+          text: String(msg.text || "").trim(),
+        }))
+        .filter((msg) => msg.text)
+    : [
+        { role: "user", text: String(entry?.question || "").trim() },
+        { role: "assistant", text: String(entry?.answer || "").trim() },
+      ].filter((msg) => msg.text);
+  const sessionId = String(entry?.session_id || "").trim() || generateLocalSessionId("analyse");
+  setState({
+    analyse: {
+      messages,
+      previousResponseId: entry?.last_response_id || null,
+      usedModel: entry?.used_model || null,
+      answer: String(entry?.answer || "").trim() || "Intet svar endnu.",
+      citations: Array.isArray(entry?.citations) ? entry.citations : [],
+      retrievalResults: Array.isArray(entry?.retrieval_results) ? entry.retrieval_results : [],
+      logPdfUrl: entry?.log_pdf_url || "",
+      logPdfLabel: entry?.log_pdf_filename || "Åbn PDF-log",
+      selectedLogId: null,
+      selectedLogContent: null,
+      question: "",
+      sessionId,
+    },
+  });
+  switchTab("analyse");
+  renderAnalyse(elements, getState());
+  setStatus("Analyse indlæst fra historik.", "ok");
+}
+
+function loadChatFromLogEntry(entry) {
+  const messages = Array.isArray(entry?.messages)
+    ? entry.messages
+        .map((msg) => ({
+          role: String(msg.role || "").trim(),
+          text: String(msg.text || "").trim(),
+        }))
+        .filter((msg) => msg.text)
+    : [];
+  setState({
+    chat: {
+      messages,
+      previousResponseId: entry?.last_response_id || null,
+      usedModel: entry?.used_model || null,
+      selectedLogId: null,
+      selectedLogContent: null,
+      inputText: "",
+    },
+  });
+  if (entry?.session_id) {
+    setChatSessionId(entry.session_id);
+  }
+  switchTab("chat");
+  renderChat(elements, getState());
+  setStatus("Chat indlæst fra historik.", "ok");
+}
+
+function buildSagsContextPreviewFromLog(entry) {
+  if (!entry) return "";
+  const lines = [];
+  lines.push("Tidligere analyse-kontekst (gennemgået af bruger)");
+  lines.push(`Titel: ${entry.title || "Uden titel"}`);
+  lines.push(`Tidspunkt: ${entry.created_at || ""}`);
+  lines.push(`Spørgsmål: ${entry.question || ""}`);
+  lines.push("");
+  lines.push("Tidligere analyse/svar:");
+  lines.push(entry.answer || "(Tomt svar)");
+  return lines.join("\n");
+}
+
+function buildSagsContextPreviewFromChatLog(entry) {
+  if (!entry) return "";
+  const lines = [];
+  lines.push("Tidligere chat-kontekst (gennemgået af bruger)");
+  lines.push(`Titel: ${entry.title || "Chat uden titel"}`);
+  lines.push(`Tidspunkt: ${entry.updated_at || entry.created_at || ""}`);
+  lines.push("");
+  lines.push("Samtaleuddrag:");
+  (entry.messages || []).forEach((msg) => {
+    const role = String(msg.role || "").toLowerCase();
+    if (role === "user") {
+      lines.push("Du:");
+    } else if (role === "assistant") {
+      lines.push("JAILA:");
+    } else {
+      lines.push("System:");
+    }
+    lines.push(String(msg.text || ""));
+    lines.push("");
+  });
+  return lines.join("\n");
+}
+
+function chooseSagsContextTargetSubtab(defaultSubtab, options = SAGS_CONTEXT_TARGET_SUBTABS) {
+  const availableOptions = Array.isArray(options) && options.length ? options : SAGS_CONTEXT_TARGET_SUBTABS;
+  return new Promise((resolve) => {
+    const overlay = document.createElement("div");
+    overlay.className = "welcome-overlay";
+    overlay.setAttribute("role", "dialog");
+    overlay.setAttribute("aria-modal", "true");
+
+    const optionsHtml = availableOptions
+      .map((option) => {
+        const checked = option.id === defaultSubtab ? "checked" : "";
+        return `
+          <label class="sags-context-picker-option">
+            <input type="radio" name="sagsContextTargetSubtab" value="${option.id}" ${checked} />
+            <span>${option.label}</span>
+          </label>
+        `;
+      })
+      .join("");
+
+    overlay.innerHTML = `
+      <div class="welcome-overlay-backdrop"></div>
+      <div class="welcome-overlay-box sags-context-picker-box">
+        <h2 class="welcome-overlay-title">Vælg undertab</h2>
+        <p class="welcome-overlay-message">Hvor skal analyse-konteksten bruges?</p>
+        <div class="sags-context-picker-options">${optionsHtml}</div>
+        <div class="actions">
+          <button type="button" class="button-secondary" data-action="cancel">Annuller</button>
+          <button type="button" data-action="confirm">Vælg</button>
+        </div>
+      </div>
+    `;
+
+    const close = (value) => {
+      overlay.remove();
+      resolve(value);
+    };
+    const onCancel = () => close(null);
+    const onConfirm = () => {
+      const selected = overlay.querySelector(
+        "input[name='sagsContextTargetSubtab']:checked",
+      );
+      const value = selected instanceof HTMLInputElement ? selected.value : "";
+      close(value || "");
+    };
+
+    overlay.querySelector("[data-action='cancel']")?.addEventListener("click", onCancel);
+    overlay.querySelector("[data-action='confirm']")?.addEventListener("click", onConfirm);
+    overlay.querySelector(".welcome-overlay-backdrop")?.addEventListener("click", onCancel);
+    document.body.appendChild(overlay);
+  });
+}
+
+async function onUseAnalyseLogAsSagsContext(entryId) {
+  const user = getActiveUser();
+  if (!user) return;
+  const currentSubtab = getState().sagsbehandling.activeSubtab || "";
+  const defaultSubtab = SAGS_CONTEXT_TARGET_SUBTABS.some((option) => option.id === currentSubtab)
+    ? currentSubtab
+    : "lempelse";
+  const selectedSubtab = await chooseSagsContextTargetSubtab(defaultSubtab);
+  if (selectedSubtab === null) {
+    setStatus("Valg af undertab blev annulleret.", "ok");
+    return;
+  }
+  if (!selectedSubtab) {
+    setStatus("Ugyldigt valg af undertab. Prøv igen.", "error");
+    return;
+  }
+  try {
+    const entry = await getAnalyseLog(user, entryId);
+    const previewText = buildSagsContextPreviewFromLog(entry);
+    const existing = getState().sagsbehandling.contextBySubtab || {};
+    const currentList = Array.isArray(existing[selectedSubtab])
+      ? existing[selectedSubtab]
+      : existing[selectedSubtab]
+        ? [existing[selectedSubtab]]
+        : [];
+    const newItem = {
+      logId: entry.id || entryId,
+      sourceType: "analyse",
+      title: entry.title || "Uden titel",
+      createdAt: entry.created_at || "",
+      previewText,
+      approved: false,
+    };
+    if (currentList.some((c) => (c.logId || "") === (newItem.logId || ""))) {
+      setStatus("Konteksten er allerede tilføjet til denne undertab.", "ok");
+      return;
+    }
+    setState({
+      sagsbehandling: {
+        activeSubtab: selectedSubtab,
+        contextBySubtab: {
+          ...existing,
+          [selectedSubtab]: [...currentList, newItem],
+        },
+      },
+    });
+    switchTab("sagsbehandling");
+    renderSagsbehandling(elements, getState());
+    saveCurrentSagsCaseSnapshot();
+    const selectedLabel = (
+      SAGS_CONTEXT_TARGET_SUBTABS.find((option) => option.id === selectedSubtab)?.label
+      || selectedSubtab
+    );
+    setStatus(
+      `Analyse-kontekst er valgt til "${selectedLabel}". Gennemgå og godkend den i sagsbehandling.`,
+      "ok",
+    );
+  } catch (err) {
+    setStatus("Kunne ikke sætte analyse som kontekst: " + (err.message || "Fejl"), "error");
+  }
+}
+
+async function onUseChatLogAsSagsContext(entryId) {
+  const user = getActiveUser();
+  if (!user) return;
+  const allowedSubtabs = SAGS_CONTEXT_TARGET_SUBTABS.filter(
+    (option) => option.id !== "skattepligt_ligningsfrist",
+  );
+  if (!allowedSubtabs.length) {
+    setStatus("Ingen undertabs er tilgængelige for chat-kontekst.", "error");
+    return;
+  }
+  const currentSubtab = getState().sagsbehandling.activeSubtab || "";
+  const defaultSubtab = allowedSubtabs.some((option) => option.id === currentSubtab)
+    ? currentSubtab
+    : "lempelse";
+  const selectedSubtab = await chooseSagsContextTargetSubtab(defaultSubtab, allowedSubtabs);
+  if (selectedSubtab === null) {
+    setStatus("Valg af undertab blev annulleret.", "ok");
+    return;
+  }
+  if (!selectedSubtab) {
+    setStatus("Ugyldigt valg af undertab. Prøv igen.", "error");
+    return;
+  }
+  if (selectedSubtab === "skattepligt_ligningsfrist") {
+    setStatus("Chat-kontekst kan ikke bruges i Skattepligt og ligningsfrist.", "error");
+    return;
+  }
+  try {
+    const entry = await getChatLog(user, entryId);
+    const previewText = buildSagsContextPreviewFromChatLog(entry);
+    const existing = getState().sagsbehandling.contextBySubtab || {};
+    const currentList = Array.isArray(existing[selectedSubtab])
+      ? existing[selectedSubtab]
+      : existing[selectedSubtab]
+        ? [existing[selectedSubtab]]
+        : [];
+    const newItem = {
+      logId: `chat_${entry.id || entryId}`,
+      sourceType: "chat",
+      sourceEntryId: entry.id || entryId,
+      title: entry.title || "Chat uden titel",
+      createdAt: entry.updated_at || entry.created_at || "",
+      previewText,
+      approved: false,
+    };
+    if (currentList.some((c) => (c.logId || "") === (newItem.logId || ""))) {
+      setStatus("Konteksten er allerede tilføjet til denne undertab.", "ok");
+      return;
+    }
+    setState({
+      sagsbehandling: {
+        activeSubtab: selectedSubtab,
+        contextBySubtab: {
+          ...existing,
+          [selectedSubtab]: [...currentList, newItem],
+        },
+      },
+    });
+    switchTab("sagsbehandling");
+    renderSagsbehandling(elements, getState());
+    saveCurrentSagsCaseSnapshot();
+    const selectedLabel = (
+      SAGS_CONTEXT_TARGET_SUBTABS.find((option) => option.id === selectedSubtab)?.label
+      || selectedSubtab
+    );
+    setStatus(
+      `Chat-kontekst er valgt til "${selectedLabel}". Gennemgå og godkend den i sagsbehandling.`,
+      "ok",
+    );
+  } catch (err) {
+    setStatus("Kunne ikke sætte chat som kontekst: " + (err.message || "Fejl"), "error");
+  }
+}
+
 function resetChat() {
+  const prev = getState().chat || {};
   const currentContextFiles = getState().chat.contextFiles || [];
   const initialChat = getInitialChatState();
   initialChat.contextFiles = currentContextFiles;
+  initialChat.savedLogs = prev.savedLogs || [];
   setState({ chat: initialChat });
   renderChat(elements, getState());
 }
@@ -466,13 +904,129 @@ function updateLastAnalyseMessageText(text) {
 }
 
 function addSagsbehandlingMessage(role, text) {
-  const currentMessages = getState().sagsbehandling.messages || [];
+  const sags = getState().sagsbehandling || {};
+  const activeSubtab = sags.activeSubtab || "skattepligt_ligningsfrist";
+  const currentMessages = sags.messages || [];
+  const messagesBySubtab = sags.messagesBySubtab || {};
+  const updatedMessages = currentMessages.concat([{ role: role, text: text || "" }]);
   setState({
     sagsbehandling: {
-      messages: currentMessages.concat([{ role: role, text: text || "" }]),
+      messages: updatedMessages,
+      messagesBySubtab: {
+        ...messagesBySubtab,
+        [activeSubtab]: updatedMessages,
+      },
     },
   });
   renderSagsbehandling(elements, getState());
+}
+
+function getLatestSagsbehandlingAssistantAnswer() {
+  const messages = getState().sagsbehandling.messages || [];
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    if (messages[i].role === "assistant") {
+      return String(messages[i].text || "").replace(/^JAILA:\s*/i, "").trim();
+    }
+  }
+  return "";
+}
+
+function normalizeSagsAssistantText(text) {
+  return String(text || "").trim();
+}
+
+function saveSagsbehandlingEditedOutput(subtab, text, options = {}) {
+  const { persist = true, rerender = true } = options;
+  const normalizedText = normalizeSagsAssistantText(text);
+  const sags = getState().sagsbehandling || {};
+  const messagesBySubtab = sags.messagesBySubtab || {};
+  const messages = messagesBySubtab[subtab] || [];
+  let lastAssistantIdx = -1;
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    if (messages[i].role === "assistant") {
+      lastAssistantIdx = i;
+      break;
+    }
+  }
+  if (lastAssistantIdx < 0) return;
+  const previousText = String(messages[lastAssistantIdx]?.text || "").trim();
+  if (previousText === normalizedText) return;
+  const updated = [...messages];
+  updated[lastAssistantIdx] = { ...updated[lastAssistantIdx], text: normalizedText };
+  const subtabOutputs = sags.subtabOutputs || {};
+  const currentOutput = subtabOutputs[subtab] || {};
+  setState({
+    sagsbehandling: {
+      messagesBySubtab: {
+        ...messagesBySubtab,
+        [subtab]: updated,
+      },
+      messages: sags.activeSubtab === subtab ? updated : sags.messages,
+      subtabOutputs: {
+        ...subtabOutputs,
+        [subtab]: {
+          ...currentOutput,
+          answer: normalizedText,
+        },
+      },
+    },
+  });
+  if (persist) {
+    scheduleSagsCaseSnapshotSave();
+  }
+  if (rerender) {
+    renderSagsbehandling(elements, getState());
+  }
+}
+
+async function onSagsbehandlingLockToggle() {
+  const ui = getState().ui || {};
+  if (ui.loading) return;
+  const sags = getState().sagsbehandling || {};
+  const activeSubtab = sags.activeSubtab || "skattepligt_ligningsfrist";
+  const isLocked = Boolean((sags.subtabOutputLocked || {})[activeSubtab]);
+  const editable = elements.sagsbehandlingConversation?.querySelector(".sags-output-editable");
+  if (editable instanceof HTMLTextAreaElement && !isLocked) {
+    const text = normalizeSagsAssistantText(editable.value);
+    saveSagsbehandlingEditedOutput(activeSubtab, text, { persist: false, rerender: false });
+  }
+  setState({
+    sagsbehandling: {
+      subtabOutputLocked: {
+        ...(sags.subtabOutputLocked || {}),
+        [activeSubtab]: !isLocked,
+      },
+    },
+  });
+  await saveCurrentSagsCaseSnapshot();
+  renderSagsbehandling(elements, getState());
+  setStatus(isLocked ? "Tekst låst op – du kan nu redigere." : "Tekst låst – beskyttet mod ændringer.", "ok");
+}
+
+async function copySagsbehandlingAnswer() {
+  const answerText = getLatestSagsbehandlingAssistantAnswer();
+  if (!answerText) {
+    setStatus("Der er intet svar at kopiere endnu.", "error");
+    return;
+  }
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(answerText);
+    } else {
+      const temp = document.createElement("textarea");
+      temp.value = answerText;
+      temp.setAttribute("readonly", "");
+      temp.style.position = "absolute";
+      temp.style.left = "-9999px";
+      document.body.appendChild(temp);
+      temp.select();
+      document.execCommand("copy");
+      temp.remove();
+    }
+    setStatus("Svar kopieret til udklipsholder.", "ok");
+  } catch (_err) {
+    setStatus("Kunne ikke kopiere svar til udklipsholder.", "error");
+  }
 }
 
 function updateSagsFactsForActiveSubtab(patch) {
@@ -708,6 +1262,170 @@ async function loadLegalBasisForSubtab(subtab) {
   }
 }
 
+function normalizeMessagesForSave(messages) {
+  return (Array.isArray(messages) ? messages : [])
+    .map((msg) => ({
+      role: String(msg?.role || "").trim(),
+      text: String(msg?.text || "").trim(),
+    }))
+    .filter((msg) => msg.text);
+}
+
+function getSagsbehandlingCasePatchFromState() {
+  const sags = getState().sagsbehandling || {};
+  return {
+    active_subtab: sags.activeSubtab || "skattepligt_ligningsfrist",
+    shared_facts: sags.sharedFacts || {},
+    subtab_outputs: sags.subtabOutputs || {},
+    locked_by_subtab: sags.subtabOutputLocked || {},
+    facts_by_subtab: sags.factsBySubtab || {},
+    context_by_subtab: sags.contextBySubtab || {},
+    messages_by_subtab: Object.fromEntries(
+      Object.entries(sags.messagesBySubtab || {}).map(([subtab, messages]) => [
+        subtab,
+        normalizeMessagesForSave(messages),
+      ]),
+    ),
+    previous_response_id_by_subtab: sags.previousResponseIdBySubtab || {},
+    used_model_by_subtab: sags.usedModelBySubtab || {},
+  };
+}
+
+function updateSagsCaseSelector() {
+  if (!elements.sagsCaseSelect) return;
+  const sags = getState().sagsbehandling || {};
+  const cases = Array.isArray(sags.cases) ? sags.cases : [];
+  const activeCaseId = String(sags.activeCaseId || "");
+  elements.sagsCaseSelect.innerHTML = "";
+  const placeholder = document.createElement("option");
+  placeholder.value = "";
+  placeholder.textContent = cases.length ? "Vælg sag..." : "Ingen sag valgt";
+  elements.sagsCaseSelect.appendChild(placeholder);
+  cases.forEach((entry) => {
+    const option = document.createElement("option");
+    option.value = entry.id || "";
+    option.textContent = `${entry.title || "Ny sag"} (${entry.updated_at || entry.created_at || ""})`;
+    if (option.value && option.value === activeCaseId) {
+      option.selected = true;
+    }
+    elements.sagsCaseSelect.appendChild(option);
+  });
+}
+
+function applyCaseToSagsbehandlingState(caseEntry) {
+  const activeSubtab = String(caseEntry?.active_subtab || "skattepligt_ligningsfrist");
+  const messagesBySubtab = caseEntry?.messages_by_subtab && typeof caseEntry.messages_by_subtab === "object"
+    ? caseEntry.messages_by_subtab
+    : {};
+  const previousBySubtab = caseEntry?.previous_response_id_by_subtab && typeof caseEntry.previous_response_id_by_subtab === "object"
+    ? caseEntry.previous_response_id_by_subtab
+    : {};
+  const usedModelBySubtab = caseEntry?.used_model_by_subtab && typeof caseEntry.used_model_by_subtab === "object"
+    ? caseEntry.used_model_by_subtab
+    : {};
+  setState({
+    sagsbehandling: {
+      activeCaseId: caseEntry?.id || null,
+      activeSubtab,
+      activeFunction: "",
+      inputText: "",
+      messagesBySubtab,
+      messages: messagesBySubtab[activeSubtab] || [],
+      previousResponseIdBySubtab: previousBySubtab,
+      previousResponseId: previousBySubtab[activeSubtab] || null,
+      usedModelBySubtab: usedModelBySubtab,
+      usedModel: usedModelBySubtab[activeSubtab] || null,
+      sharedFacts: caseEntry?.shared_facts || {},
+      subtabOutputs: caseEntry?.subtab_outputs || {},
+      subtabOutputLocked: caseEntry?.locked_by_subtab || {},
+      factsBySubtab: caseEntry?.facts_by_subtab || {},
+      contextBySubtab: caseEntry?.context_by_subtab || {},
+      factsPanelOpen: false,
+    },
+  });
+}
+
+async function refreshSagsCases() {
+  const user = (getActiveUser() || "").trim();
+  if (!user) return;
+  try {
+    const res = await listCases(user);
+    setState({
+      sagsbehandling: {
+        cases: res.entries || [],
+      },
+    });
+    updateSagsCaseSelector();
+  } catch (err) {
+    setStatus("Kunne ikke hente sager: " + (err.message || "Fejl"), "error");
+  }
+}
+
+async function saveCurrentSagsCaseSnapshot() {
+  const user = (getActiveUser() || "").trim();
+  const sags = getState().sagsbehandling || {};
+  const activeCaseId = String(sags.activeCaseId || "").trim();
+  if (!user || !activeCaseId) return;
+  const payload = {
+    user,
+    ...getSagsbehandlingCasePatchFromState(),
+  };
+  try {
+    sagsCaseSaveChain = sagsCaseSaveChain.then(async () => {
+      await updateCase(activeCaseId, payload);
+    });
+    await sagsCaseSaveChain;
+  } catch (_err) {
+    // Gemmefejl skal ikke stoppe brugerflow; status vises kun ved direkte case-handlinger.
+  }
+}
+
+function scheduleSagsCaseSnapshotSave() {
+  if (sagsCaseSaveDebounceTimer) {
+    clearTimeout(sagsCaseSaveDebounceTimer);
+  }
+  sagsCaseSaveDebounceTimer = setTimeout(() => {
+    saveCurrentSagsCaseSnapshot();
+  }, SAGS_CASE_SAVE_DEBOUNCE_MS);
+}
+
+async function loadSagsCase(caseId) {
+  const user = (getActiveUser() || "").trim();
+  const safeCaseId = String(caseId || "").trim();
+  if (!user || !safeCaseId) {
+    return;
+  }
+  try {
+    const entry = await getCase(user, safeCaseId);
+    applyCaseToSagsbehandlingState(entry);
+    renderSagsbehandling(elements, getState());
+    updateSagsCaseSelector();
+    loadLegalBasisForSubtab(getState().sagsbehandling.activeSubtab || "skattepligt_ligningsfrist");
+    setStatus("Sag indlæst.", "ok");
+  } catch (err) {
+    setStatus("Kunne ikke indlæse sag: " + (err.message || "Fejl"), "error");
+  }
+}
+
+async function startNewSagsCase() {
+  const user = (getActiveUser() || "").trim();
+  if (!user) {
+    setStatus("Du skal være logget ind for at starte en sag.", "error");
+    return;
+  }
+  try {
+    const entry = await createCase(user, null);
+    applyCaseToSagsbehandlingState(entry);
+    renderSagsbehandling(elements, getState());
+    await refreshSagsCases();
+    updateSagsCaseSelector();
+    loadLegalBasisForSubtab(getState().sagsbehandling.activeSubtab || "skattepligt_ligningsfrist");
+    setStatus("Ny sag startet.", "ok");
+  } catch (err) {
+    setStatus("Kunne ikke starte ny sag: " + (err.message || "Fejl"), "error");
+  }
+}
+
 function tryLogin() {
   const username = (elements.username.value || "").trim().toLowerCase();
   const password = elements.password.value || "";
@@ -736,6 +1454,30 @@ async function logout() {
     clearActiveUser();
     resetAnalyse();
     resetChat();
+    setState({
+      sagsbehandling: {
+        activeCaseId: null,
+        cases: [],
+        activeSubtab: "skattepligt_ligningsfrist",
+        activeFunction: "",
+        inputText: "",
+        messages: [],
+        messagesBySubtab: {},
+        previousResponseId: null,
+        previousResponseIdBySubtab: {},
+        usedModel: null,
+        usedModelBySubtab: {},
+        sharedFacts: {},
+        subtabOutputs: {},
+        subtabOutputLocked: {},
+        factsPanelOpen: false,
+        factsBySubtab: {},
+        contextBySubtab: {},
+        legalBasisBySubtab: {},
+        legalBasisLoadingBySubtab: {},
+        autoLegalBasisTextBySubtab: {},
+      },
+    });
     elements.password.value = "";
     showLogin("Du er logget ud.", "ok");
   } finally {
@@ -771,6 +1513,7 @@ async function runAnalyse() {
 
   const useStream = true;
   try {
+    const analyseSessionId = getOrCreateAnalyseSessionId();
     const previousResponseId = getState().analyse.previousResponseId;
     const ctx = {
       sourceTab: "analyse",
@@ -806,7 +1549,9 @@ async function runAnalyse() {
           setStatus("Analyse færdig. Model: " + (evt.used_model || "ukendt"), "ok");
           const user = getActiveUser();
           if (user) {
+            const snapshotMessages = getState().analyse.messages || [];
             saveAnalyseLog(user, {
+              session_id: analyseSessionId,
               question,
               answer,
               citations: evt.citations || [],
@@ -815,9 +1560,13 @@ async function runAnalyse() {
               used_vector_store_ids: evt.used_vector_store_ids || null,
               log_pdf_filename: evt.log_pdf_filename || null,
               log_pdf_url: evt.log_pdf_url || null,
+              messages: snapshotMessages,
+              last_response_id: evt.response_id || null,
             })
               .then((saved) => {
                 const prev = getState().analyse || {};
+                const existing = Array.isArray(prev.savedLogs) ? prev.savedLogs : [];
+                const filtered = existing.filter((entry) => entry.id !== saved.id);
                 const logs = [
                   {
                     id: saved.id,
@@ -826,7 +1575,7 @@ async function runAnalyse() {
                     log_pdf_filename: saved.log_pdf_filename || null,
                     log_pdf_url: saved.log_pdf_url || null,
                   },
-                  ...(prev.savedLogs || []),
+                  ...filtered,
                 ];
                 setState({ analyse: { savedLogs: logs } });
                 renderAnalyse(elements, getState());
@@ -857,7 +1606,9 @@ async function runAnalyse() {
       setStatus("Analyse færdig. Model: " + (data.used_model || "ukendt"), "ok");
       const user = getActiveUser();
       if (user) {
+        const snapshotMessages = getState().analyse.messages || [];
         saveAnalyseLog(user, {
+          session_id: analyseSessionId,
           question,
           answer: data.answer || "",
           citations: data.citations || [],
@@ -866,9 +1617,13 @@ async function runAnalyse() {
           used_vector_store_ids: null,
           log_pdf_filename: data.log_pdf_filename || null,
           log_pdf_url: data.log_pdf_url || null,
+          messages: snapshotMessages,
+          last_response_id: data.response_id || null,
         })
           .then((saved) => {
             const prev = getState().analyse || {};
+            const existing = Array.isArray(prev.savedLogs) ? prev.savedLogs : [];
+            const filtered = existing.filter((entry) => entry.id !== saved.id);
             const logs = [
               {
                 id: saved.id,
@@ -877,7 +1632,7 @@ async function runAnalyse() {
                 log_pdf_filename: saved.log_pdf_filename || null,
                 log_pdf_url: saved.log_pdf_url || null,
               },
-              ...(prev.savedLogs || []),
+              ...filtered,
             ];
             setState({ analyse: { savedLogs: logs } });
             renderAnalyse(elements, getState());
@@ -905,129 +1660,267 @@ async function runAnalyse() {
   }
 }
 
+function getContextListForSubtab(subtab) {
+  const contextBySubtab = getState().sagsbehandling.contextBySubtab || {};
+  const raw = contextBySubtab[subtab];
+  return Array.isArray(raw) ? raw : raw ? [raw] : [];
+}
+
+function removeSagsContext(logId) {
+  const activeSubtab = getState().sagsbehandling.activeSubtab || "";
+  const contextBySubtab = getState().sagsbehandling.contextBySubtab || {};
+  const list = getContextListForSubtab(activeSubtab);
+  const updated = list.filter((c) => (c.logId || "") !== logId);
+  setState({
+    sagsbehandling: {
+      contextBySubtab: { ...contextBySubtab, [activeSubtab]: updated },
+    },
+  });
+  renderSagsbehandling(elements, getState());
+  setStatus("Analyse-kontekst er fjernet.", "ok");
+  saveCurrentSagsCaseSnapshot();
+}
+
 async function runSagsbehandling() {
+  const activeCaseId = String((getState().sagsbehandling || {}).activeCaseId || "").trim();
+  if (!activeCaseId) {
+    setStatus("Start eller vælg en sag før du sender i Sagsbehandling.", "error");
+    return;
+  }
   const activeSubtab = (getState().sagsbehandling.activeSubtab || "").trim();
-  if (activeSubtab !== "skattepligt_ligningsfrist") {
+  const contextList = getContextListForSubtab(activeSubtab);
+  const hasContext = contextList.length > 0;
+  const allApproved = !hasContext || contextList.every((c) => Boolean(c.approved));
+  if (hasContext && !allApproved) {
+    setStatus("Gennemgå og godkend alle analyse-kontekster før du sender.", "error");
+    return;
+  }
+  const approvedContexts = hasContext
+    ? contextList.filter((c) => c.approved)
+    : [];
+  const approvedAnalyseLogIds = approvedContexts
+    .filter((c) => !c.sourceType || c.sourceType === "analyse")
+    .map((c) => c.logId)
+    .filter(Boolean);
+  const approvedContextBlocks = approvedContexts
+    .map((c) => String(c.previewText || "").trim())
+    .filter((text) => text.length > 0);
+  const isSkattepligtFlow = activeSubtab === "skattepligt_ligningsfrist";
+  let caseFacts = null;
+  let generatedQuestion = "";
+  const sharedFacts = getState().sagsbehandling.sharedFacts || {};
+  const subtabOutputs = getState().sagsbehandling.subtabOutputs || {};
+
+  if (isSkattepligtFlow) {
+    caseFacts = buildSagsCaseFactsPayload(activeSubtab) || {};
+    const missingRequiredFacts = [];
+    if (!String(caseFacts.income_years || "").trim()) {
+      missingRequiredFacts.push("Indkomstår");
+    }
+    if (!Array.isArray(caseFacts.selected_factors) || caseFacts.selected_factors.length !== 1) {
+      missingRequiredFacts.push("Vælg præcis én trigger");
+    }
+    if (
+      Array.isArray(caseFacts.selected_factors) &&
+      caseFacts.selected_factors.includes("self_employed_business") &&
+      !String(caseFacts.self_employed_business_mode || "").trim()
+    ) {
+      missingRequiredFacts.push("Vælg underkategori for selvstændig erhvervsvirksomhed");
+    }
+    if (
+      Array.isArray(caseFacts.selected_factors) &&
+      caseFacts.selected_factors.includes("foreign_income") &&
+      (!Array.isArray(caseFacts.foreign_income_types) || caseFacts.foreign_income_types.length === 0)
+    ) {
+      missingRequiredFacts.push("Vælg mindst én type under indkomst fra udlandet");
+    }
+    if (
+      Array.isArray(caseFacts.selected_factors) &&
+      caseFacts.selected_factors.includes("major_shareholder_status") &&
+      !String(caseFacts.major_shareholder_status_detail || "").trim()
+    ) {
+      missingRequiredFacts.push("Skriv navnet på selskabet");
+    }
+    if (
+      Array.isArray(caseFacts.selected_factors) &&
+      caseFacts.selected_factors.includes("special_tax_liability_conditions") &&
+      !String(caseFacts.special_tax_liability_mode || "").trim()
+    ) {
+      missingRequiredFacts.push("Vælg underpunkt for særlige skattepligtsforhold");
+    }
+    if (
+      Array.isArray(caseFacts.selected_factors) &&
+      caseFacts.selected_factors.includes("foreign_assets_liabilities_significant") &&
+      !String(caseFacts.foreign_assets_liabilities_type || "").trim()
+    ) {
+      missingRequiredFacts.push("Vælg formueforhold under aktiver/passiver i udlandet");
+    }
+    const isGrensegaenger = Array.isArray(caseFacts.selected_factors) &&
+      caseFacts.selected_factors.includes("cross_border_commuter_taxation");
+    if (!isGrensegaenger) {
+      const residenceMode = String(caseFacts.residence_mode || "").trim();
+      if (!residenceMode) {
+        missingRequiredFacts.push("Vælg bopælsfaktum");
+      } else if (residenceMode === "since_year") {
+        if (!/\b(?:19|20)\d{2}\b/.test(String(caseFacts.residence_since_year || "").trim())) {
+          missingRequiredFacts.push("Angiv gyldigt årstal for bopæl i Danmark siden");
+        }
+      }
+      if (!String(caseFacts.residence_fact || "").trim()) {
+        missingRequiredFacts.push("Bopælsfaktum");
+      }
+    }
+    if (missingRequiredFacts.length) {
+      setStatus("Udfyld obligatoriske felter: " + missingRequiredFacts.join(", "), "error");
+      return;
+    }
+
+    generatedQuestion =
+      "Foretag en samlet juridisk vurdering af, om borgeren er omfattet af kort eller ordinær ligningsfrist på baggrund af de oplyste fakta.";
+    const selectedFactors = Array.isArray(caseFacts.selected_factors) ? caseFacts.selected_factors : [];
+    const selectedFactorId = selectedFactors.length === 1 ? String(selectedFactors[0] || "") : "";
+    const selectedFactorText = (() => {
+      if (selectedFactorId === "self_employed_business") {
+        const modeId = String(caseFacts.self_employed_business_mode || "").trim();
+        return SELF_EMPLOYED_MODE_TITLES[modeId] || "Selvstændig erhvervsvirksomhed";
+      }
+      if (selectedFactorId === "special_tax_liability_conditions") {
+        const modeId = String(caseFacts.special_tax_liability_mode || "").trim();
+        return SPECIAL_TAX_LIABILITY_MODE_TITLES[modeId] || "Særlige skattepligtsforhold";
+      }
+      if (selectedFactorId === "foreign_assets_liabilities_significant") {
+        const typeId = String(caseFacts.foreign_assets_liabilities_type || "").trim();
+        return FOREIGN_ASSETS_TYPE_TITLES[typeId] || "Aktiver eller passiver i udlandet";
+      }
+      return SKATTEPLIGT_FACTOR_TITLES[selectedFactorId] || String(caseFacts.foreign_income || "");
+    })();
+    const residenceLine = isGrensegaenger
+      ? ""
+      : "\n- Bopælsfaktum: " + String(caseFacts.residence_fact || "");
+    addSagsbehandlingMessage(
+      "user",
+      "Fakta sendt til vurdering:\n- Indkomstår: "
+        + String(caseFacts.income_years || "")
+        + "\n- Valgt underpunkt: "
+        + selectedFactorText
+        + residenceLine,
+    );
+  } else if (activeSubtab === "lempelse" || activeSubtab === "andet") {
+    const freeText = (elements.sagsbehandlingInput ? elements.sagsbehandlingInput.value : "").trim();
+    const factsBySubtab = getState().sagsbehandling.factsBySubtab || {};
+    const facts = factsBySubtab[activeSubtab] || {};
+    const factsLines = [
+      ["Indkomstår", facts.incomeYears],
+      ["Indkomst/faktum", facts.foreignIncome],
+      ["Aktiver/passiver", facts.foreignAssetsLiabilities],
+      ["Bopælsfaktum", facts.residenceFact],
+      ["Noter", facts.notes],
+    ]
+      .map(([label, value]) => [label, String(value || "").trim()])
+      .filter(([, value]) => value);
+
+    if (!freeText && !factsLines.length) {
+      setStatus("Skriv sagsbeskrivelse eller udfyld fakta før afsendelse.", "error");
+      return;
+    }
+
+    generatedQuestion =
+      `Undertab: ${activeSubtab}\n`
+      + `Sagsbeskrivelse: ${freeText || "(ingen fritekst angivet)"}\n`
+      + (factsLines.length
+        ? `\nFakta:\n${factsLines.map(([label, value]) => `- ${label}: ${value}`).join("\n")}`
+        : "")
+      + "\n\nLav en juridisk vurdering med tydelig struktur og anvendte kilder/love.";
+    addSagsbehandlingMessage(
+      "user",
+      "Sagsspørgsmål sendt til vurdering"
+      + (freeText ? `:\n${freeText}` : "."),
+    );
+  } else {
     addSagsbehandlingMessage(
       "system",
-      "Denne undertab er ikke aktiveret endnu. Brug 'Skattepligt og ligningsfrist'.",
+      "Denne undertab er ikke aktiveret endnu.",
     );
     setStatus("Undertab er ikke aktiveret endnu.", "error");
     return;
   }
-
-  const caseFacts = buildSagsCaseFactsPayload(activeSubtab) || {};
-  const missingRequiredFacts = [];
-  if (!String(caseFacts.income_years || "").trim()) {
-    missingRequiredFacts.push("Indkomstår");
+  if (approvedContextBlocks.length) {
+    generatedQuestion +=
+      "\n\nTidligere godkendt kontekst:\n"
+      + approvedContextBlocks.map((block, idx) => `--- Kontekst ${idx + 1} ---\n${block}`).join("\n\n")
+      + "\n\nBrug konteksten som baggrund. Hvis den strider mod file_search-kilder, følg file_search-kilderne.";
   }
-  if (!Array.isArray(caseFacts.selected_factors) || caseFacts.selected_factors.length !== 1) {
-    missingRequiredFacts.push("Vælg præcis én trigger");
+  const sharedFactLines = Object.entries(sharedFacts || {})
+    .map(([key, value]) => [String(key || "").trim(), String(value ?? "").trim()])
+    .filter(([key, value]) => key && value)
+    .map(([key, value]) => `- ${key}: ${value}`);
+  if (sharedFactLines.length) {
+    generatedQuestion += `\n\nFælles sagsfakta fra tidligere undertabs:\n${sharedFactLines.join("\n")}`;
   }
-  if (
-    Array.isArray(caseFacts.selected_factors) &&
-    caseFacts.selected_factors.includes("self_employed_business") &&
-    !String(caseFacts.self_employed_business_mode || "").trim()
-  ) {
-    missingRequiredFacts.push("Vælg underkategori for selvstændig erhvervsvirksomhed");
+  const priorOutputLines = Object.entries(subtabOutputs || {})
+    .filter(([subtabKey]) => String(subtabKey || "").trim() && String(subtabKey || "").trim() !== activeSubtab)
+    .map(([subtabKey, output]) => {
+      const answer = String((output && output.answer) || "").trim();
+      if (!answer) return "";
+      return `Undertab ${subtabKey}:\n${answer}`;
+    })
+    .filter((block) => block);
+  if (priorOutputLines.length) {
+    generatedQuestion += `\n\nTidligere delresultater i samme sag:\n${priorOutputLines.join("\n\n")}`;
   }
-  if (
-    Array.isArray(caseFacts.selected_factors) &&
-    caseFacts.selected_factors.includes("foreign_income") &&
-    (!Array.isArray(caseFacts.foreign_income_types) || caseFacts.foreign_income_types.length === 0)
-  ) {
-    missingRequiredFacts.push("Vælg mindst én type under indkomst fra udlandet");
-  }
-  if (
-    Array.isArray(caseFacts.selected_factors) &&
-    caseFacts.selected_factors.includes("major_shareholder_status") &&
-    !String(caseFacts.major_shareholder_status_detail || "").trim()
-  ) {
-    missingRequiredFacts.push("Skriv navnet på selskabet");
-  }
-  if (
-    Array.isArray(caseFacts.selected_factors) &&
-    caseFacts.selected_factors.includes("special_tax_liability_conditions") &&
-    !String(caseFacts.special_tax_liability_mode || "").trim()
-  ) {
-    missingRequiredFacts.push("Vælg underpunkt for særlige skattepligtsforhold");
-  }
-  if (
-    Array.isArray(caseFacts.selected_factors) &&
-    caseFacts.selected_factors.includes("foreign_assets_liabilities_significant") &&
-    !String(caseFacts.foreign_assets_liabilities_type || "").trim()
-  ) {
-    missingRequiredFacts.push("Vælg formueforhold under aktiver/passiver i udlandet");
-  }
-  const isGrensegaenger = Array.isArray(caseFacts.selected_factors) &&
-    caseFacts.selected_factors.includes("cross_border_commuter_taxation");
-  if (!isGrensegaenger) {
-    const residenceMode = String(caseFacts.residence_mode || "").trim();
-    if (!residenceMode) {
-      missingRequiredFacts.push("Vælg bopælsfaktum");
-    } else if (residenceMode === "since_year") {
-      if (!/\b(?:19|20)\d{2}\b/.test(String(caseFacts.residence_since_year || "").trim())) {
-        missingRequiredFacts.push("Angiv gyldigt årstal for bopæl i Danmark siden");
-      }
-    }
-    if (!String(caseFacts.residence_fact || "").trim()) {
-      missingRequiredFacts.push("Bopælsfaktum");
-    }
-  }
-  if (missingRequiredFacts.length) {
-    setStatus("Udfyld obligatoriske felter: " + missingRequiredFacts.join(", "), "error");
-    return;
-  }
-
-  const generatedQuestion =
-    "Foretag en samlet juridisk vurdering af, om borgeren er omfattet af kort eller ordinær ligningsfrist på baggrund af de oplyste fakta.";
-  const selectedFactors = Array.isArray(caseFacts.selected_factors) ? caseFacts.selected_factors : [];
-  const selectedFactorId = selectedFactors.length === 1 ? String(selectedFactors[0] || "") : "";
-  const selectedFactorText = (() => {
-    if (selectedFactorId === "self_employed_business") {
-      const modeId = String(caseFacts.self_employed_business_mode || "").trim();
-      return SELF_EMPLOYED_MODE_TITLES[modeId] || "Selvstændig erhvervsvirksomhed";
-    }
-    if (selectedFactorId === "special_tax_liability_conditions") {
-      const modeId = String(caseFacts.special_tax_liability_mode || "").trim();
-      return SPECIAL_TAX_LIABILITY_MODE_TITLES[modeId] || "Særlige skattepligtsforhold";
-    }
-    if (selectedFactorId === "foreign_assets_liabilities_significant") {
-      const typeId = String(caseFacts.foreign_assets_liabilities_type || "").trim();
-      return FOREIGN_ASSETS_TYPE_TITLES[typeId] || "Aktiver eller passiver i udlandet";
-    }
-    return SKATTEPLIGT_FACTOR_TITLES[selectedFactorId] || String(caseFacts.foreign_income || "");
-  })();
-  const residenceLine = isGrensegaenger
-    ? ""
-    : "\n- Bopælsfaktum: " + String(caseFacts.residence_fact || "");
-  addSagsbehandlingMessage(
-    "user",
-    "Fakta sendt til vurdering:\n- Indkomstår: "
-      + String(caseFacts.income_years || "")
-      + "\n- Valgt underpunkt: "
-      + selectedFactorText
-      + residenceLine,
-  );
   renderSagsbehandling(elements, getState());
 
   setLoading(true);
   setStatus("Sender forespørgsel til backend...", "ok");
   try {
     const previousResponseId = getState().sagsbehandling.previousResponseId || null;
+    const activeUser = getActiveUser();
     const data = await analyzeQuestion(generatedQuestion, previousResponseId, {
       sourceTab: "sagsbehandling",
-      subtab: "skattepligt_ligningsfrist",
+      subtab: activeSubtab,
+      caseId: activeCaseId,
+      caseUser: activeUser,
       caseFacts: caseFacts,
+      contextLogIds: approvedAnalyseLogIds,
+      contextUser: approvedAnalyseLogIds.length ? activeUser : null,
+      contextApproved: approvedAnalyseLogIds.length > 0,
     });
+    const currentSags = getState().sagsbehandling || {};
+    const prevRespMap = currentSags.previousResponseIdBySubtab || {};
+    const usedModelMap = currentSags.usedModelBySubtab || {};
+    const nextSharedFacts = { ...(currentSags.sharedFacts || {}) };
+    if (activeSubtab === "skattepligt_ligningsfrist" && caseFacts) {
+      if (caseFacts.income_years) nextSharedFacts.income_years = String(caseFacts.income_years);
+      if (caseFacts.selected_trigger) nextSharedFacts.selected_trigger = String(caseFacts.selected_trigger);
+      if (caseFacts.residence_fact) nextSharedFacts.residence_fact = String(caseFacts.residence_fact);
+    }
+    const nextSubtabOutputs = {
+      ...(currentSags.subtabOutputs || {}),
+      [activeSubtab]: {
+        answer: data.answer || "",
+        used_model: data.used_model || "",
+        response_id: data.response_id || null,
+      },
+    };
     setState({
       sagsbehandling: {
         previousResponseId: data.response_id || null,
         usedModel: data.used_model || null,
+        previousResponseIdBySubtab: {
+          ...prevRespMap,
+          [activeSubtab]: data.response_id || null,
+        },
+        usedModelBySubtab: {
+          ...usedModelMap,
+          [activeSubtab]: data.used_model || null,
+        },
+        sharedFacts: nextSharedFacts,
+        subtabOutputs: nextSubtabOutputs,
       },
     });
     addSagsbehandlingMessage("assistant", data.answer || "Intet svar returneret.");
     setStatus("Sagsbehandling svar modtaget. Model: " + (data.used_model || "ukendt"), "ok");
+    await saveCurrentSagsCaseSnapshot();
   } catch (err) {
     const errorText = err && err.message ? err.message : "Ukendt fejl";
     addSagsbehandlingMessage("system", "Fejl: " + errorText);
@@ -1041,12 +1934,42 @@ function clearSagsbehandlingCurrentSubtab() {
   const state = getState();
   const activeSubtab = state.sagsbehandling.activeSubtab || "skattepligt_ligningsfrist";
   const factsBySubtab = state.sagsbehandling.factsBySubtab || {};
+  const contextBySubtab = state.sagsbehandling.contextBySubtab || {};
+  const messagesBySubtab = state.sagsbehandling.messagesBySubtab || {};
+  const previousBySubtab = state.sagsbehandling.previousResponseIdBySubtab || {};
+  const usedModelBySubtab = state.sagsbehandling.usedModelBySubtab || {};
+  const subtabOutputs = state.sagsbehandling.subtabOutputs || {};
+  const subtabOutputLocked = state.sagsbehandling.subtabOutputLocked || {};
 
   setState({
     sagsbehandling: {
       messages: [],
       previousResponseId: null,
       usedModel: null,
+      messagesBySubtab: {
+        ...messagesBySubtab,
+        [activeSubtab]: [],
+      },
+      previousResponseIdBySubtab: {
+        ...previousBySubtab,
+        [activeSubtab]: null,
+      },
+      usedModelBySubtab: {
+        ...usedModelBySubtab,
+        [activeSubtab]: null,
+      },
+      subtabOutputLocked: {
+        ...subtabOutputLocked,
+        [activeSubtab]: false,
+      },
+      subtabOutputs: {
+        ...subtabOutputs,
+        [activeSubtab]: {
+          answer: "",
+          used_model: "",
+          response_id: null,
+        },
+      },
       factsBySubtab: {
         ...factsBySubtab,
         [activeSubtab]: {
@@ -1064,10 +1987,15 @@ function clearSagsbehandlingCurrentSubtab() {
           specialTaxLiabilityMode: "",
         },
       },
+      contextBySubtab: {
+        ...contextBySubtab,
+        [activeSubtab]: [],
+      },
     },
   });
   renderSagsbehandling(elements, getState());
   setStatus("Sagsbehandling ryddet for aktiv undertab.", "ok");
+  saveCurrentSagsCaseSnapshot();
 }
 
 async function runChat() {
@@ -1115,6 +2043,29 @@ async function runChat() {
           updateLastChatMessageText(evt.answer || accumulated || "Intet svar returneret.");
           renderChat(elements, getState());
           setStatus("Chat svar modtaget. Model: " + (evt.used_model || "ukendt"), "ok");
+          const user = getActiveUser();
+          if (user) {
+            const snapshotMessages = getState().chat.messages || [];
+            saveChatLog(
+              user,
+              sessionId,
+              snapshotMessages,
+              evt.used_model || "",
+              evt.response_id || null,
+            )
+              .then((saved) => {
+                const prev = getState().chat || {};
+                const existing = Array.isArray(prev.savedLogs) ? prev.savedLogs : [];
+                const filtered = existing.filter((entry) => entry.id !== saved.id);
+                setState({
+                  chat: {
+                    savedLogs: [saved, ...filtered],
+                  },
+                });
+                renderChat(elements, getState());
+              })
+              .catch(() => {});
+          }
         } else if (evt.type === "error") {
           throw new Error(evt.detail || "Streamfejl");
         }
@@ -1129,6 +2080,29 @@ async function runChat() {
       });
       addChatMessage("assistant", data.answer || "Intet svar returneret.");
       setStatus("Chat svar modtaget. Model: " + (data.used_model || "ukendt"), "ok");
+      const user = getActiveUser();
+      if (user) {
+        const snapshotMessages = getState().chat.messages || [];
+        saveChatLog(
+          user,
+          sessionId,
+          snapshotMessages,
+          data.used_model || "",
+          data.response_id || null,
+        )
+          .then((saved) => {
+            const prev = getState().chat || {};
+            const existing = Array.isArray(prev.savedLogs) ? prev.savedLogs : [];
+            const filtered = existing.filter((entry) => entry.id !== saved.id);
+            setState({
+              chat: {
+                savedLogs: [saved, ...filtered],
+              },
+            });
+            renderChat(elements, getState());
+          })
+          .catch(() => {});
+      }
     }
   } catch (err) {
     const isAborted = err && err.name === "AbortError";
@@ -1159,7 +2133,21 @@ async function refreshChatContextFiles() {
 async function uploadContextFromInput() {
   const fileInput = elements.chatContextFile;
   if (!fileInput || !fileInput.files || !fileInput.files.length) {
-    setStatus("Vælg en fil først.", "error");
+    const onFileSelected = () => {
+      if (fileInput.files && fileInput.files.length) {
+        void uploadContextFromInput();
+      }
+    };
+    fileInput.addEventListener("change", onFileSelected, { once: true });
+    try {
+      if (typeof fileInput.showPicker === "function") {
+        fileInput.showPicker();
+      } else {
+        fileInput.click();
+      }
+    } catch (_err) {
+      fileInput.click();
+    }
     return;
   }
   const file = fileInput.files[0];
@@ -1291,6 +2279,89 @@ function bindEvents() {
   if (elements.sagsbehandlingClearBtn) {
     elements.sagsbehandlingClearBtn.addEventListener("click", clearSagsbehandlingCurrentSubtab);
   }
+  if (elements.sagsbehandlingCopyAnswerBtn) {
+    elements.sagsbehandlingCopyAnswerBtn.addEventListener("click", copySagsbehandlingAnswer);
+  }
+  if (elements.sagsbehandlingLockBtn) {
+    elements.sagsbehandlingLockBtn.addEventListener("click", onSagsbehandlingLockToggle);
+  }
+  if (elements.sagsbehandlingConversation) {
+    elements.sagsbehandlingConversation.addEventListener("sags-output-edit", (event) => {
+      const { subtab, text } = event.detail || {};
+      if (!subtab) return;
+      const sags = getState().sagsbehandling || {};
+      const isLocked = Boolean((sags.subtabOutputLocked || {})[subtab]);
+      if (isLocked) return;
+      saveSagsbehandlingEditedOutput(subtab, text, { persist: false, rerender: false });
+      scheduleSagsCaseSnapshotSave();
+    });
+  }
+  if (elements.sagsStartCaseBtn) {
+    elements.sagsStartCaseBtn.addEventListener("click", () => {
+      startNewSagsCase();
+    });
+  }
+  if (elements.sagsCaseSelect) {
+    elements.sagsCaseSelect.addEventListener("change", () => {
+      const selected = String(elements.sagsCaseSelect.value || "").trim();
+      if (!selected) {
+        setState({
+          sagsbehandling: {
+            activeCaseId: null,
+          },
+        });
+        renderSagsbehandling(elements, getState());
+        return;
+      }
+      loadSagsCase(selected);
+    });
+  }
+  if (elements.sagsContextList) {
+    elements.sagsContextList.addEventListener("change", (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLInputElement) || target.type !== "checkbox") return;
+      const logId = target.getAttribute("data-context-log-id");
+      if (!logId) return;
+      const activeSubtab = getState().sagsbehandling.activeSubtab || "";
+      const contextBySubtab = getState().sagsbehandling.contextBySubtab || {};
+      const list = getContextListForSubtab(activeSubtab);
+      const updated = list.map((c) =>
+        (c.logId || "") === logId ? { ...c, approved: Boolean(target.checked) } : c,
+      );
+      setState({
+        sagsbehandling: {
+          contextBySubtab: { ...contextBySubtab, [activeSubtab]: updated },
+        },
+      });
+      renderSagsbehandling(elements, getState());
+      saveCurrentSagsCaseSnapshot();
+    });
+    elements.sagsContextList.addEventListener("click", (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLElement)) return;
+      const removeBtn = target.closest("[data-action=remove-sags-context]");
+      if (!removeBtn) return;
+      const logId = removeBtn.getAttribute("data-context-log-id");
+      if (!logId) return;
+      event.preventDefault();
+      removeSagsContext(logId);
+      saveCurrentSagsCaseSnapshot();
+    });
+  }
+  if (elements.sagsContextClearBtn) {
+    elements.sagsContextClearBtn.addEventListener("click", () => {
+      const activeSubtab = getState().sagsbehandling.activeSubtab || "skattepligt_ligningsfrist";
+      const contextBySubtab = getState().sagsbehandling.contextBySubtab || {};
+      setState({
+        sagsbehandling: {
+          contextBySubtab: { ...contextBySubtab, [activeSubtab]: [] },
+        },
+      });
+      renderSagsbehandling(elements, getState());
+      setStatus("Alle analyse-kontekster er fjernet for aktiv undertab.", "ok");
+      saveCurrentSagsCaseSnapshot();
+    });
+  }
   if (elements.chatResetBtn) {
     elements.chatResetBtn.addEventListener("click", resetChatWithCleanup);
   }
@@ -1335,8 +2406,59 @@ function bindEvents() {
         onAnalyseLogEntryClick(entryBtn.dataset.entryId);
         return;
       }
+      const useAsContextBtn = el.closest("[data-action=use-as-sags-context]");
+      if (useAsContextBtn?.dataset?.entryId) {
+        onUseAnalyseLogAsSagsContext(useAsContextBtn.dataset.entryId);
+        return;
+      }
+      const loadBtn = el.closest("[data-action=analyse-log-load]");
+      if (loadBtn?.dataset?.entryId) {
+        const selected = getState().analyse.selectedLogContent;
+        if (selected && (selected.id || "") === loadBtn.dataset.entryId) {
+          loadAnalyseFromLogEntry(selected);
+        }
+        return;
+      }
+      const deleteBtn = el.closest("[data-action=analyse-log-delete]");
+      if (deleteBtn?.dataset?.entryId) {
+        onDeleteAnalyseLog(deleteBtn.dataset.entryId);
+        return;
+      }
       if (el.closest("[data-action=log-back]")) {
         onAnalyseLogBackClick();
+      }
+    });
+  }
+
+  if (elements.chatLogContent) {
+    elements.chatLogContent.addEventListener("click", (event) => {
+      const el = event.target.nodeType === Node.ELEMENT_NODE ? event.target : event.target.parentElement;
+      if (!el) return;
+      const entryBtn = el.closest(".analyse-log-entry");
+      if (entryBtn?.dataset?.entryId) {
+        onChatLogEntryClick(entryBtn.dataset.entryId);
+        return;
+      }
+      const loadBtn = el.closest("[data-action=chat-log-load]");
+      if (loadBtn?.dataset?.entryId) {
+        const selected = getState().chat.selectedLogContent;
+        if (selected && (selected.id || "") === loadBtn.dataset.entryId) {
+          loadChatFromLogEntry(selected);
+        }
+        return;
+      }
+      const deleteBtn = el.closest("[data-action=chat-log-delete]");
+      if (deleteBtn?.dataset?.entryId) {
+        onDeleteChatLog(deleteBtn.dataset.entryId);
+        return;
+      }
+      const useAsContextBtn = el.closest("[data-action=use-chat-as-sags-context]");
+      if (useAsContextBtn?.dataset?.entryId) {
+        onUseChatLogAsSagsContext(useAsContextBtn.dataset.entryId);
+        return;
+      }
+      if (el.closest("[data-action=chat-log-back]")) {
+        onChatLogBackClick();
       }
     });
   }
@@ -1345,18 +2467,23 @@ function bindEvents() {
     elements.sagsSubtabButtons.forEach((btn) => {
       btn.addEventListener("click", () => {
         const subtab = btn.dataset.sagsSubtab || "skattepligt_ligningsfrist";
+        const sags = getState().sagsbehandling || {};
+        const messagesBySubtab = sags.messagesBySubtab || {};
+        const previousBySubtab = sags.previousResponseIdBySubtab || {};
+        const usedModelBySubtab = sags.usedModelBySubtab || {};
         setState({
           sagsbehandling: {
             activeSubtab: subtab,
             activeFunction: "",
             inputText: "",
-            messages: [],
-            previousResponseId: null,
-            usedModel: null,
+            messages: messagesBySubtab[subtab] || [],
+            previousResponseId: previousBySubtab[subtab] || null,
+            usedModel: usedModelBySubtab[subtab] || null,
             factsPanelOpen: false,
           },
         });
         renderSagsbehandling(elements, getState());
+        saveCurrentSagsCaseSnapshot();
         loadLegalBasisForSubtab(subtab);
       });
     });
@@ -1509,6 +2636,7 @@ function bindEvents() {
       });
       renderSagsbehandling(elements, getState());
       setStatus("Fakta gemt lokalt.", "ok");
+      saveCurrentSagsCaseSnapshot();
     });
   }
 
@@ -1531,6 +2659,7 @@ function bindEvents() {
       });
       renderSagsbehandling(elements, getState());
       setStatus("Fakta ryddet lokalt.", "ok");
+      saveCurrentSagsCaseSnapshot();
     });
   }
 

@@ -12,9 +12,8 @@ from uuid import uuid4
 
 from openai import OpenAI
 
-from backend.config import BASE_DIR, LOG_DIR, PRIMARY_MODEL, VECTOR_STORE_IDS
+from backend.config import ANALYSE_LOGS_DIR, VECTOR_STORE_IDS
 
-ANALYSE_LOGS_DIR = BASE_DIR / "analyse_logs"
 TITLE_MODEL = "gpt-4o-mini"
 TITLE_MAX_TOKENS = 30
 
@@ -56,6 +55,7 @@ def _generate_title_from_question(question: str) -> str:
 
 def save_analyse_log(
     username: str,
+    session_id: str | None,
     question: str,
     answer: str,
     citations: list[dict],
@@ -65,6 +65,8 @@ def save_analyse_log(
     used_vector_store_ids: list[str] | None = None,
     log_pdf_filename: str | None = None,
     log_pdf_url: str | None = None,
+    messages: list[dict] | None = None,
+    last_response_id: str | None = None,
 ) -> dict:
     """
     Gem en analyse-log. Genererer titel via LLM fra spørgsmålet.
@@ -74,24 +76,8 @@ def save_analyse_log(
     ANALYSE_LOGS_DIR.mkdir(parents=True, exist_ok=True)
     path = _user_logs_path(username)
 
-    title = _generate_title_from_question(question)
-    entry_id = uuid4().hex[:12]
+    clean_session_id = str(session_id or "").strip() or None
     created_at = datetime.now().isoformat(timespec="seconds")
-
-    entry = {
-        "id": entry_id,
-        "created_at": created_at,
-        "title": title,
-        "question": question,
-        "answer": answer,
-        "citations": citations,
-        "retrieval_results": retrieval_results,
-        "used_model": used_model,
-        "log_question": log_question or question,
-        "used_vector_store_ids": used_vector_store_ids or list(VECTOR_STORE_IDS),
-        "log_pdf_filename": (log_pdf_filename or "").strip() or None,
-        "log_pdf_url": (log_pdf_url or "").strip() or None,
-    }
 
     entries: list[dict] = []
     if path.exists():
@@ -101,15 +87,60 @@ def save_analyse_log(
         except (json.JSONDecodeError, OSError):
             entries = []
 
+    existing_idx: int | None = None
+    if clean_session_id:
+        existing_idx = next(
+            (
+                idx
+                for idx, existing in enumerate(entries)
+                if str(existing.get("session_id", "")).strip() == clean_session_id
+            ),
+            None,
+        )
+
+    if existing_idx is not None:
+        existing = entries.pop(existing_idx)
+        existing["question"] = question
+        existing["answer"] = answer
+        existing["citations"] = citations
+        existing["retrieval_results"] = retrieval_results
+        existing["used_model"] = used_model
+        existing["log_question"] = log_question or question
+        existing["used_vector_store_ids"] = used_vector_store_ids or list(VECTOR_STORE_IDS)
+        existing["log_pdf_filename"] = (log_pdf_filename or "").strip() or None
+        existing["log_pdf_url"] = (log_pdf_url or "").strip() or None
+        existing["session_id"] = clean_session_id
+        existing["messages"] = messages or existing.get("messages", [])
+        existing["last_response_id"] = str(last_response_id or "").strip() or existing.get("last_response_id")
+        entry = existing
+    else:
+        title = _generate_title_from_question(question)
+        entry = {
+            "id": uuid4().hex[:12],
+            "created_at": created_at,
+            "title": title,
+            "question": question,
+            "answer": answer,
+            "citations": citations,
+            "retrieval_results": retrieval_results,
+            "used_model": used_model,
+            "log_question": log_question or question,
+            "used_vector_store_ids": used_vector_store_ids or list(VECTOR_STORE_IDS),
+            "log_pdf_filename": (log_pdf_filename or "").strip() or None,
+            "log_pdf_url": (log_pdf_url or "").strip() or None,
+            "session_id": clean_session_id,
+            "messages": messages or [],
+            "last_response_id": str(last_response_id or "").strip() or None,
+        }
     entries.insert(0, entry)
 
     with open(path, "w", encoding="utf-8") as f:
         json.dump(entries, f, ensure_ascii=False, indent=2)
 
     return {
-        "id": entry_id,
-        "title": title,
-        "created_at": created_at,
+        "id": entry.get("id", ""),
+        "title": entry.get("title", "Uden titel"),
+        "created_at": entry.get("created_at", created_at),
         "log_pdf_filename": entry.get("log_pdf_filename"),
         "log_pdf_url": entry.get("log_pdf_url"),
     }
@@ -151,6 +182,27 @@ def get_analyse_log(username: str, entry_id: str) -> dict | None:
         if e.get("id") == entry_id:
             return e
     return None
+
+
+def delete_analyse_log(username: str, entry_id: str) -> bool:
+    """Slet log-entry efter id. Returnerer True hvis slettet."""
+    path = _user_logs_path(username)
+    if not path.exists():
+        return False
+    try:
+        with open(path, encoding="utf-8") as f:
+            entries = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return False
+    remaining = [e for e in entries if e.get("id") != entry_id]
+    if len(remaining) == len(entries):
+        return False
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(remaining, f, ensure_ascii=False, indent=2)
+    except OSError:
+        return False
+    return True
 
 
 def format_log_as_text(entry: dict) -> str:

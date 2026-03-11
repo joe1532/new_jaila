@@ -76,3 +76,16 @@ export function resetChatSessionId() {
   }
   return created;
 }
+
+export function setChatSessionId(sessionId) {
+  const value = String(sessionId || "").trim();
+  if (!/^[a-zA-Z0-9_-]{8,80}$/.test(value)) {
+    return null;
+  }
+  try {
+    localStorage.setItem(CHAT_SESSION_KEY, value);
+  } catch (_err) {
+    // Ignorer localStorage-fejl.
+  }
+  return value;
+}

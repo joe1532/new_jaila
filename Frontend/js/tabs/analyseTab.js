@@ -82,6 +82,27 @@ export function renderAnalyse(elements, state) {
       backBtn.textContent = "← Tilbage til liste";
       backBtn.dataset.action = "log-back";
       elements.analyseLogContent.appendChild(backBtn);
+      const loadBtn = document.createElement("button");
+      loadBtn.type = "button";
+      loadBtn.className = "button-secondary analyse-log-back";
+      loadBtn.textContent = "Indlæs analyse";
+      loadBtn.dataset.action = "analyse-log-load";
+      loadBtn.dataset.entryId = selectedLogContent.id || selectedLogId || "";
+      elements.analyseLogContent.appendChild(loadBtn);
+      const deleteBtn = document.createElement("button");
+      deleteBtn.type = "button";
+      deleteBtn.className = "button-secondary analyse-log-back";
+      deleteBtn.textContent = "Slet gemt analyse";
+      deleteBtn.dataset.action = "analyse-log-delete";
+      deleteBtn.dataset.entryId = selectedLogContent.id || selectedLogId || "";
+      elements.analyseLogContent.appendChild(deleteBtn);
+      const useInSagsBtn = document.createElement("button");
+      useInSagsBtn.type = "button";
+      useInSagsBtn.className = "button-secondary analyse-log-back";
+      useInSagsBtn.textContent = "Brug i sagsbehandling";
+      useInSagsBtn.dataset.action = "use-as-sags-context";
+      useInSagsBtn.dataset.entryId = selectedLogContent.id || selectedLogId || "";
+      elements.analyseLogContent.appendChild(useInSagsBtn);
       const logPdfUrl = (selectedLogContent.log_pdf_url || "").trim();
       if (logPdfUrl) {
         const pdfLink = document.createElement("a");

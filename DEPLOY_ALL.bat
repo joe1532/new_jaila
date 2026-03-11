@@ -1,5 +1,6 @@
 @echo off
 setlocal
+set SKIP_PAUSE=1
 
 echo.
 echo ========================================
@@ -34,4 +35,4 @@ echo.
 
 :done
 endlocal
-pause
+if not defined SKIP_PAUSE pause

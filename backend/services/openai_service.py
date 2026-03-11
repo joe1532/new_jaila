@@ -78,33 +78,11 @@ def select_vector_store_ids_for_query(
 ) -> list[str]:
     """
     Respect API constraint: max 2 vector stores in file_search tools call.
+    Probe search er fjernet for at undgå ekstra OpenAI-kald.
     """
-    if len(vector_store_ids) <= MAX_VECTOR_STORES_PER_REQUEST:
-        return vector_store_ids
-
-    scored: list[tuple[str, float]] = []
-    for store_id in vector_store_ids:
-        score = -1.0
-        try:
-            probe = client.vector_stores.search(
-                vector_store_id=store_id,
-                query=question,
-                max_num_results=1,
-                rewrite_query=True,
-            )
-            top_result = (get_value(probe, "data", []) or [None])[0]
-            if top_result is not None:
-                raw_score = get_value(top_result, "score", 0.0)
-                score = float(raw_score or 0.0)
-        except Exception:
-            score = -1.0
-        scored.append((store_id, score))
-
-    scored.sort(key=lambda item: item[1], reverse=True)
-    selected = [store_id for store_id, _ in scored[:MAX_VECTOR_STORES_PER_REQUEST]]
-    if not selected:
-        return vector_store_ids[:MAX_VECTOR_STORES_PER_REQUEST]
-    return selected
+    _ = client
+    _ = question
+    return vector_store_ids[:MAX_VECTOR_STORES_PER_REQUEST]
 
 
 def normalize_mojibake_text(text: str) -> str:

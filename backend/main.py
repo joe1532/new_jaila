@@ -40,20 +40,31 @@ from backend.models import (
     AnalyseLogSaveRequest,
     AnalyseLogSaveResponse,
     AnalyzeResponse,
+    CaseCreateRequest,
+    CaseGetResponse,
+    CaseListResponse,
+    CaseUpdateRequest,
     ChatContextFileResponse,
     ChatContextListResponse,
     ChatExportRequest,
     ChatExportResponse,
+    ChatLogGetResponse,
+    ChatLogListResponse,
+    ChatLogSaveRequest,
+    ChatLogSaveResponse,
     ChatRequest,
     ChatResponse,
     SagsLegalBasisResponse,
 )
 from backend.services.analyse_logs import (
+    delete_analyse_log,
     format_log_as_text,
     get_analyse_log,
     list_analyse_logs,
     save_analyse_log,
 )
+from backend.services.chat_logs import delete_chat_log, get_chat_log, list_chat_logs, save_chat_log
+from backend.services.case_store import get_case_store
 from backend.services.openai_service import analyze_question, analyze_question_stream
 from backend.services.pdf_log import save_chat_pdf_log, save_pdf_log
 
@@ -71,13 +82,15 @@ MIN_PDF_PAGE_TEXT_FOR_NO_OCR = 40
 MAX_DOCX_PARAGRAPHS = 1200
 MAX_EXCEL_SHEETS = 10
 MAX_EXCEL_ROWS_PER_SHEET = 400
+MAX_SAGS_CONTEXT_CHARS = 6000
+MAX_SAGS_CONTEXT_LOGS = 8
 
 allowed_origins = get_allowed_origins()
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
     allow_credentials=True,
-    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+    allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
 
@@ -192,6 +205,100 @@ def format_case_facts_for_llm(subtab: str, case_facts: dict[str, object] | None)
         "Faktiske oplysninger fra sagsbehandler (skal indgå i vurderingen):\n"
         + "\n".join(lines)
     )
+
+
+def build_sags_context_from_analyse_log(username: str, context_log_id: str) -> str:
+    """Byg deterministisk sagskontekst fra én tidligere analyse-log."""
+    safe_user = str(username or "").strip()
+    safe_log_id = str(context_log_id or "").strip()
+    if not safe_user or not safe_log_id:
+        return ""
+
+    entry = get_analyse_log(safe_user, safe_log_id)
+    if not entry:
+        raise HTTPException(status_code=404, detail="Valgt analyse-kontekst blev ikke fundet")
+
+    answer_text = str(entry.get("answer", "") or "").strip()
+    if not answer_text:
+        raise HTTPException(status_code=400, detail="Valgt analyse-log har intet svar at bruge som kontekst")
+
+    title = str(entry.get("title", "Uden titel") or "Uden titel").strip()
+    created_at = str(entry.get("created_at", "") or "").strip()
+    question = str(entry.get("question", "") or "").strip()
+    context_text = (
+        "Tidligere analyse-kontekst (gennemgået af bruger)\n"
+        f"- Titel: {title}\n"
+        f"- Tidspunkt: {created_at}\n"
+        f"- Spørgsmål: {question}\n"
+        "Tidligere analyse/svar:\n"
+        f"{answer_text}"
+    )
+    context_text, _ = truncate_text(context_text, MAX_SAGS_CONTEXT_CHARS)
+    return context_text
+
+
+def build_sags_context_from_analyse_logs(username: str, context_log_ids: list[str]) -> str:
+    """Byg samlet sagskontekst fra flere analyse-logs."""
+    safe_user = str(username or "").strip()
+    if not safe_user or not context_log_ids:
+        return ""
+
+    blocks: list[str] = []
+    total_chars = 0
+    chars_per_log = max(500, MAX_SAGS_CONTEXT_CHARS // len(context_log_ids))
+
+    for log_id in context_log_ids:
+        safe_log_id = str(log_id or "").strip()
+        if not safe_log_id:
+            continue
+        block = build_sags_context_from_analyse_log(safe_user, safe_log_id)
+        if not block:
+            continue
+        block, _ = truncate_text(block, chars_per_log)
+        blocks.append(block)
+        total_chars += len(block)
+        if total_chars >= MAX_SAGS_CONTEXT_CHARS:
+            break
+
+    if not blocks:
+        return ""
+    combined = "\n\n---\n\n".join(blocks)
+    combined, _ = truncate_text(combined, MAX_SAGS_CONTEXT_CHARS)
+    return combined
+
+
+def format_case_shared_facts_for_llm(case_entry: dict | None, active_subtab: str) -> str:
+    """Lav kompakt, deterministisk kontekstblok fra sag på tværs af undertabs."""
+    if not case_entry:
+        return ""
+    shared_facts = case_entry.get("shared_facts") or {}
+    subtab_outputs = case_entry.get("subtab_outputs") or {}
+    lines: list[str] = []
+    if isinstance(shared_facts, dict) and shared_facts:
+        lines.append("Fælles sagsfakta (tidligere fastlagt i sagen):")
+        for key, value in shared_facts.items():
+            if value is None:
+                continue
+            text = str(value).strip()
+            if not text:
+                continue
+            lines.append(f"- {key}: {text}")
+    if isinstance(subtab_outputs, dict):
+        for subtab, output in subtab_outputs.items():
+            if not isinstance(output, dict):
+                continue
+            if str(subtab or "").strip() == str(active_subtab or "").strip():
+                continue
+            answer = str(output.get("answer", "") or "").strip()
+            if not answer:
+                continue
+            lines.append(f"Tidligere delresultat fra undertab '{subtab}':")
+            lines.append(answer[:2000])
+    if not lines:
+        return ""
+    block = "\n".join(lines)
+    block, _ = truncate_text(block, MAX_SAGS_CONTEXT_CHARS)
+    return block
 
 
 def parse_income_years(value: object) -> list[int]:
@@ -338,7 +445,7 @@ def build_trigger_text(
                 True,
                 "§ 1, stk. 2, nr. 1",
                 "1",
-                True,
+                False,
             )
         if normalized_self_employed_mode == "undtagelse":
             return (
@@ -346,7 +453,7 @@ def build_trigger_text(
                 True,
                 "§ 2",
                 "2",
-                True,
+                False,
             )
         raise HTTPException(
             status_code=400,
@@ -974,6 +1081,16 @@ def analyze(
 
     source_tab = (payload.source_tab or "").strip().lower()
     subtab = (payload.subtab or "").strip().lower()
+    case_entry: dict | None = None
+    case_store = get_case_store()
+    case_id = str(payload.case_id or "").strip()
+    case_user = str(payload.case_user or "").strip()
+    if source_tab == "sagsbehandling" and case_id:
+        if not case_user:
+            raise HTTPException(status_code=400, detail="Bruger mangler for aktiv sag")
+        case_entry = case_store.get_case(case_user, case_id)
+        if not case_entry:
+            raise HTTPException(status_code=404, detail="Sag ikke fundet")
     if source_tab == "sagsbehandling" and subtab == "skattepligt_ligningsfrist":
         try:
             answer = build_standard_text_ligningsfrist(payload.case_facts)
@@ -992,6 +1109,31 @@ def analyze(
                 f"- case_facts: {json.dumps(payload.case_facts or {}, ensure_ascii=False)}"
             )
             log_path = save_pdf_log(log_question, parsed, used_model)
+            if case_entry and case_id and case_user:
+                shared = dict(case_entry.get("shared_facts") or {})
+                facts = payload.case_facts or {}
+                if isinstance(facts, dict):
+                    if facts.get("income_years"):
+                        shared["income_years"] = str(facts.get("income_years"))
+                    if facts.get("selected_trigger"):
+                        shared["selected_trigger"] = str(facts.get("selected_trigger"))
+                    if facts.get("residence_fact"):
+                        shared["residence_fact"] = str(facts.get("residence_fact"))
+                case_store.update_case(
+                    username=case_user,
+                    case_id=case_id,
+                    patch={
+                        "active_subtab": subtab,
+                        "shared_facts": shared,
+                        "subtab_outputs": {
+                            subtab: {
+                                "answer": answer,
+                                "used_model": used_model,
+                                "response_id": response_id,
+                            }
+                        },
+                    },
+                )
         except HTTPException:
             raise
         except Exception as exc:
@@ -1027,6 +1169,56 @@ def analyze(
                 + facts_block
                 + "\n---\n"
                 + "Brug disse faktiske oplysninger sammen med de fundne kilder i file_search."
+            )
+        case_block = format_case_shared_facts_for_llm(case_entry, subtab)
+        if case_block:
+            llm_question = (
+                llm_question
+                + "\n\n---\n"
+                + case_block
+                + "\n---\n"
+                + "Brug de fælles sagsfakta som baggrund, men følg file_search-kilder ved konflikt."
+            )
+
+    context_log_ids_to_use: list[str] = []
+    if payload.context_log_ids:
+        seen_ids: set[str] = set()
+        for item in payload.context_log_ids:
+            clean_id = str(item or "").strip()
+            if not clean_id or clean_id in seen_ids:
+                continue
+            seen_ids.add(clean_id)
+            context_log_ids_to_use.append(clean_id)
+    elif payload.context_log_id and str(payload.context_log_id or "").strip():
+        context_log_ids_to_use = [str(payload.context_log_id or "").strip()]
+
+    if source_tab == "sagsbehandling" and context_log_ids_to_use:
+        if len(context_log_ids_to_use) > MAX_SAGS_CONTEXT_LOGS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Du kan højst vælge {MAX_SAGS_CONTEXT_LOGS} analyse-kontekster ad gangen",
+            )
+        if not payload.context_approved:
+            raise HTTPException(
+                status_code=400,
+                detail="Analyse-kontekst skal godkendes i UI før den kan bruges",
+            )
+        if not (payload.context_user or "").strip():
+            raise HTTPException(
+                status_code=400,
+                detail="Bruger mangler for valgt analyse-kontekst",
+            )
+        context_block = build_sags_context_from_analyse_logs(
+            username=payload.context_user or "",
+            context_log_ids=context_log_ids_to_use,
+        )
+        if context_block:
+            llm_question = (
+                llm_question
+                + "\n\n---\n"
+                + context_block
+                + "\n---\n"
+                + "Brug konteksten som baggrund. Hvis den strider mod file_search-kilder, følg file_search-kilderne."
             )
 
     if stream:
@@ -1075,6 +1267,26 @@ def analyze(
         raise HTTPException(status_code=500, detail=f"Analyse fejlede: {exc}") from exc
 
     log_filename = log_path.name
+    if (
+        source_tab == "sagsbehandling"
+        and case_entry
+        and case_id
+        and case_user
+    ):
+        case_store.update_case(
+            username=case_user,
+            case_id=case_id,
+            patch={
+                "active_subtab": subtab,
+                "subtab_outputs": {
+                    subtab: {
+                        "answer": parsed.get("output_text", ""),
+                        "used_model": used_model,
+                        "response_id": response_id,
+                    }
+                },
+            },
+        )
     return AnalyzeResponse(
         answer=parsed.get("output_text", ""),
         used_model=used_model,
@@ -1106,6 +1318,122 @@ def sagsbehandling_legal_basis(subtab: str) -> SagsLegalBasisResponse:
         )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Kunne ikke hente retsgrundlag: {exc}") from exc
+
+
+@app.post("/api/cases", response_model=CaseGetResponse)
+def create_case_endpoint(payload: CaseCreateRequest) -> CaseGetResponse:
+    """Start ny sag for bruger."""
+    try:
+        entry = get_case_store().create_case(payload.user, payload.title)
+        return CaseGetResponse(
+            id=entry.get("id", ""),
+            title=entry.get("title", "Ny sag"),
+            status=entry.get("status", "open"),
+            created_at=entry.get("created_at", ""),
+            updated_at=entry.get("updated_at", ""),
+            active_subtab=entry.get("active_subtab", "skattepligt_ligningsfrist"),
+            shared_facts=entry.get("shared_facts", {}),
+            subtab_outputs=entry.get("subtab_outputs", {}),
+            locked_by_subtab=entry.get("locked_by_subtab", {}),
+            facts_by_subtab=entry.get("facts_by_subtab", {}),
+            context_by_subtab=entry.get("context_by_subtab", {}),
+            messages_by_subtab=entry.get("messages_by_subtab", {}),
+            previous_response_id_by_subtab=entry.get("previous_response_id_by_subtab", {}),
+            used_model_by_subtab=entry.get("used_model_by_subtab", {}),
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Kunne ikke oprette sag: {exc}") from exc
+
+
+@app.get("/api/cases", response_model=CaseListResponse)
+def list_cases_endpoint(user: str = Query(..., min_length=1)) -> CaseListResponse:
+    """Liste af sager for bruger."""
+    entries = get_case_store().list_cases(user)
+    return CaseListResponse(entries=entries)
+
+
+@app.get("/api/cases/{case_id}", response_model=CaseGetResponse)
+def get_case_endpoint(case_id: str, user: str = Query(..., min_length=1)) -> CaseGetResponse:
+    """Hent fuld sag."""
+    entry = get_case_store().get_case(user, case_id)
+    if not entry:
+        raise HTTPException(status_code=404, detail="Sag ikke fundet")
+    return CaseGetResponse(
+        id=entry.get("id", ""),
+        title=entry.get("title", "Ny sag"),
+        status=entry.get("status", "open"),
+        created_at=entry.get("created_at", ""),
+        updated_at=entry.get("updated_at", ""),
+        active_subtab=entry.get("active_subtab", "skattepligt_ligningsfrist"),
+        shared_facts=entry.get("shared_facts", {}),
+        subtab_outputs=entry.get("subtab_outputs", {}),
+        locked_by_subtab=entry.get("locked_by_subtab", {}),
+        facts_by_subtab=entry.get("facts_by_subtab", {}),
+        context_by_subtab=entry.get("context_by_subtab", {}),
+        messages_by_subtab=entry.get("messages_by_subtab", {}),
+        previous_response_id_by_subtab=entry.get("previous_response_id_by_subtab", {}),
+        used_model_by_subtab=entry.get("used_model_by_subtab", {}),
+    )
+
+
+@app.patch("/api/cases/{case_id}", response_model=CaseGetResponse)
+def update_case_endpoint(case_id: str, payload: CaseUpdateRequest) -> CaseGetResponse:
+    """Opdater sag (delvis update)."""
+    patch: dict[str, object] = {}
+    if payload.title is not None:
+        patch["title"] = payload.title
+    if payload.status is not None:
+        patch["status"] = payload.status
+    if payload.active_subtab is not None:
+        patch["active_subtab"] = payload.active_subtab
+    if payload.shared_facts is not None:
+        patch["shared_facts"] = payload.shared_facts
+    if payload.subtab_outputs is not None:
+        patch["subtab_outputs"] = payload.subtab_outputs
+    if payload.locked_by_subtab is not None:
+        patch["locked_by_subtab"] = payload.locked_by_subtab
+    if payload.facts_by_subtab is not None:
+        patch["facts_by_subtab"] = payload.facts_by_subtab
+    if payload.context_by_subtab is not None:
+        patch["context_by_subtab"] = payload.context_by_subtab
+    if payload.messages_by_subtab is not None:
+        patch["messages_by_subtab"] = {
+            key: [{"role": msg.role, "text": msg.text} for msg in messages]
+            for key, messages in payload.messages_by_subtab.items()
+        }
+    if payload.previous_response_id_by_subtab is not None:
+        patch["previous_response_id_by_subtab"] = payload.previous_response_id_by_subtab
+    if payload.used_model_by_subtab is not None:
+        patch["used_model_by_subtab"] = payload.used_model_by_subtab
+    entry = get_case_store().update_case(payload.user, case_id, patch)
+    if not entry:
+        raise HTTPException(status_code=404, detail="Sag ikke fundet")
+    return CaseGetResponse(
+        id=entry.get("id", ""),
+        title=entry.get("title", "Ny sag"),
+        status=entry.get("status", "open"),
+        created_at=entry.get("created_at", ""),
+        updated_at=entry.get("updated_at", ""),
+        active_subtab=entry.get("active_subtab", "skattepligt_ligningsfrist"),
+        shared_facts=entry.get("shared_facts", {}),
+        subtab_outputs=entry.get("subtab_outputs", {}),
+        locked_by_subtab=entry.get("locked_by_subtab", {}),
+        facts_by_subtab=entry.get("facts_by_subtab", {}),
+        context_by_subtab=entry.get("context_by_subtab", {}),
+        messages_by_subtab=entry.get("messages_by_subtab", {}),
+        previous_response_id_by_subtab=entry.get("previous_response_id_by_subtab", {}),
+        used_model_by_subtab=entry.get("used_model_by_subtab", {}),
+    )
+
+
+@app.delete("/api/cases/{case_id}", response_model=CaseListResponse)
+def delete_case_endpoint(case_id: str, user: str = Query(..., min_length=1)) -> CaseListResponse:
+    """Slet sag."""
+    deleted = get_case_store().delete_case(user, case_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Sag ikke fundet")
+    entries = get_case_store().list_cases(user)
+    return CaseListResponse(entries=entries)
 
 
 @app.post("/api/chat", response_model=ChatResponse)
@@ -1252,6 +1580,7 @@ def save_analyse_log_endpoint(payload: AnalyseLogSaveRequest) -> AnalyseLogSaveR
     try:
         result = save_analyse_log(
             username=payload.user,
+            session_id=payload.session_id,
             question=payload.question,
             answer=payload.answer,
             citations=payload.citations,
@@ -1261,6 +1590,8 @@ def save_analyse_log_endpoint(payload: AnalyseLogSaveRequest) -> AnalyseLogSaveR
             used_vector_store_ids=payload.used_vector_store_ids,
             log_pdf_filename=payload.log_pdf_filename,
             log_pdf_url=payload.log_pdf_url,
+            messages=[{"role": msg.role, "text": msg.text} for msg in payload.messages],
+            last_response_id=payload.last_response_id,
         )
         return AnalyseLogSaveResponse(**result)
     except Exception as exc:
@@ -1285,6 +1616,7 @@ def get_analyse_log_endpoint(
         raise HTTPException(status_code=404, detail="Log ikke fundet")
     return AnalyseLogGetResponse(
         id=entry["id"],
+        session_id=entry.get("session_id"),
         created_at=entry["created_at"],
         title=entry.get("title", "Uden titel"),
         question=entry.get("question", ""),
@@ -1295,7 +1627,87 @@ def get_analyse_log_endpoint(
         used_vector_store_ids=entry.get("used_vector_store_ids", []),
         log_pdf_filename=entry.get("log_pdf_filename"),
         log_pdf_url=entry.get("log_pdf_url"),
+        messages=[
+            {"role": str(msg.get("role", "")).strip(), "text": str(msg.get("text", "")).strip()}
+            for msg in (entry.get("messages") or [])
+            if str(msg.get("text", "")).strip()
+        ],
+        last_response_id=entry.get("last_response_id"),
     )
+
+
+@app.delete("/api/analyse-logs/{entry_id}", response_model=AnalyseLogListResponse)
+def delete_analyse_log_endpoint(
+    entry_id: str,
+    user: str = Query(..., min_length=1),
+) -> AnalyseLogListResponse:
+    """Slet analyse-log efter id."""
+    deleted = delete_analyse_log(user, entry_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Log ikke fundet")
+    entries = list_analyse_logs(user)
+    return AnalyseLogListResponse(entries=entries)
+
+
+@app.post("/api/chat-logs", response_model=ChatLogSaveResponse)
+def save_chat_log_endpoint(payload: ChatLogSaveRequest) -> ChatLogSaveResponse:
+    """Gem eller opdater chat-log for en session."""
+    try:
+        result = save_chat_log(
+            username=payload.user,
+            session_id=payload.session_id,
+            messages=[{"role": msg.role, "text": msg.text} for msg in payload.messages],
+            used_model=payload.used_model,
+            last_response_id=payload.last_response_id,
+        )
+        return ChatLogSaveResponse(**result)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Kunne ikke gemme chat-log: {exc}") from exc
+
+
+@app.get("/api/chat-logs", response_model=ChatLogListResponse)
+def list_chat_logs_endpoint(user: str = Query(..., min_length=1)) -> ChatLogListResponse:
+    """Liste gemte chat-logs for bruger."""
+    entries = list_chat_logs(user)
+    return ChatLogListResponse(entries=entries)
+
+
+@app.get("/api/chat-logs/{entry_id}", response_model=ChatLogGetResponse)
+def get_chat_log_endpoint(
+    entry_id: str,
+    user: str = Query(..., min_length=1),
+) -> ChatLogGetResponse:
+    """Hent fuld chat-log efter id."""
+    entry = get_chat_log(user, entry_id)
+    if not entry:
+        raise HTTPException(status_code=404, detail="Chat-log ikke fundet")
+    return ChatLogGetResponse(
+        id=entry.get("id", ""),
+        session_id=entry.get("session_id", ""),
+        title=entry.get("title", "Chat uden titel"),
+        created_at=entry.get("created_at", ""),
+        updated_at=entry.get("updated_at", entry.get("created_at", "")),
+        used_model=entry.get("used_model", ""),
+        last_response_id=entry.get("last_response_id"),
+        messages=[
+            {"role": str(msg.get("role", "")).strip(), "text": str(msg.get("text", "")).strip()}
+            for msg in (entry.get("messages") or [])
+            if str(msg.get("text", "")).strip()
+        ],
+    )
+
+
+@app.delete("/api/chat-logs/{entry_id}", response_model=ChatLogListResponse)
+def delete_chat_log_endpoint(
+    entry_id: str,
+    user: str = Query(..., min_length=1),
+) -> ChatLogListResponse:
+    """Slet chat-log efter id."""
+    deleted = delete_chat_log(user, entry_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Chat-log ikke fundet")
+    entries = list_chat_logs(user)
+    return ChatLogListResponse(entries=entries)
 
 
 @app.get("/api/logs/{filename}")

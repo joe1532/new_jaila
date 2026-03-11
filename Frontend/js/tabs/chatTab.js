@@ -1,3 +1,27 @@
+function formatChatLogEntryAsText(entry) {
+  if (!entry) return "";
+  const lines = [];
+  lines.push("Chat-log");
+  lines.push(`Oprettet: ${entry.created_at || ""}`);
+  lines.push(`Opdateret: ${entry.updated_at || entry.created_at || ""}`);
+  lines.push(`Model brugt: ${entry.used_model || ""}`);
+  lines.push("");
+  lines.push("─── Samtale ───");
+  (entry.messages || []).forEach((msg) => {
+    const role = String(msg.role || "").toLowerCase();
+    if (role === "user") {
+      lines.push("Du:");
+    } else if (role === "assistant") {
+      lines.push("JAILA:");
+    } else {
+      lines.push("System:");
+    }
+    lines.push(String(msg.text || ""));
+    lines.push("");
+  });
+  return lines.join("\n");
+}
+
 export function renderChat(elements, state) {
   if (elements.chatContextList) {
     elements.chatContextList.innerHTML = "";
@@ -30,6 +54,71 @@ export function renderChat(elements, state) {
 
         elements.chatContextList.appendChild(li);
       });
+    }
+  }
+
+  if (elements.chatLogContent) {
+    const savedLogs = state.chat.savedLogs || [];
+    const selectedLogContent = state.chat.selectedLogContent;
+
+    if (selectedLogContent) {
+      elements.chatLogContent.innerHTML = "";
+      const backBtn = document.createElement("button");
+      backBtn.type = "button";
+      backBtn.className = "button-secondary analyse-log-back";
+      backBtn.textContent = "← Tilbage til liste";
+      backBtn.dataset.action = "chat-log-back";
+      elements.chatLogContent.appendChild(backBtn);
+
+      const loadBtn = document.createElement("button");
+      loadBtn.type = "button";
+      loadBtn.className = "button-secondary analyse-log-back";
+      loadBtn.textContent = "Indlæs chat";
+      loadBtn.dataset.action = "chat-log-load";
+      loadBtn.dataset.entryId = selectedLogContent.id || "";
+      elements.chatLogContent.appendChild(loadBtn);
+      const deleteBtn = document.createElement("button");
+      deleteBtn.type = "button";
+      deleteBtn.className = "button-secondary analyse-log-back";
+      deleteBtn.textContent = "Slet gemt chat";
+      deleteBtn.dataset.action = "chat-log-delete";
+      deleteBtn.dataset.entryId = selectedLogContent.id || "";
+      elements.chatLogContent.appendChild(deleteBtn);
+
+      const useInSagsBtn = document.createElement("button");
+      useInSagsBtn.type = "button";
+      useInSagsBtn.className = "button-secondary analyse-log-back";
+      useInSagsBtn.textContent = "Brug i sagsbehandling";
+      useInSagsBtn.dataset.action = "use-chat-as-sags-context";
+      useInSagsBtn.dataset.entryId = selectedLogContent.id || "";
+      elements.chatLogContent.appendChild(useInSagsBtn);
+
+      const pre = document.createElement("pre");
+      pre.className = "analyse-log-full";
+      pre.textContent = formatChatLogEntryAsText(selectedLogContent);
+      elements.chatLogContent.appendChild(pre);
+    } else if (savedLogs.length) {
+      elements.chatLogContent.innerHTML = "";
+      const ul = document.createElement("ul");
+      ul.className = "analyse-log-list";
+      savedLogs.forEach((entry) => {
+        const li = document.createElement("li");
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "analyse-log-entry";
+        btn.dataset.entryId = entry.id || "";
+        const when = entry.updated_at || entry.created_at || "";
+        btn.textContent = `${entry.title || "Chat uden titel"} (${when})`;
+        li.appendChild(btn);
+        ul.appendChild(li);
+      });
+      elements.chatLogContent.appendChild(ul);
+    } else {
+      elements.chatLogContent.innerHTML = "";
+      const p = document.createElement("p");
+      p.className = "analyse-log-empty";
+      p.textContent = "Ingen gemte chats endnu.";
+      elements.chatLogContent.appendChild(p);
     }
   }
 
@@ -79,5 +168,8 @@ export function getInitialChatState() {
     usedModel: null,
     previousResponseId: null,
     contextFiles: [],
+    savedLogs: [],
+    selectedLogId: null,
+    selectedLogContent: null,
   };
 }
