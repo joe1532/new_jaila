@@ -139,6 +139,17 @@ const SAGS_CONTEXT_TARGET_SUBTABS = [
   { id: "lempelse", label: "Lempelse" },
   { id: "andet", label: "Andet" },
 ];
+const BESKATNINGSRET_AUTO_CONTEXT_SOURCES = [
+  "skattepligt_ligningsfrist",
+  "opgoerelse_indkomst",
+];
+const SAGS_SUBTAB_LABELS = {
+  skattepligt_ligningsfrist: "Skattepligt og ligningsfrist",
+  opgoerelse_indkomst: "Opgørelse af indkomst",
+  beskatningsret_indkomst: "Beskatningsret til indkomst",
+  lempelse: "Lempelse",
+  andet: "Andet",
+};
 
 const elements = {
   loginSection: document.getElementById("loginSection"),
@@ -190,6 +201,7 @@ const elements = {
   sagsFactsNotesLabel: document.getElementById("sagsFactsNotesLabel"),
   sagsFactsIncomeYears: document.getElementById("sagsFactsIncomeYears"),
   sagsFactsForeignIncome: document.getElementById("sagsFactsForeignIncome"),
+  sagsFactsBeskatningsretCountryBlock: document.getElementById("sagsFactsBeskatningsretCountryBlock"),
   sagsFactsForeignAssetsLiabilities: document.getElementById("sagsFactsForeignAssetsLiabilities"),
   sagsFactsResidence: document.getElementById("sagsFactsResidence"),
   sagsFactsResidenceOptions: document.getElementById("sagsFactsResidenceOptions"),
@@ -1032,6 +1044,10 @@ async function copySagsbehandlingAnswer() {
 function updateSagsFactsForActiveSubtab(patch) {
   const state = getState();
   const subtab = state.sagsbehandling.activeSubtab || "skattepligt_ligningsfrist";
+  const factsLockedBySubtab = state.sagsbehandling.factsLockedBySubtab || {};
+  if (factsLockedBySubtab[subtab]) {
+    return;
+  }
   const currentFactsBySubtab = state.sagsbehandling.factsBySubtab || {};
   const currentFacts = currentFactsBySubtab[subtab] || {};
   setState({
@@ -1278,6 +1294,7 @@ function getSagsbehandlingCasePatchFromState() {
     shared_facts: sags.sharedFacts || {},
     subtab_outputs: sags.subtabOutputs || {},
     locked_by_subtab: sags.subtabOutputLocked || {},
+    facts_locked_by_subtab: sags.factsLockedBySubtab || {},
     facts_by_subtab: sags.factsBySubtab || {},
     context_by_subtab: sags.contextBySubtab || {},
     messages_by_subtab: Object.fromEntries(
@@ -1338,6 +1355,7 @@ function applyCaseToSagsbehandlingState(caseEntry) {
       sharedFacts: caseEntry?.shared_facts || {},
       subtabOutputs: caseEntry?.subtab_outputs || {},
       subtabOutputLocked: caseEntry?.locked_by_subtab || {},
+      factsLockedBySubtab: caseEntry?.facts_locked_by_subtab || {},
       factsBySubtab: caseEntry?.facts_by_subtab || {},
       contextBySubtab: caseEntry?.context_by_subtab || {},
       factsPanelOpen: false,
@@ -1470,6 +1488,7 @@ async function logout() {
         sharedFacts: {},
         subtabOutputs: {},
         subtabOutputLocked: {},
+        factsLockedBySubtab: {},
         factsPanelOpen: false,
         factsBySubtab: {},
         contextBySubtab: {},
@@ -1710,6 +1729,7 @@ async function runSagsbehandling() {
   let generatedQuestion = "";
   const sharedFacts = getState().sagsbehandling.sharedFacts || {};
   const subtabOutputs = getState().sagsbehandling.subtabOutputs || {};
+  const subtabOutputLocked = getState().sagsbehandling.subtabOutputLocked || {};
 
   if (isSkattepligtFlow) {
     caseFacts = buildSagsCaseFactsPayload(activeSubtab) || {};
@@ -1805,12 +1825,32 @@ async function runSagsbehandling() {
         + selectedFactorText
         + residenceLine,
     );
-  } else if (activeSubtab === "lempelse" || activeSubtab === "andet") {
+  } else if (
+    activeSubtab === "opgoerelse_indkomst"
+    || activeSubtab === "beskatningsret_indkomst"
+    || activeSubtab === "lempelse"
+    || activeSubtab === "andet"
+  ) {
     const freeText = (elements.sagsbehandlingInput ? elements.sagsbehandlingInput.value : "").trim();
     const factsBySubtab = getState().sagsbehandling.factsBySubtab || {};
     const facts = factsBySubtab[activeSubtab] || {};
+    const beskatningsretCountryLine = activeSubtab === "beskatningsret_indkomst"
+      ? (() => {
+        const mode = String(facts.residenceCountryMode || "").trim();
+        if (mode === "danmark") {
+          return "Danmark";
+        }
+        if (mode === "other") {
+          const otherCountry = String(facts.residenceCountryOther || "").trim();
+          return otherCountry ? otherCountry : "Andet (ikke angivet)";
+        }
+        return "";
+      })()
+      : "";
     const factsLines = [
-      ["Indkomstår", facts.incomeYears],
+      ...(activeSubtab === "beskatningsret_indkomst" ? [] : [["Indkomstår", facts.incomeYears]]),
+      ...(activeSubtab === "beskatningsret_indkomst" ? [["Bopælsland", beskatningsretCountryLine]] : []),
+      ...(activeSubtab === "beskatningsret_indkomst" ? [["Kildeland", facts.sourceCountry]] : []),
       ["Indkomst/faktum", facts.foreignIncome],
       ["Aktiver/passiver", facts.foreignAssetsLiabilities],
       ["Bopælsfaktum", facts.residenceFact],
@@ -1825,7 +1865,7 @@ async function runSagsbehandling() {
     }
 
     generatedQuestion =
-      `Undertab: ${activeSubtab}\n`
+      `Undertab: ${SAGS_SUBTAB_LABELS[activeSubtab] || activeSubtab}\n`
       + `Sagsbeskrivelse: ${freeText || "(ingen fritekst angivet)"}\n`
       + (factsLines.length
         ? `\nFakta:\n${factsLines.map(([label, value]) => `- ${label}: ${value}`).join("\n")}`
@@ -1857,12 +1897,38 @@ async function runSagsbehandling() {
   if (sharedFactLines.length) {
     generatedQuestion += `\n\nFælles sagsfakta fra tidligere undertabs:\n${sharedFactLines.join("\n")}`;
   }
+  const autoBeskatningsretContextLines = activeSubtab === "beskatningsret_indkomst"
+    ? BESKATNINGSRET_AUTO_CONTEXT_SOURCES
+      .map((subtabKey) => {
+        if (!Boolean(subtabOutputLocked[subtabKey])) {
+          return "";
+        }
+        const answer = String((subtabOutputs[subtabKey] && subtabOutputs[subtabKey].answer) || "").trim();
+        if (!answer) {
+          return "";
+        }
+        const subtabLabel = SAGS_SUBTAB_LABELS[subtabKey] || subtabKey;
+        return `${subtabLabel} (låst):\n${answer}`;
+      })
+      .filter((block) => block)
+    : [];
+  if (autoBeskatningsretContextLines.length) {
+    generatedQuestion +=
+      `\n\nAutomatisk kontekst fra låste undertabs:\n${autoBeskatningsretContextLines.join("\n\n")}`;
+  }
+  const excludedSubtabs = new Set([activeSubtab]);
+  if (activeSubtab === "beskatningsret_indkomst") {
+    BESKATNINGSRET_AUTO_CONTEXT_SOURCES.forEach((subtabKey) => excludedSubtabs.add(subtabKey));
+  }
   const priorOutputLines = Object.entries(subtabOutputs || {})
-    .filter(([subtabKey]) => String(subtabKey || "").trim() && String(subtabKey || "").trim() !== activeSubtab)
+    .filter(([subtabKey]) => {
+      const safeSubtabKey = String(subtabKey || "").trim();
+      return safeSubtabKey && !excludedSubtabs.has(safeSubtabKey);
+    })
     .map(([subtabKey, output]) => {
       const answer = String((output && output.answer) || "").trim();
       if (!answer) return "";
-      return `Undertab ${subtabKey}:\n${answer}`;
+      return `Undertab ${SAGS_SUBTAB_LABELS[subtabKey] || subtabKey}:\n${answer}`;
     })
     .filter((block) => block);
   if (priorOutputLines.length) {
@@ -2614,6 +2680,8 @@ function bindEvents() {
   if (elements.sagsFactsSaveBtn) {
     elements.sagsFactsSaveBtn.addEventListener("click", () => {
       const activeSubtab = getState().sagsbehandling.activeSubtab || "skattepligt_ligningsfrist";
+      const factsLockedBySubtab = getState().sagsbehandling.factsLockedBySubtab || {};
+      const currentlyLocked = Boolean(factsLockedBySubtab[activeSubtab]);
       if (activeSubtab === "skattepligt_ligningsfrist") {
         const currentFactsBySubtab = getState().sagsbehandling.factsBySubtab || {};
         const currentFacts = currentFactsBySubtab[activeSubtab] || {};
@@ -2625,23 +2693,33 @@ function bindEvents() {
           renderSagsbehandling(elements, getState());
         }
       }
-      addSagsbehandlingMessage(
-        "system",
-        "Fakta gemt for undertab: " + activeSubtab + ".",
-      );
+      const nextLockedState = !currentlyLocked;
       setState({
         sagsbehandling: {
-          factsPanelOpen: false,
+          factsLockedBySubtab: {
+            ...factsLockedBySubtab,
+            [activeSubtab]: nextLockedState,
+          },
+          factsPanelOpen: nextLockedState ? false : true,
         },
       });
+      addSagsbehandlingMessage("system", nextLockedState
+        ? "Fakta gemt og låst for undertab: " + activeSubtab + "."
+        : "Fakta låst op for undertab: " + activeSubtab + ".");
       renderSagsbehandling(elements, getState());
-      setStatus("Fakta gemt lokalt.", "ok");
+      setStatus(nextLockedState ? "Fakta gemt og låst." : "Fakta er låst op og kan redigeres.", "ok");
       saveCurrentSagsCaseSnapshot();
     });
   }
 
   if (elements.sagsFactsClearBtn) {
     elements.sagsFactsClearBtn.addEventListener("click", () => {
+      const activeSubtab = getState().sagsbehandling.activeSubtab || "skattepligt_ligningsfrist";
+      const factsLockedBySubtab = getState().sagsbehandling.factsLockedBySubtab || {};
+      if (Boolean(factsLockedBySubtab[activeSubtab])) {
+        setStatus("Fakta er låst. Lås op før du rydder.", "error");
+        return;
+      }
       updateSagsFactsForActiveSubtab({
         incomeYears: "",
         foreignIncome: "",
@@ -2656,6 +2734,9 @@ function bindEvents() {
         foreignAssetsLiabilitiesType: "",
         specialTaxLiabilityMode: "",
         selfEmployedMode: "",
+        residenceCountryMode: "",
+        residenceCountryOther: "",
+        sourceCountry: "",
       });
       renderSagsbehandling(elements, getState());
       setStatus("Fakta ryddet lokalt.", "ok");
@@ -2687,6 +2768,50 @@ function bindEvents() {
       updateSagsFactsForActiveSubtab({
         foreignIncome: elements.sagsFactsForeignIncome.value,
       });
+    });
+  }
+  if (elements.sagsFactsBeskatningsretCountryBlock) {
+    elements.sagsFactsBeskatningsretCountryBlock.addEventListener("change", (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLInputElement)) {
+        return;
+      }
+      const activeSubtab = getState().sagsbehandling.activeSubtab || "";
+      if (activeSubtab !== "beskatningsret_indkomst") {
+        return;
+      }
+      const residenceMode = String(target.dataset.sagsResidenceCountryMode || "").trim();
+      if (!residenceMode || !target.checked) {
+        return;
+      }
+      updateSagsFactsForActiveSubtab({
+        residenceCountryMode: residenceMode,
+        residenceCountryOther: residenceMode === "other"
+          ? String(((getState().sagsbehandling.factsBySubtab || {})[activeSubtab] || {}).residenceCountryOther || "")
+          : "",
+      });
+      renderSagsbehandling(elements, getState());
+    });
+    elements.sagsFactsBeskatningsretCountryBlock.addEventListener("input", (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLInputElement)) {
+        return;
+      }
+      const activeSubtab = getState().sagsbehandling.activeSubtab || "";
+      if (activeSubtab !== "beskatningsret_indkomst") {
+        return;
+      }
+      if (String(target.dataset.sagsResidenceCountryOther || "").trim() === "true") {
+        updateSagsFactsForActiveSubtab({
+          residenceCountryOther: target.value,
+        });
+        return;
+      }
+      if (String(target.dataset.sagsSourceCountry || "").trim() === "true") {
+        updateSagsFactsForActiveSubtab({
+          sourceCountry: target.value,
+        });
+      }
     });
   }
 

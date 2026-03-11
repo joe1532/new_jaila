@@ -36,6 +36,7 @@ const state = {
     sharedFacts: {},
     subtabOutputs: {},
     subtabOutputLocked: {},
+    factsLockedBySubtab: {},
     factsPanelOpen: false,
     factsBySubtab: {},
     contextBySubtab: {},

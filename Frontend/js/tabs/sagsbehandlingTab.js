@@ -17,7 +17,7 @@ const SUBTAB_CONFIG = {
       "Vurder fradragsposter (dummy)",
       "Lav opgørelsesnotat (dummy)",
     ],
-    enabled: false,
+    enabled: true,
   },
   beskatningsret_indkomst: {
     title: "Sagsbehandling - Beskatningsret til indkomst",
@@ -27,7 +27,7 @@ const SUBTAB_CONFIG = {
       "Vurder DBO-relevans (dummy)",
       "Opsummer hjemmel (dummy)",
     ],
-    enabled: false,
+    enabled: true,
   },
   lempelse: {
     title: "Sagsbehandling - Lempelse",
@@ -240,8 +240,7 @@ const FACTS_UI_CONFIG = {
   },
   beskatningsret_indkomst: {
     panelTitle: "Fakta - Beskatningsret til indkomst",
-    incomeYearsLabel: "Indkomstår",
-    incomeYearsPlaceholder: "Fx 2023",
+    showIncomeYears: false,
     foreignIncomeLabel: "Land(e) og indkomstkilde",
     foreignIncomePlaceholder: "Fx Danmark/Tyskland, lønindkomst",
     foreignAssetsLiabilitiesLabel: "Arbejdssted / ophold",
@@ -321,6 +320,8 @@ export function renderSagsbehandling(elements, state) {
   const messages = state.sagsbehandling.messages || [];
   const subtabOutputLocked = state.sagsbehandling.subtabOutputLocked || {};
   const isOutputLocked = Boolean(subtabOutputLocked[activeSubtab]);
+  const factsLockedBySubtab = state.sagsbehandling.factsLockedBySubtab || {};
+  const isFactsLocked = Boolean(factsLockedBySubtab[activeSubtab]);
 
   if (elements.sagsbehandlingTitle) {
     const caseLabel = activeCaseId ? ` [Sag: ${activeCaseTitle || activeCaseId}]` : " [Ingen aktiv sag]";
@@ -574,11 +575,13 @@ export function renderSagsbehandling(elements, state) {
   if (elements.sagsFactsPanelTitle) {
     elements.sagsFactsPanelTitle.textContent = factsUiCfg.panelTitle;
   }
+  const showIncomeYears = factsUiCfg.showIncomeYears !== false;
   if (elements.sagsFactsIncomeYearsLabel) {
     elements.sagsFactsIncomeYearsLabel.textContent = withRequiredMarker(
-      factsUiCfg.incomeYearsLabel,
+      factsUiCfg.incomeYearsLabel || "Indkomstår",
       requiredFields.has("incomeYears"),
     );
+    elements.sagsFactsIncomeYearsLabel.classList.toggle("hidden", !showIncomeYears);
   }
   if (elements.sagsFactsFactorSelectionLabel) {
     elements.sagsFactsFactorSelectionLabel.textContent = withRequiredMarker(
@@ -618,6 +621,7 @@ export function renderSagsbehandling(elements, state) {
   }
   if (elements.sagsFactsIncomeYears) {
     elements.sagsFactsIncomeYears.placeholder = factsUiCfg.incomeYearsPlaceholder || "";
+    elements.sagsFactsIncomeYears.classList.toggle("hidden", !showIncomeYears);
   }
   if (
     elements.sagsFactsForeignIncome &&
@@ -627,6 +631,78 @@ export function renderSagsbehandling(elements, state) {
   }
   if (elements.sagsFactsForeignIncome) {
     elements.sagsFactsForeignIncome.placeholder = factsUiCfg.foreignIncomePlaceholder || "";
+  }
+  if (elements.sagsFactsBeskatningsretCountryBlock) {
+    const isBeskatningsretSubtab = activeSubtab === "beskatningsret_indkomst";
+    elements.sagsFactsBeskatningsretCountryBlock.classList.toggle("hidden", !isBeskatningsretSubtab);
+    if (isBeskatningsretSubtab) {
+      const selectedResidenceCountryMode = String(facts.residenceCountryMode || "").trim();
+      const residenceCountryOther = String(facts.residenceCountryOther || "").trim();
+      const sourceCountry = String(facts.sourceCountry || "").trim();
+      elements.sagsFactsBeskatningsretCountryBlock.innerHTML = "";
+
+      const residenceLabel = document.createElement("div");
+      residenceLabel.className = "sags-facts-factor-detail-label";
+      residenceLabel.textContent = "Bopælsland";
+      elements.sagsFactsBeskatningsretCountryBlock.appendChild(residenceLabel);
+
+      const residenceWrap = document.createElement("div");
+      residenceWrap.className = "sags-facts-suboptions sags-beskatningsret-country-row";
+
+      const dkRow = document.createElement("label");
+      dkRow.className = "sags-facts-suboption-item";
+      const dkRadio = document.createElement("input");
+      dkRadio.type = "radio";
+      dkRadio.name = "sagsBeskatningsretResidenceCountryMode";
+      dkRadio.className = "sags-facts-suboption-radio";
+      dkRadio.dataset.sagsResidenceCountryMode = "danmark";
+      dkRadio.checked = selectedResidenceCountryMode === "danmark";
+      dkRow.appendChild(dkRadio);
+      const dkText = document.createElement("span");
+      dkText.textContent = "Danmark";
+      dkRow.appendChild(dkText);
+      residenceWrap.appendChild(dkRow);
+
+      const otherRow = document.createElement("label");
+      otherRow.className = "sags-facts-suboption-item";
+      const otherRadio = document.createElement("input");
+      otherRadio.type = "radio";
+      otherRadio.name = "sagsBeskatningsretResidenceCountryMode";
+      otherRadio.className = "sags-facts-suboption-radio";
+      otherRadio.dataset.sagsResidenceCountryMode = "other";
+      otherRadio.checked = selectedResidenceCountryMode === "other";
+      otherRow.appendChild(otherRadio);
+      const otherText = document.createElement("span");
+      otherText.textContent = "Andet (angiv land)";
+      otherRow.appendChild(otherText);
+      residenceWrap.appendChild(otherRow);
+
+      const residenceOtherInput = document.createElement("input");
+      residenceOtherInput.type = "text";
+      residenceOtherInput.className = "input sags-facts-residence-inline-input";
+      residenceOtherInput.placeholder = "Angiv bopælsland";
+      residenceOtherInput.dataset.sagsResidenceCountryOther = "true";
+      residenceOtherInput.value = residenceCountryOther;
+      residenceOtherInput.disabled = selectedResidenceCountryMode !== "other" || isFactsLocked;
+      residenceWrap.appendChild(residenceOtherInput);
+      elements.sagsFactsBeskatningsretCountryBlock.appendChild(residenceWrap);
+
+      const sourceLabel = document.createElement("div");
+      sourceLabel.className = "sags-facts-factor-detail-label";
+      sourceLabel.textContent = "Kildeland";
+      elements.sagsFactsBeskatningsretCountryBlock.appendChild(sourceLabel);
+
+      const sourceInput = document.createElement("input");
+      sourceInput.type = "text";
+      sourceInput.className = "input sags-facts-input";
+      sourceInput.placeholder = "Angiv kildeland";
+      sourceInput.dataset.sagsSourceCountry = "true";
+      sourceInput.value = sourceCountry;
+      sourceInput.disabled = isFactsLocked;
+      elements.sagsFactsBeskatningsretCountryBlock.appendChild(sourceInput);
+    } else {
+      elements.sagsFactsBeskatningsretCountryBlock.innerHTML = "";
+    }
   }
   if (
     elements.sagsFactsForeignAssetsLiabilities &&
@@ -860,7 +936,9 @@ export function renderSagsbehandling(elements, state) {
     elements.sagsFactsForeignIncomeLabel.classList.toggle("hidden", hideLegacyFields);
   }
   if (elements.sagsFactsForeignIncome) {
-    elements.sagsFactsForeignIncome.classList.toggle("hidden", hideLegacyFields);
+    const hideForeignIncomeInput =
+      hideLegacyFields || activeSubtab === "beskatningsret_indkomst";
+    elements.sagsFactsForeignIncome.classList.toggle("hidden", hideForeignIncomeInput);
   }
   if (elements.sagsFactsForeignAssetsLiabilitiesLabel) {
     elements.sagsFactsForeignAssetsLiabilitiesLabel.classList.toggle("hidden", hideLegacyFields);
@@ -939,5 +1017,22 @@ export function renderSagsbehandling(elements, state) {
     const isReadOnlyRetsgrundlag = activeSubtab === "skattepligt_ligningsfrist";
     elements.sagsFactsNotes.readOnly = isReadOnlyRetsgrundlag;
     elements.sagsFactsNotes.classList.toggle("input-readonly", isReadOnlyRetsgrundlag);
+  }
+  if (elements.sagsFactsSaveBtn) {
+    elements.sagsFactsSaveBtn.textContent = isFactsLocked ? "Lås op fakta" : "Gem fakta";
+  }
+  if (elements.sagsFactsClearBtn) {
+    elements.sagsFactsClearBtn.disabled = isFactsLocked;
+  }
+  if (elements.sagsFactsPanel) {
+    const lockableControls = elements.sagsFactsPanel.querySelectorAll(
+      "input, textarea, select",
+    );
+    lockableControls.forEach((control) => {
+      const field = control;
+      if (isFactsLocked) {
+        field.disabled = true;
+      }
+    });
   }
 }

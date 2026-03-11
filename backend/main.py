@@ -1335,6 +1335,7 @@ def create_case_endpoint(payload: CaseCreateRequest) -> CaseGetResponse:
             shared_facts=entry.get("shared_facts", {}),
             subtab_outputs=entry.get("subtab_outputs", {}),
             locked_by_subtab=entry.get("locked_by_subtab", {}),
+            facts_locked_by_subtab=entry.get("facts_locked_by_subtab", {}),
             facts_by_subtab=entry.get("facts_by_subtab", {}),
             context_by_subtab=entry.get("context_by_subtab", {}),
             messages_by_subtab=entry.get("messages_by_subtab", {}),
@@ -1368,6 +1369,7 @@ def get_case_endpoint(case_id: str, user: str = Query(..., min_length=1)) -> Cas
         shared_facts=entry.get("shared_facts", {}),
         subtab_outputs=entry.get("subtab_outputs", {}),
         locked_by_subtab=entry.get("locked_by_subtab", {}),
+        facts_locked_by_subtab=entry.get("facts_locked_by_subtab", {}),
         facts_by_subtab=entry.get("facts_by_subtab", {}),
         context_by_subtab=entry.get("context_by_subtab", {}),
         messages_by_subtab=entry.get("messages_by_subtab", {}),
@@ -1392,6 +1394,8 @@ def update_case_endpoint(case_id: str, payload: CaseUpdateRequest) -> CaseGetRes
         patch["subtab_outputs"] = payload.subtab_outputs
     if payload.locked_by_subtab is not None:
         patch["locked_by_subtab"] = payload.locked_by_subtab
+    if payload.facts_locked_by_subtab is not None:
+        patch["facts_locked_by_subtab"] = payload.facts_locked_by_subtab
     if payload.facts_by_subtab is not None:
         patch["facts_by_subtab"] = payload.facts_by_subtab
     if payload.context_by_subtab is not None:
@@ -1418,6 +1422,7 @@ def update_case_endpoint(case_id: str, payload: CaseUpdateRequest) -> CaseGetRes
         shared_facts=entry.get("shared_facts", {}),
         subtab_outputs=entry.get("subtab_outputs", {}),
         locked_by_subtab=entry.get("locked_by_subtab", {}),
+        facts_locked_by_subtab=entry.get("facts_locked_by_subtab", {}),
         facts_by_subtab=entry.get("facts_by_subtab", {}),
         context_by_subtab=entry.get("context_by_subtab", {}),
         messages_by_subtab=entry.get("messages_by_subtab", {}),

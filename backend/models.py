@@ -191,6 +191,7 @@ class CaseGetResponse(BaseModel):
     shared_facts: dict[str, Any] = Field(default_factory=dict)
     subtab_outputs: dict[str, Any] = Field(default_factory=dict)
     locked_by_subtab: dict[str, bool] = Field(default_factory=dict)
+    facts_locked_by_subtab: dict[str, bool] = Field(default_factory=dict)
     facts_by_subtab: dict[str, Any] = Field(default_factory=dict)
     context_by_subtab: dict[str, Any] = Field(default_factory=dict)
     messages_by_subtab: dict[str, list[ChatMessage]] = Field(default_factory=dict)
@@ -206,6 +207,7 @@ class CaseUpdateRequest(BaseModel):
     shared_facts: dict[str, Any] | None = None
     subtab_outputs: dict[str, Any] | None = None
     locked_by_subtab: dict[str, bool] | None = None
+    facts_locked_by_subtab: dict[str, bool] | None = None
     facts_by_subtab: dict[str, Any] | None = None
     context_by_subtab: dict[str, Any] | None = None
     messages_by_subtab: dict[str, list[ChatMessage]] | None = None

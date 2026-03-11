@@ -89,6 +89,7 @@ class JsonCaseStore(CaseStore):
             "shared_facts": {},
             "subtab_outputs": {},
             "locked_by_subtab": {},
+            "facts_locked_by_subtab": {},
             "facts_by_subtab": {},
             "context_by_subtab": {},
             "messages_by_subtab": {},

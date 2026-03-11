@@ -539,6 +539,16 @@ a {
   margin-top: 4px;
 }
 
+.sags-beskatningsret-country-block {
+  margin-bottom: 10px;
+}
+
+.sags-beskatningsret-country-row {
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
 .sags-facts-residence-disabled {
   pointer-events: none;
   opacity: 0.6;
@@ -987,6 +997,13 @@ a {
 .msg-assistant-label {
   font-weight: 700;
   margin-bottom: 8px;
+}
+
+.msg-assistant-text {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: anywhere;
 }
 
 .msg-system {
