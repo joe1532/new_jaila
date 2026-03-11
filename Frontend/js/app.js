@@ -180,6 +180,7 @@ const elements = {
   sagsbehandlingLockBtn: document.getElementById("sagsbehandlingLockBtn"),
   sagsbehandlingClearBtn: document.getElementById("sagsbehandlingClearBtn"),
   sagsStartCaseBtn: document.getElementById("sagsStartCaseBtn"),
+  sagsRenameCaseBtn: document.getElementById("sagsRenameCaseBtn"),
   sagsCaseSelect: document.getElementById("sagsCaseSelect"),
   sagsContextPanel: document.getElementById("sagsContextPanel"),
   sagsContextTitle: document.getElementById("sagsContextTitle"),
@@ -1327,6 +1328,14 @@ function updateSagsCaseSelector() {
     }
     elements.sagsCaseSelect.appendChild(option);
   });
+  updateSagsCaseActionsState();
+}
+
+function updateSagsCaseActionsState() {
+  if (!elements.sagsRenameCaseBtn) return;
+  const sags = getState().sagsbehandling || {};
+  const activeCaseId = String(sags.activeCaseId || "").trim();
+  elements.sagsRenameCaseBtn.disabled = !activeCaseId;
 }
 
 function applyCaseToSagsbehandlingState(caseEntry) {
@@ -1441,6 +1450,56 @@ async function startNewSagsCase() {
     setStatus("Ny sag startet.", "ok");
   } catch (err) {
     setStatus("Kunne ikke starte ny sag: " + (err.message || "Fejl"), "error");
+  }
+}
+
+async function renameActiveSagsCase() {
+  const user = (getActiveUser() || "").trim();
+  const sags = getState().sagsbehandling || {};
+  const activeCaseId = String(sags.activeCaseId || "").trim();
+  if (!user || !activeCaseId) {
+    setStatus("Vælg først en sag, før du omdøber.", "error");
+    return;
+  }
+  const cases = Array.isArray(sags.cases) ? sags.cases : [];
+  const activeCase = cases.find((entry) => String(entry?.id || "").trim() === activeCaseId);
+  const currentTitle = String(activeCase?.title || "Ny sag").trim();
+  const nextTitleRaw = window.prompt("Nyt navn til sag:", currentTitle);
+  if (nextTitleRaw == null) {
+    return;
+  }
+  const nextTitle = String(nextTitleRaw || "").trim();
+  if (!nextTitle) {
+    setStatus("Sagsnavn må ikke være tomt.", "error");
+    return;
+  }
+  if (nextTitle === currentTitle) {
+    return;
+  }
+  try {
+    const updated = await updateCase(activeCaseId, {
+      user,
+      title: nextTitle,
+    });
+    const updatedCases = cases.map((entry) =>
+      String(entry?.id || "").trim() === activeCaseId
+        ? {
+          ...entry,
+          title: updated?.title || nextTitle,
+          updated_at: updated?.updated_at || entry.updated_at || entry.created_at || "",
+        }
+        : entry,
+    );
+    setState({
+      sagsbehandling: {
+        cases: updatedCases,
+      },
+    });
+    renderSagsbehandling(elements, getState());
+    updateSagsCaseSelector();
+    setStatus("Sag omdøbt.", "ok");
+  } catch (err) {
+    setStatus("Kunne ikke omdøbe sag: " + (err.message || "Fejl"), "error");
   }
 }
 
@@ -2367,6 +2426,11 @@ function bindEvents() {
       startNewSagsCase();
     });
   }
+  if (elements.sagsRenameCaseBtn) {
+    elements.sagsRenameCaseBtn.addEventListener("click", () => {
+      renameActiveSagsCase();
+    });
+  }
   if (elements.sagsCaseSelect) {
     elements.sagsCaseSelect.addEventListener("change", () => {
       const selected = String(elements.sagsCaseSelect.value || "").trim();
@@ -2377,6 +2441,7 @@ function bindEvents() {
           },
         });
         renderSagsbehandling(elements, getState());
+        updateSagsCaseActionsState();
         return;
       }
       loadSagsCase(selected);
