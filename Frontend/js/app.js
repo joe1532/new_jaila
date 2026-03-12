@@ -6,7 +6,7 @@ import {
   saveAnalyseLog,
 } from "./api/analyseLogsApi.js";
 import { deleteChatLog, getChatLog, listChatLogs, saveChatLog } from "./api/chatLogsApi.js";
-import { createCase, getCase, listCases, updateCase } from "./api/casesApi.js";
+import { createCase, deleteCase, getCase, listCases, updateCase } from "./api/casesApi.js";
 import { getSagsLegalBasis } from "./api/sagsbehandlingApi.js";
 import { exportChatPdf, sendChat, sendChatStream } from "./api/chatApi.js";
 import {
@@ -181,6 +181,7 @@ const elements = {
   sagsbehandlingClearBtn: document.getElementById("sagsbehandlingClearBtn"),
   sagsStartCaseBtn: document.getElementById("sagsStartCaseBtn"),
   sagsRenameCaseBtn: document.getElementById("sagsRenameCaseBtn"),
+  sagsDeleteCaseBtn: document.getElementById("sagsDeleteCaseBtn"),
   sagsCaseSelect: document.getElementById("sagsCaseSelect"),
   sagsContextPanel: document.getElementById("sagsContextPanel"),
   sagsContextTitle: document.getElementById("sagsContextTitle"),
@@ -1097,6 +1098,85 @@ function formatDanishList(values) {
   return `${cleaned.slice(0, -1).join(", ")} og ${cleaned[cleaned.length - 1]}`;
 }
 
+function buildWorkCountriesFromFacts(facts) {
+  const modes = Array.isArray(facts.workCountryModes)
+    ? facts.workCountryModes.map((value) => String(value || "").trim()).filter((value) => value)
+    : String(facts.workCountryMode || "").trim()
+      ? [String(facts.workCountryMode || "").trim()]
+      : [];
+  const selectedModes = new Set(modes);
+  const countries = [];
+  if (selectedModes.has("danmark")) {
+    countries.push("Danmark");
+  }
+  const customCountries = Array.isArray(facts.workCountryDenmarkFields)
+    ? facts.workCountryDenmarkFields
+    : [];
+  const customChecked = Array.isArray(facts.workCountryCustomChecked)
+    ? facts.workCountryCustomChecked
+    : [];
+  customCountries
+    .forEach((value, idx) => {
+      if (!Boolean(customChecked[idx])) {
+        return;
+      }
+      const text = String(value || "").trim();
+      if (!text) {
+        return;
+      }
+      countries.push(text);
+    });
+
+  const seen = new Set();
+  const deduped = [];
+  countries.forEach((country) => {
+    const key = country.toLowerCase();
+    if (!key || seen.has(key)) {
+      return;
+    }
+    seen.add(key);
+    deduped.push(country);
+  });
+  return deduped;
+}
+
+function pruneWorkCountryDays(facts) {
+  const countries = buildWorkCountriesFromFacts(facts);
+  const currentMap = facts.workCountryDaysByCountry && typeof facts.workCountryDaysByCountry === "object"
+    ? facts.workCountryDaysByCountry
+    : {};
+  const nextMap = {};
+  countries.forEach((country) => {
+    if (Object.prototype.hasOwnProperty.call(currentMap, country)) {
+      nextMap[country] = currentMap[country];
+    }
+  });
+  return nextMap;
+}
+
+function sanitizeWorkDaysInput(value) {
+  const normalized = String(value || "").replace(",", ".");
+  const digitsAndDot = normalized.replace(/[^0-9.]/g, "");
+  const parts = digitsAndDot.split(".");
+  if (parts.length <= 1) {
+    return digitsAndDot;
+  }
+  return `${parts[0]}.${parts.slice(1).join("")}`;
+}
+
+function formatWorkDaysTotal(daysMap, countries) {
+  const totalDays = (Array.isArray(countries) ? countries : []).reduce((sum, country) => {
+    const raw = String((daysMap && daysMap[country]) || "").trim();
+    if (!raw) return sum;
+    const normalized = raw.replace(",", ".");
+    const numeric = Number(normalized);
+    return Number.isFinite(numeric) ? sum + numeric : sum;
+  }, 0);
+  return Number.isInteger(totalDays)
+    ? String(totalDays)
+    : totalDays.toFixed(2).replace(/\.00$/, "").replace(/(\.\d)0$/, "$1");
+}
+
 function buildSagsCaseFactsPayload(subtab) {
   const state = getState();
   const factsBySubtab = state.sagsbehandling.factsBySubtab || {};
@@ -1332,10 +1412,15 @@ function updateSagsCaseSelector() {
 }
 
 function updateSagsCaseActionsState() {
-  if (!elements.sagsRenameCaseBtn) return;
+  if (!elements.sagsRenameCaseBtn && !elements.sagsDeleteCaseBtn) return;
   const sags = getState().sagsbehandling || {};
   const activeCaseId = String(sags.activeCaseId || "").trim();
-  elements.sagsRenameCaseBtn.disabled = !activeCaseId;
+  if (elements.sagsRenameCaseBtn) {
+    elements.sagsRenameCaseBtn.disabled = !activeCaseId;
+  }
+  if (elements.sagsDeleteCaseBtn) {
+    elements.sagsDeleteCaseBtn.disabled = !activeCaseId;
+  }
 }
 
 function applyCaseToSagsbehandlingState(caseEntry) {
@@ -1500,6 +1585,57 @@ async function renameActiveSagsCase() {
     setStatus("Sag omdøbt.", "ok");
   } catch (err) {
     setStatus("Kunne ikke omdøbe sag: " + (err.message || "Fejl"), "error");
+  }
+}
+
+async function deleteActiveSagsCase() {
+  const user = (getActiveUser() || "").trim();
+  const sags = getState().sagsbehandling || {};
+  const activeCaseId = String(sags.activeCaseId || "").trim();
+  if (!user || !activeCaseId) {
+    setStatus("Vælg først en sag, før du sletter.", "error");
+    return;
+  }
+  const cases = Array.isArray(sags.cases) ? sags.cases : [];
+  const activeCase = cases.find((entry) => String(entry?.id || "").trim() === activeCaseId);
+  const caseTitle = String(activeCase?.title || "Ny sag").trim();
+  const confirmed = window.confirm(`Slet sag "${caseTitle}"? Denne handling kan ikke fortrydes.`);
+  if (!confirmed) {
+    return;
+  }
+  try {
+    const result = await deleteCase(user, activeCaseId);
+    const remainingCases = Array.isArray(result?.entries) ? result.entries : [];
+    setState({
+      sagsbehandling: {
+        activeCaseId: null,
+        cases: remainingCases,
+        inputText: "",
+        messages: [],
+        messagesBySubtab: {},
+        previousResponseId: null,
+        previousResponseIdBySubtab: {},
+        usedModel: null,
+        usedModelBySubtab: {},
+        sharedFacts: {},
+        subtabOutputs: {},
+        subtabOutputLocked: {},
+        factsLockedBySubtab: {},
+        factsPanelOpen: false,
+        factsBySubtab: {},
+        contextBySubtab: {},
+      },
+    });
+    renderSagsbehandling(elements, getState());
+    updateSagsCaseSelector();
+    if (remainingCases.length > 0 && remainingCases[0]?.id) {
+      await loadSagsCase(remainingCases[0].id);
+      setStatus("Sag slettet. Næste sag er indlæst.", "ok");
+      return;
+    }
+    setStatus("Sag slettet.", "ok");
+  } catch (err) {
+    setStatus("Kunne ikke slette sag: " + (err.message || "Fejl"), "error");
   }
 }
 
@@ -1906,10 +2042,45 @@ async function runSagsbehandling() {
         return "";
       })()
       : "";
+    const beskatningsretEmployerLine = activeSubtab === "beskatningsret_indkomst"
+      ? (() => {
+        const mode = String(facts.employerResidenceMode || "").trim();
+        if (mode === "danmark") return "Danmark";
+        if (mode === "private_foreign") return "Privat udenlandsk arbejdsgiver";
+        if (mode === "public_foreign") return "Offentlig udenlandsk arbejdsgiver";
+        return "";
+      })()
+      : "";
     const factsLines = [
       ...(activeSubtab === "beskatningsret_indkomst" ? [] : [["Indkomstår", facts.incomeYears]]),
       ...(activeSubtab === "beskatningsret_indkomst" ? [["Bopælsland", beskatningsretCountryLine]] : []),
-      ...(activeSubtab === "beskatningsret_indkomst" ? [["Kildeland", facts.sourceCountry]] : []),
+      ...(activeSubtab === "beskatningsret_indkomst" ? [["Arbejdsgiver hjemmehørende i", beskatningsretEmployerLine]] : []),
+      ...(activeSubtab === "beskatningsret_indkomst" ? [["Navn på arbejdsgiver", facts.employerName]] : []),
+      ...(activeSubtab === "beskatningsret_indkomst" ? [["Land, hvor arbejdsgiver er hjemmehørende", facts.employerCountry]] : []),
+      ...(activeSubtab === "beskatningsret_indkomst"
+        ? [[
+          "Lande, hvor der er udført arbejde",
+          buildWorkCountriesFromFacts(facts).join(", "),
+        ]]
+        : []),
+      ...(activeSubtab === "beskatningsret_indkomst"
+        ? [[
+          "Arbejdsdage pr. land",
+          (() => {
+            const countries = buildWorkCountriesFromFacts(facts);
+            const daysMap = facts.workCountryDaysByCountry && typeof facts.workCountryDaysByCountry === "object"
+              ? facts.workCountryDaysByCountry
+              : {};
+            return countries
+              .map((country) => {
+                const days = String(daysMap[country] || "").trim();
+                return days ? `${country}: ${days}` : "";
+              })
+              .filter((line) => line)
+              .join(" | ");
+          })(),
+        ]]
+        : []),
       ["Indkomst/faktum", facts.foreignIncome],
       ["Aktiver/passiver", facts.foreignAssetsLiabilities],
       ["Bopælsfaktum", facts.residenceFact],
@@ -2104,6 +2275,13 @@ function clearSagsbehandlingCurrentSubtab() {
           residenceFact: "",
           residenceMode: "",
           residenceSinceYear: "",
+          employerResidenceMode: "",
+          employerName: "",
+          employerCountry: "",
+          workCountryModes: [],
+          workCountryDenmarkFields: [],
+          workCountryCustomChecked: [],
+          workCountryDaysByCountry: {},
           notes: "",
           selectedFactors: [],
           factorDetails: {},
@@ -2429,6 +2607,11 @@ function bindEvents() {
   if (elements.sagsRenameCaseBtn) {
     elements.sagsRenameCaseBtn.addEventListener("click", () => {
       renameActiveSagsCase();
+    });
+  }
+  if (elements.sagsDeleteCaseBtn) {
+    elements.sagsDeleteCaseBtn.addEventListener("click", () => {
+      deleteActiveSagsCase();
     });
   }
   if (elements.sagsCaseSelect) {
@@ -2801,7 +2984,13 @@ function bindEvents() {
         selfEmployedMode: "",
         residenceCountryMode: "",
         residenceCountryOther: "",
-        sourceCountry: "",
+        employerResidenceMode: "",
+        employerName: "",
+        employerCountry: "",
+        workCountryModes: [],
+        workCountryDenmarkFields: [],
+        workCountryCustomChecked: [],
+        workCountryDaysByCountry: {},
       });
       renderSagsbehandling(elements, getState());
       setStatus("Fakta ryddet lokalt.", "ok");
@@ -2846,16 +3035,80 @@ function bindEvents() {
         return;
       }
       const residenceMode = String(target.dataset.sagsResidenceCountryMode || "").trim();
-      if (!residenceMode || !target.checked) {
+      if (residenceMode && target.checked) {
+        updateSagsFactsForActiveSubtab({
+          residenceCountryMode: residenceMode,
+          residenceCountryOther: residenceMode === "other"
+            ? String(((getState().sagsbehandling.factsBySubtab || {})[activeSubtab] || {}).residenceCountryOther || "")
+            : "",
+        });
+        renderSagsbehandling(elements, getState());
         return;
       }
-      updateSagsFactsForActiveSubtab({
-        residenceCountryMode: residenceMode,
-        residenceCountryOther: residenceMode === "other"
-          ? String(((getState().sagsbehandling.factsBySubtab || {})[activeSubtab] || {}).residenceCountryOther || "")
-          : "",
-      });
-      renderSagsbehandling(elements, getState());
+      const employerMode = String(target.dataset.sagsEmployerResidenceMode || "").trim();
+      if (employerMode && target.checked) {
+        updateSagsFactsForActiveSubtab({
+          employerResidenceMode: employerMode,
+        });
+        renderSagsbehandling(elements, getState());
+        return;
+      }
+      const workCountryMode = String(target.dataset.sagsWorkCountryMode || "").trim();
+      if (workCountryMode) {
+        const currentFacts = ((getState().sagsbehandling.factsBySubtab || {})[activeSubtab] || {});
+        const currentModes = Array.isArray(currentFacts.workCountryModes)
+          ? currentFacts.workCountryModes.map((value) => String(value || "").trim()).filter((value) => value)
+          : String(currentFacts.workCountryMode || "").trim()
+            ? [String(currentFacts.workCountryMode || "").trim()]
+            : [];
+        const nextModes = target.checked
+          ? Array.from(new Set([...currentModes, workCountryMode]))
+          : currentModes.filter((mode) => mode !== workCountryMode);
+        const nextFacts = {
+          ...currentFacts,
+          workCountryModes: nextModes,
+          workCountryMode: "",
+          workCountryDenmarkFields: nextModes.includes("danmark")
+            ? (Array.isArray(currentFacts.workCountryDenmarkFields)
+              ? currentFacts.workCountryDenmarkFields
+              : [])
+            : [],
+        };
+        updateSagsFactsForActiveSubtab({
+          workCountryModes: nextFacts.workCountryModes,
+          workCountryMode: nextFacts.workCountryMode,
+          workCountryDenmarkFields: nextFacts.workCountryDenmarkFields,
+          workCountryDaysByCountry: pruneWorkCountryDays(nextFacts),
+        });
+        renderSagsbehandling(elements, getState());
+        return;
+      }
+      const workCountryTextIndex = String(target.dataset.sagsWorkCountryDenmarkIndex || "").trim();
+      if (workCountryTextIndex) {
+        renderSagsbehandling(elements, getState());
+        return;
+      }
+      const workCountryCustomCheckedIndex = String(target.dataset.sagsWorkCountryCustomCheckedIndex || "").trim();
+      if (workCountryCustomCheckedIndex) {
+        const idx = Number(workCountryCustomCheckedIndex);
+        if (Number.isInteger(idx) && idx >= 0 && idx < 6) {
+          const currentFacts = ((getState().sagsbehandling.factsBySubtab || {})[activeSubtab] || {});
+          const nextChecked = Array.isArray(currentFacts.workCountryCustomChecked)
+            ? [...currentFacts.workCountryCustomChecked]
+            : [];
+          nextChecked[idx] = Boolean(target.checked);
+          const nextFacts = {
+            ...currentFacts,
+            workCountryCustomChecked: nextChecked,
+          };
+          updateSagsFactsForActiveSubtab({
+            workCountryCustomChecked: nextChecked,
+            workCountryDaysByCountry: pruneWorkCountryDays(nextFacts),
+          });
+          renderSagsbehandling(elements, getState());
+        }
+        return;
+      }
     });
     elements.sagsFactsBeskatningsretCountryBlock.addEventListener("input", (event) => {
       const target = event.target;
@@ -2872,10 +3125,66 @@ function bindEvents() {
         });
         return;
       }
-      if (String(target.dataset.sagsSourceCountry || "").trim() === "true") {
+      if (String(target.dataset.sagsEmployerName || "").trim() === "true") {
         updateSagsFactsForActiveSubtab({
-          sourceCountry: target.value,
+          employerName: target.value,
         });
+        return;
+      }
+      if (String(target.dataset.sagsEmployerCountry || "").trim() === "true") {
+        updateSagsFactsForActiveSubtab({
+          employerCountry: target.value,
+        });
+        return;
+      }
+      const workCountryIndexRaw = String(target.dataset.sagsWorkCountryDenmarkIndex || "").trim();
+      if (workCountryIndexRaw) {
+        const idx = Number(workCountryIndexRaw);
+        if (Number.isInteger(idx) && idx >= 0 && idx < 6) {
+          const currentFacts = ((getState().sagsbehandling.factsBySubtab || {})[activeSubtab] || {});
+          const nextFields = Array.isArray(currentFacts.workCountryDenmarkFields)
+            ? [...currentFacts.workCountryDenmarkFields]
+            : [];
+          nextFields[idx] = target.value;
+          const nextFacts = {
+            ...currentFacts,
+            workCountryDenmarkFields: nextFields,
+          };
+          updateSagsFactsForActiveSubtab({
+            workCountryDenmarkFields: nextFields,
+            workCountryDaysByCountry: pruneWorkCountryDays(nextFacts),
+          });
+        }
+        return;
+      }
+      const workCountryDaysCountry = String(target.dataset.sagsWorkCountryDaysCountry || "").trim();
+      if (workCountryDaysCountry) {
+        const sanitizedValue = sanitizeWorkDaysInput(target.value);
+        if (target.value !== sanitizedValue) {
+          target.value = sanitizedValue;
+        }
+        const currentFacts = ((getState().sagsbehandling.factsBySubtab || {})[activeSubtab] || {});
+        const currentMap = currentFacts.workCountryDaysByCountry && typeof currentFacts.workCountryDaysByCountry === "object"
+          ? currentFacts.workCountryDaysByCountry
+          : {};
+        const nextDaysMap = {
+          ...currentMap,
+          [workCountryDaysCountry]: sanitizedValue,
+        };
+        updateSagsFactsForActiveSubtab({
+          workCountryDaysByCountry: {
+            ...nextDaysMap,
+          },
+        });
+        const totalInput = elements.sagsFactsBeskatningsretCountryBlock
+          ? elements.sagsFactsBeskatningsretCountryBlock.querySelector("[data-sags-work-days-total='true']")
+          : null;
+        if (totalInput instanceof HTMLInputElement) {
+          const currentFacts = ((getState().sagsbehandling.factsBySubtab || {})[activeSubtab] || {});
+          const countries = buildWorkCountriesFromFacts(currentFacts);
+          totalInput.value = formatWorkDaysTotal(nextDaysMap, countries);
+        }
+        return;
       }
     });
   }

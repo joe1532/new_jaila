@@ -315,6 +315,13 @@ export function renderSagsbehandling(elements, state) {
     specialTaxLiabilityMode: "",
     residenceMode: "",
     residenceSinceYear: "",
+    employerResidenceMode: "",
+    employerName: "",
+    employerCountry: "",
+    workCountryModes: [],
+    workCountryDenmarkFields: [],
+    workCountryCustomChecked: [],
+    workCountryDaysByCountry: {},
     ...(factsBySubtab[activeSubtab] || {}),
   };
   const messages = state.sagsbehandling.messages || [];
@@ -638,7 +645,25 @@ export function renderSagsbehandling(elements, state) {
     if (isBeskatningsretSubtab) {
       const selectedResidenceCountryMode = String(facts.residenceCountryMode || "").trim();
       const residenceCountryOther = String(facts.residenceCountryOther || "").trim();
-      const sourceCountry = String(facts.sourceCountry || "").trim();
+      const selectedEmployerResidenceMode = String(facts.employerResidenceMode || "").trim();
+      const employerName = String(facts.employerName || "").trim();
+      const employerCountry = String(facts.employerCountry || "").trim();
+      const selectedWorkCountryModes = Array.isArray(facts.workCountryModes)
+        ? facts.workCountryModes.map((value) => String(value || "").trim()).filter((value) => value)
+        : String(facts.workCountryMode || "").trim()
+          ? [String(facts.workCountryMode || "").trim()]
+          : [];
+      const selectedWorkCountrySet = new Set(selectedWorkCountryModes);
+      const workCountryDenmarkFields = Array.isArray(facts.workCountryDenmarkFields)
+        ? facts.workCountryDenmarkFields
+        : [];
+      const workCountryCustomChecked = Array.isArray(facts.workCountryCustomChecked)
+        ? facts.workCountryCustomChecked
+        : [];
+      const workCountryDaysByCountry =
+        facts.workCountryDaysByCountry && typeof facts.workCountryDaysByCountry === "object"
+          ? facts.workCountryDaysByCountry
+          : {};
       elements.sagsFactsBeskatningsretCountryBlock.innerHTML = "";
 
       const residenceLabel = document.createElement("div");
@@ -687,19 +712,204 @@ export function renderSagsbehandling(elements, state) {
       residenceWrap.appendChild(residenceOtherInput);
       elements.sagsFactsBeskatningsretCountryBlock.appendChild(residenceWrap);
 
-      const sourceLabel = document.createElement("div");
-      sourceLabel.className = "sags-facts-factor-detail-label";
-      sourceLabel.textContent = "Kildeland";
-      elements.sagsFactsBeskatningsretCountryBlock.appendChild(sourceLabel);
+      const employerTitle = document.createElement("div");
+      employerTitle.className = "sags-facts-factor-detail-label";
+      employerTitle.textContent = "Arbejdsgiver";
+      elements.sagsFactsBeskatningsretCountryBlock.appendChild(employerTitle);
 
-      const sourceInput = document.createElement("input");
-      sourceInput.type = "text";
-      sourceInput.className = "input sags-facts-input";
-      sourceInput.placeholder = "Angiv kildeland";
-      sourceInput.dataset.sagsSourceCountry = "true";
-      sourceInput.value = sourceCountry;
-      sourceInput.disabled = isFactsLocked;
-      elements.sagsFactsBeskatningsretCountryBlock.appendChild(sourceInput);
+      const employerWrap = document.createElement("div");
+      employerWrap.className = "sags-facts-suboptions sags-beskatningsret-employer-row";
+      const employerQuestion = document.createElement("span");
+      employerQuestion.className = "sags-beskatningsret-employer-question";
+      employerQuestion.textContent = "Er arbejdsgiver hjemmehørende i";
+      employerWrap.appendChild(employerQuestion);
+
+      [
+        { id: "danmark", label: "Danmark" },
+        { id: "private_foreign", label: "Privat udenlandsk arbejdsgiver" },
+        { id: "public_foreign", label: "Offentlig udenlandsk arbejdsgiver" },
+      ].forEach((option) => {
+        const optionRow = document.createElement("label");
+        optionRow.className = "sags-facts-suboption-item";
+        const optionRadio = document.createElement("input");
+        optionRadio.type = "radio";
+        optionRadio.name = "sagsBeskatningsretEmployerResidenceMode";
+        optionRadio.className = "sags-facts-suboption-radio";
+        optionRadio.dataset.sagsEmployerResidenceMode = option.id;
+        optionRadio.checked = selectedEmployerResidenceMode === option.id;
+        optionRow.appendChild(optionRadio);
+        const optionText = document.createElement("span");
+        optionText.textContent = option.label;
+        optionRow.appendChild(optionText);
+        employerWrap.appendChild(optionRow);
+      });
+      elements.sagsFactsBeskatningsretCountryBlock.appendChild(employerWrap);
+
+      const employerNameLabel = document.createElement("div");
+      employerNameLabel.className = "sags-facts-factor-detail-label";
+      employerNameLabel.textContent = "Navn på din arbejdsgiver";
+      elements.sagsFactsBeskatningsretCountryBlock.appendChild(employerNameLabel);
+
+      const employerNameInput = document.createElement("input");
+      employerNameInput.type = "text";
+      employerNameInput.className = "input sags-facts-input";
+      employerNameInput.placeholder = "Angiv arbejdsgivers navn";
+      employerNameInput.dataset.sagsEmployerName = "true";
+      employerNameInput.value = employerName;
+      employerNameInput.disabled = isFactsLocked;
+      elements.sagsFactsBeskatningsretCountryBlock.appendChild(employerNameInput);
+
+      const employerCountryLabel = document.createElement("div");
+      employerCountryLabel.className = "sags-facts-factor-detail-label";
+      employerCountryLabel.textContent = "Land, hvor din arbejdsgiver er hjemmehørende";
+      elements.sagsFactsBeskatningsretCountryBlock.appendChild(employerCountryLabel);
+
+      const employerCountryInput = document.createElement("input");
+      employerCountryInput.type = "text";
+      employerCountryInput.className = "input sags-facts-input";
+      employerCountryInput.placeholder = "Angiv arbejdsgiverland";
+      employerCountryInput.dataset.sagsEmployerCountry = "true";
+      employerCountryInput.value = employerCountry;
+      employerCountryInput.disabled = isFactsLocked;
+      elements.sagsFactsBeskatningsretCountryBlock.appendChild(employerCountryInput);
+
+      const workCountryTitle = document.createElement("div");
+      workCountryTitle.className = "sags-facts-factor-detail-label";
+      workCountryTitle.textContent = "Lande, hvor der er udført arbejde";
+      elements.sagsFactsBeskatningsretCountryBlock.appendChild(workCountryTitle);
+
+      const workCountryWrap = document.createElement("div");
+      workCountryWrap.className = "sags-facts-suboptions sags-beskatningsret-work-row";
+
+      const dkWorkRow = document.createElement("label");
+      dkWorkRow.className = "sags-facts-suboption-item";
+      const dkWorkCheckbox = document.createElement("input");
+      dkWorkCheckbox.type = "checkbox";
+      dkWorkCheckbox.className = "sags-facts-suboption-radio";
+      dkWorkCheckbox.dataset.sagsWorkCountryMode = "danmark";
+      dkWorkCheckbox.checked = selectedWorkCountrySet.has("danmark");
+      dkWorkRow.appendChild(dkWorkCheckbox);
+      const dkWorkText = document.createElement("span");
+      dkWorkText.textContent = "Danmark";
+      dkWorkRow.appendChild(dkWorkText);
+      workCountryWrap.appendChild(dkWorkRow);
+
+      for (let idx = 0; idx < 6; idx += 1) {
+        const customCheck = document.createElement("input");
+        customCheck.type = "checkbox";
+        customCheck.className = "sags-facts-suboption-radio";
+        customCheck.dataset.sagsWorkCountryCustomCheckedIndex = String(idx);
+        customCheck.checked = Boolean(workCountryCustomChecked[idx]);
+        customCheck.disabled = isFactsLocked;
+        workCountryWrap.appendChild(customCheck);
+
+        const box = document.createElement("input");
+        box.type = "text";
+        box.className = "input sags-beskatningsret-work-small-input";
+        box.placeholder = `Felt ${idx + 1}`;
+        box.dataset.sagsWorkCountryDenmarkIndex = String(idx);
+        box.value = String(workCountryDenmarkFields[idx] || "");
+        box.disabled = isFactsLocked;
+        workCountryWrap.appendChild(box);
+      }
+      elements.sagsFactsBeskatningsretCountryBlock.appendChild(workCountryWrap);
+
+      const workCountries = (() => {
+        const countries = [];
+        if (selectedWorkCountrySet.has("danmark")) {
+          countries.push("Danmark");
+        }
+        workCountryDenmarkFields
+          .forEach((value, idx) => {
+            if (!Boolean(workCountryCustomChecked[idx])) {
+              return;
+            }
+            const text = String(value || "").trim();
+            if (!text) {
+              return;
+            }
+            countries.push(text);
+          });
+        const seen = new Set();
+        const deduped = [];
+        countries.forEach((country) => {
+          const key = country.toLowerCase();
+          if (!key || seen.has(key)) return;
+          seen.add(key);
+          deduped.push(country);
+        });
+        return deduped;
+      })();
+
+      const workDaysLabel = document.createElement("div");
+      workDaysLabel.className = "sags-facts-factor-detail-label";
+      workDaysLabel.textContent = "Arbejdsdage";
+      elements.sagsFactsBeskatningsretCountryBlock.appendChild(workDaysLabel);
+
+      if (!workCountries.length) {
+        const workDaysHint = document.createElement("div");
+        workDaysHint.className = "sags-beskatningsret-workdays-empty";
+        workDaysHint.textContent = "Vælg eller angiv lande ovenfor for at udfylde arbejdsdage.";
+        elements.sagsFactsBeskatningsretCountryBlock.appendChild(workDaysHint);
+      } else {
+        const tableWrap = document.createElement("div");
+        tableWrap.className = "sags-beskatningsret-workdays-table-wrap";
+        const table = document.createElement("table");
+        table.className = "sags-beskatningsret-workdays-table";
+        const thead = document.createElement("thead");
+        thead.innerHTML = "<tr><th>Land</th><th>Arbejdsdage</th></tr>";
+        table.appendChild(thead);
+        const tbody = document.createElement("tbody");
+        workCountries.forEach((country) => {
+          const row = document.createElement("tr");
+          const countryCell = document.createElement("td");
+          countryCell.textContent = country;
+          row.appendChild(countryCell);
+          const daysCell = document.createElement("td");
+          const daysInput = document.createElement("input");
+          daysInput.type = "number";
+          daysInput.min = "0";
+          daysInput.step = "0.01";
+          daysInput.inputMode = "decimal";
+          daysInput.className = "input sags-beskatningsret-workdays-input";
+          daysInput.placeholder = "Angiv antal dage";
+          daysInput.value = String(workCountryDaysByCountry[country] || "");
+          daysInput.dataset.sagsWorkCountryDaysCountry = country;
+          daysInput.disabled = isFactsLocked;
+          daysCell.appendChild(daysInput);
+          row.appendChild(daysCell);
+          tbody.appendChild(row);
+        });
+        const totalDays = workCountries.reduce((sum, country) => {
+          const raw = String(workCountryDaysByCountry[country] || "").trim();
+          if (!raw) return sum;
+          const normalized = raw.replace(",", ".");
+          const numeric = Number(normalized);
+          return Number.isFinite(numeric) ? sum + numeric : sum;
+        }, 0);
+        const totalDisplay = Number.isInteger(totalDays)
+          ? String(totalDays)
+          : totalDays.toFixed(2).replace(/\.00$/, "").replace(/(\.\d)0$/, "$1");
+        const totalRow = document.createElement("tr");
+        totalRow.className = "sags-beskatningsret-workdays-total-row";
+        const totalLabelCell = document.createElement("td");
+        totalLabelCell.textContent = "I alt";
+        totalRow.appendChild(totalLabelCell);
+        const totalValueCell = document.createElement("td");
+        const totalInput = document.createElement("input");
+        totalInput.type = "text";
+        totalInput.className = "input sags-beskatningsret-workdays-input";
+        totalInput.value = totalDisplay;
+        totalInput.dataset.sagsWorkDaysTotal = "true";
+        totalInput.readOnly = true;
+        totalInput.disabled = true;
+        totalValueCell.appendChild(totalInput);
+        totalRow.appendChild(totalValueCell);
+        tbody.appendChild(totalRow);
+        table.appendChild(tbody);
+        tableWrap.appendChild(table);
+        elements.sagsFactsBeskatningsretCountryBlock.appendChild(tableWrap);
+      }
     } else {
       elements.sagsFactsBeskatningsretCountryBlock.innerHTML = "";
     }

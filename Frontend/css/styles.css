@@ -540,13 +540,96 @@ a {
 }
 
 .sags-beskatningsret-country-block {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
   margin-bottom: 10px;
+}
+
+.sags-beskatningsret-country-block .sags-facts-factor-detail-label {
+  margin-top: 0;
+  margin-bottom: 0;
+}
+
+.sags-beskatningsret-country-block .sags-facts-suboptions {
+  margin-top: 0;
+}
+
+.sags-beskatningsret-country-block .input {
+  margin-bottom: 0;
 }
 
 .sags-beskatningsret-country-row {
   flex-direction: row;
   flex-wrap: wrap;
   align-items: center;
+}
+
+.sags-beskatningsret-employer-row {
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.sags-beskatningsret-work-row {
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.sags-beskatningsret-work-small-input {
+  margin-bottom: 0;
+  width: 95px;
+  min-width: 95px;
+  padding: 6px 8px;
+}
+
+.sags-beskatningsret-workdays-empty {
+  color: var(--muted);
+  font-size: 0.88rem;
+}
+
+.sags-beskatningsret-workdays-table-wrap {
+  overflow-x: auto;
+}
+
+.sags-beskatningsret-workdays-table {
+  width: 100%;
+  border-collapse: collapse;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.sags-beskatningsret-workdays-table th,
+.sags-beskatningsret-workdays-table td {
+  border: 1px solid var(--border);
+  padding: 8px;
+  text-align: left;
+  vertical-align: middle;
+}
+
+.sags-beskatningsret-workdays-table th {
+  background: #0e1a30;
+  font-size: 0.86rem;
+}
+
+.sags-beskatningsret-workdays-input {
+  margin-bottom: 0;
+  width: 72px;
+  min-width: 72px;
+}
+
+.sags-beskatningsret-workdays-total-row td {
+  font-weight: 700;
+  background: #0f1c33;
+}
+
+.sags-beskatningsret-employer-question {
+  font-size: 0.9rem;
+  color: var(--text);
 }
 
 .sags-facts-residence-disabled {
@@ -564,8 +647,8 @@ a {
 .sags-facts-residence-inline-input {
   margin-bottom: 0;
   margin-left: 8px;
-  width: 120px;
-  min-width: 120px;
+  width: 220px;
+  min-width: 220px;
   padding: 6px 8px;
 }
 
