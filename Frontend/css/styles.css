@@ -620,6 +620,19 @@ a {
   margin-bottom: 0;
   width: 72px;
   min-width: 72px;
+  -moz-appearance: textfield;
+}
+
+.sags-beskatningsret-workdays-input::-webkit-outer-spin-button,
+.sags-beskatningsret-workdays-input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.sags-beskatningsret-workdays-pct {
+  text-align: right;
+  white-space: nowrap;
+  min-width: 4.5em;
 }
 
 .sags-beskatningsret-workdays-total-row td {

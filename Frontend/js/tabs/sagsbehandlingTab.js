@@ -857,8 +857,25 @@ export function renderSagsbehandling(elements, state) {
         const table = document.createElement("table");
         table.className = "sags-beskatningsret-workdays-table";
         const thead = document.createElement("thead");
-        thead.innerHTML = "<tr><th>Land</th><th>Arbejdsdage</th></tr>";
+        thead.innerHTML = "<tr><th>Land</th><th>Arbejdsdage</th><th>%</th></tr>";
         table.appendChild(thead);
+        const parseWorkDaysInteger = (value) => {
+          const text = String(value || "").trim();
+          if (!text || text.startsWith("-")) {
+            return null;
+          }
+          const beforeDecimal = text.split(/[.,]/)[0] || "";
+          const leadingDigitsMatch = beforeDecimal.match(/^\d+/);
+          if (!leadingDigitsMatch) {
+            return null;
+          }
+          const numeric = Number.parseInt(leadingDigitsMatch[0], 10);
+          return Number.isFinite(numeric) ? numeric : null;
+        };
+        const totalDays = workCountries.reduce((sum, country) => {
+          const numeric = parseWorkDaysInteger(workCountryDaysByCountry[country]);
+          return Number.isFinite(numeric) ? sum + numeric : sum;
+        }, 0);
         const tbody = document.createElement("tbody");
         workCountries.forEach((country) => {
           const row = document.createElement("tr");
@@ -869,24 +886,25 @@ export function renderSagsbehandling(elements, state) {
           const daysInput = document.createElement("input");
           daysInput.type = "number";
           daysInput.min = "0";
-          daysInput.step = "0.01";
-          daysInput.inputMode = "decimal";
+          daysInput.step = "1";
+          daysInput.inputMode = "numeric";
           daysInput.className = "input sags-beskatningsret-workdays-input";
           daysInput.placeholder = "Angiv antal dage";
-          daysInput.value = String(workCountryDaysByCountry[country] || "");
+          const days = parseWorkDaysInteger(workCountryDaysByCountry[country]);
+          daysInput.value = Number.isFinite(days) ? String(days) : "";
           daysInput.dataset.sagsWorkCountryDaysCountry = country;
           daysInput.disabled = isFactsLocked;
           daysCell.appendChild(daysInput);
           row.appendChild(daysCell);
+          const pctCell = document.createElement("td");
+          const pct = totalDays > 0 && Number.isFinite(days) ? (days / totalDays) * 100 : 0;
+          pctCell.textContent = totalDays > 0
+            ? (Number.isInteger(pct) ? `${pct} %` : `${pct.toFixed(1).replace(".", ",")} %`)
+            : "—";
+          pctCell.className = "sags-beskatningsret-workdays-pct";
+          row.appendChild(pctCell);
           tbody.appendChild(row);
         });
-        const totalDays = workCountries.reduce((sum, country) => {
-          const raw = String(workCountryDaysByCountry[country] || "").trim();
-          if (!raw) return sum;
-          const normalized = raw.replace(",", ".");
-          const numeric = Number(normalized);
-          return Number.isFinite(numeric) ? sum + numeric : sum;
-        }, 0);
         const totalDisplay = Number.isInteger(totalDays)
           ? String(totalDays)
           : totalDays.toFixed(2).replace(/\.00$/, "").replace(/(\.\d)0$/, "$1");
@@ -905,6 +923,10 @@ export function renderSagsbehandling(elements, state) {
         totalInput.disabled = true;
         totalValueCell.appendChild(totalInput);
         totalRow.appendChild(totalValueCell);
+        const totalPctCell = document.createElement("td");
+        totalPctCell.textContent = totalDays > 0 ? "100 %" : "—";
+        totalPctCell.className = "sags-beskatningsret-workdays-pct";
+        totalRow.appendChild(totalPctCell);
         tbody.appendChild(totalRow);
         table.appendChild(tbody);
         tableWrap.appendChild(table);

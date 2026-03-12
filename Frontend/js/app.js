@@ -1155,26 +1155,30 @@ function pruneWorkCountryDays(facts) {
 }
 
 function sanitizeWorkDaysInput(value) {
-  const normalized = String(value || "").replace(",", ".");
-  const digitsAndDot = normalized.replace(/[^0-9.]/g, "");
-  const parts = digitsAndDot.split(".");
-  if (parts.length <= 1) {
-    return digitsAndDot;
+  const text = String(value || "").trim();
+  if (!text || text.startsWith("-")) {
+    return "";
   }
-  return `${parts[0]}.${parts.slice(1).join("")}`;
+  const beforeDecimal = text.split(/[.,]/)[0] || "";
+  const leadingDigitsMatch = beforeDecimal.match(/^\d+/);
+  return leadingDigitsMatch ? leadingDigitsMatch[0] : "";
+}
+
+function parseWorkDaysInteger(value) {
+  const sanitized = sanitizeWorkDaysInput(value);
+  if (!sanitized) {
+    return null;
+  }
+  const numeric = Number.parseInt(sanitized, 10);
+  return Number.isFinite(numeric) ? numeric : null;
 }
 
 function formatWorkDaysTotal(daysMap, countries) {
   const totalDays = (Array.isArray(countries) ? countries : []).reduce((sum, country) => {
-    const raw = String((daysMap && daysMap[country]) || "").trim();
-    if (!raw) return sum;
-    const normalized = raw.replace(",", ".");
-    const numeric = Number(normalized);
+    const numeric = parseWorkDaysInteger(daysMap && daysMap[country]);
     return Number.isFinite(numeric) ? sum + numeric : sum;
   }, 0);
-  return Number.isInteger(totalDays)
-    ? String(totalDays)
-    : totalDays.toFixed(2).replace(/\.00$/, "").replace(/(\.\d)0$/, "$1");
+  return String(totalDays);
 }
 
 function buildSagsCaseFactsPayload(subtab) {
