@@ -1181,6 +1181,14 @@ function formatWorkDaysTotal(daysMap, countries) {
   return String(totalDays);
 }
 
+function formatWorkDaysPercent(days, totalDays) {
+  if (!Number.isFinite(totalDays) || totalDays <= 0) {
+    return "—";
+  }
+  const pct = (days / totalDays) * 100;
+  return Number.isInteger(pct) ? `${pct} %` : `${pct.toFixed(1).replace(".", ",")} %`;
+}
+
 function buildSagsCaseFactsPayload(subtab) {
   const state = getState();
   const factsBySubtab = state.sagsbehandling.factsBySubtab || {};
@@ -2058,8 +2066,18 @@ async function runSagsbehandling() {
     const factsLines = [
       ...(activeSubtab === "beskatningsret_indkomst" ? [] : [["Indkomstår", facts.incomeYears]]),
       ...(activeSubtab === "beskatningsret_indkomst" ? [["Bopælsland", beskatningsretCountryLine]] : []),
+      ...(activeSubtab === "beskatningsret_indkomst"
+        ? [[
+          "Bopæl til rådighed i arbejdsland",
+          facts.residenceAvailableInWorkCountry ? "Ja" : "Nej",
+        ]]
+        : []),
+      ...(activeSubtab === "beskatningsret_indkomst"
+        ? [["Skattemæssigt hjemsted/Danmark", facts.taxResidenceDenmarkFact]]
+        : []),
       ...(activeSubtab === "beskatningsret_indkomst" ? [["Arbejdsgiver hjemmehørende i", beskatningsretEmployerLine]] : []),
       ...(activeSubtab === "beskatningsret_indkomst" ? [["Navn på arbejdsgiver", facts.employerName]] : []),
+      ...(activeSubtab === "beskatningsret_indkomst" ? [["Navn på arbejdsgiver (nr. 2)", facts.employerName2]] : []),
       ...(activeSubtab === "beskatningsret_indkomst" ? [["Land, hvor arbejdsgiver er hjemmehørende", facts.employerCountry]] : []),
       ...(activeSubtab === "beskatningsret_indkomst"
         ? [[
@@ -2279,9 +2297,16 @@ function clearSagsbehandlingCurrentSubtab() {
           residenceFact: "",
           residenceMode: "",
           residenceSinceYear: "",
+          residenceCountryMode: "",
+          residenceCountryOther: "",
+          residenceAvailableInWorkCountry: false,
+          taxResidenceDenmarkFact: "",
           employerResidenceMode: "",
           employerName: "",
+          employerName2: "",
+          employerCountMode: "one",
           employerCountry: "",
+        employmentContractReceived: "",
           workCountryModes: [],
           workCountryDenmarkFields: [],
           workCountryCustomChecked: [],
@@ -2988,9 +3013,14 @@ function bindEvents() {
         selfEmployedMode: "",
         residenceCountryMode: "",
         residenceCountryOther: "",
+        residenceAvailableInWorkCountry: false,
+        taxResidenceDenmarkFact: "",
         employerResidenceMode: "",
         employerName: "",
+        employerName2: "",
+        employerCountMode: "one",
         employerCountry: "",
+        employmentContractReceived: "",
         workCountryModes: [],
         workCountryDenmarkFields: [],
         workCountryCustomChecked: [],
@@ -2999,6 +3029,26 @@ function bindEvents() {
       renderSagsbehandling(elements, getState());
       setStatus("Fakta ryddet lokalt.", "ok");
       saveCurrentSagsCaseSnapshot();
+    });
+  }
+
+  if (elements.sagsFactsPanel) {
+    elements.sagsFactsPanel.addEventListener("change", (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLInputElement)) {
+        return;
+      }
+      const contractAnswer = String(target.dataset.sagsEmploymentContractReceived || "").trim();
+      if (!contractAnswer) {
+        return;
+      }
+      const activeSubtab = getState().sagsbehandling.activeSubtab || "";
+      if (activeSubtab !== "beskatningsret_indkomst") {
+        return;
+      }
+      updateSagsFactsForActiveSubtab({
+        employmentContractReceived: contractAnswer,
+      });
     });
   }
 
@@ -3049,10 +3099,32 @@ function bindEvents() {
         renderSagsbehandling(elements, getState());
         return;
       }
+      if (String(target.dataset.sagsResidenceAvailableInWorkCountry || "").trim() === "true") {
+        updateSagsFactsForActiveSubtab({
+          residenceAvailableInWorkCountry: Boolean(target.checked),
+          taxResidenceDenmarkFact: target.checked
+            ? String(((getState().sagsbehandling.factsBySubtab || {})[activeSubtab] || {}).taxResidenceDenmarkFact || "")
+            : "",
+        });
+        renderSagsbehandling(elements, getState());
+        return;
+      }
       const employerMode = String(target.dataset.sagsEmployerResidenceMode || "").trim();
       if (employerMode && target.checked) {
         updateSagsFactsForActiveSubtab({
           employerResidenceMode: employerMode,
+        });
+        renderSagsbehandling(elements, getState());
+        return;
+      }
+      const employerCountMode = String(target.dataset.sagsEmployerCountMode || "").trim();
+      if (employerCountMode && target.checked) {
+        const currentFacts = ((getState().sagsbehandling.factsBySubtab || {})[activeSubtab] || {});
+        updateSagsFactsForActiveSubtab({
+          employerCountMode,
+          employerName2: employerCountMode === "two"
+            ? String(currentFacts.employerName2 || "")
+            : "",
         });
         renderSagsbehandling(elements, getState());
         return;
@@ -3116,11 +3188,17 @@ function bindEvents() {
     });
     elements.sagsFactsBeskatningsretCountryBlock.addEventListener("input", (event) => {
       const target = event.target;
-      if (!(target instanceof HTMLInputElement)) {
+      if (!(target instanceof HTMLInputElement) && !(target instanceof HTMLTextAreaElement)) {
         return;
       }
       const activeSubtab = getState().sagsbehandling.activeSubtab || "";
       if (activeSubtab !== "beskatningsret_indkomst") {
+        return;
+      }
+      if (String(target.dataset.sagsTaxResidenceDenmarkFact || "").trim() === "true") {
+        updateSagsFactsForActiveSubtab({
+          taxResidenceDenmarkFact: target.value,
+        });
         return;
       }
       if (String(target.dataset.sagsResidenceCountryOther || "").trim() === "true") {
@@ -3132,6 +3210,12 @@ function bindEvents() {
       if (String(target.dataset.sagsEmployerName || "").trim() === "true") {
         updateSagsFactsForActiveSubtab({
           employerName: target.value,
+        });
+        return;
+      }
+      if (String(target.dataset.sagsEmployerName2 || "").trim() === "true") {
+        updateSagsFactsForActiveSubtab({
+          employerName2: target.value,
         });
         return;
       }
@@ -3187,11 +3271,51 @@ function bindEvents() {
           const currentFacts = ((getState().sagsbehandling.factsBySubtab || {})[activeSubtab] || {});
           const countries = buildWorkCountriesFromFacts(currentFacts);
           totalInput.value = formatWorkDaysTotal(nextDaysMap, countries);
+          const totalDays = countries.reduce((sum, country) => {
+            const numeric = parseWorkDaysInteger(nextDaysMap[country]);
+            return Number.isFinite(numeric) ? sum + numeric : sum;
+          }, 0);
+          const pctCells = elements.sagsFactsBeskatningsretCountryBlock
+            .querySelectorAll("[data-sags-work-country-pct-country]");
+          pctCells.forEach((cell) => {
+            if (!(cell instanceof HTMLElement)) {
+              return;
+            }
+            const country = String(cell.dataset.sagsWorkCountryPctCountry || "").trim();
+            if (!country) {
+              return;
+            }
+            const days = parseWorkDaysInteger(nextDaysMap[country]) || 0;
+            cell.textContent = formatWorkDaysPercent(days, totalDays);
+          });
+          const totalPctCell = elements.sagsFactsBeskatningsretCountryBlock
+            .querySelector("[data-sags-work-days-pct-total='true']");
+          if (totalPctCell instanceof HTMLElement) {
+            totalPctCell.textContent = totalDays > 0 ? "100 %" : "—";
+          }
         }
         return;
       }
     });
   }
+
+  // Enforce uppercase text in input boxes when leaving the field.
+  document.addEventListener("blur", (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLInputElement)) {
+      return;
+    }
+    if (target.type !== "text" || target.disabled || target.readOnly) {
+      return;
+    }
+    const normalizedValue = String(target.value || "").toUpperCase();
+    if (normalizedValue === target.value) {
+      return;
+    }
+    target.value = normalizedValue;
+    target.dispatchEvent(new Event("input", { bubbles: true }));
+    target.dispatchEvent(new Event("change", { bubbles: true }));
+  }, true);
 
   if (elements.sagsFactsForeignAssetsLiabilities) {
     elements.sagsFactsForeignAssetsLiabilities.addEventListener("input", () => {

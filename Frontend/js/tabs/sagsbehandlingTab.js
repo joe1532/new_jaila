@@ -243,8 +243,8 @@ const FACTS_UI_CONFIG = {
     showIncomeYears: false,
     foreignIncomeLabel: "Land(e) og indkomstkilde",
     foreignIncomePlaceholder: "Fx Danmark/Tyskland, lønindkomst",
-    foreignAssetsLiabilitiesLabel: "Arbejdssted / ophold",
-    foreignAssetsLiabilitiesPlaceholder: "Fx antal dage, arbejdssted, arbejdsgiver",
+    foreignAssetsLiabilitiesLabel: "Har vi modtaget ansættelseskontrakt?",
+    foreignAssetsLiabilitiesPlaceholder: "Skriv relevante fakta",
     residenceLabel: "Skattemæssigt hjemsted (faktum)",
     residencePlaceholder: "Fx bopæl, familie, opholdsmønster",
     notesLabel: "Supplerende DBO-fakta",
@@ -315,9 +315,16 @@ export function renderSagsbehandling(elements, state) {
     specialTaxLiabilityMode: "",
     residenceMode: "",
     residenceSinceYear: "",
+    residenceCountryMode: "",
+    residenceCountryOther: "",
+    residenceAvailableInWorkCountry: false,
+    taxResidenceDenmarkFact: "",
     employerResidenceMode: "",
     employerName: "",
+    employerName2: "",
+    employerCountMode: "one",
     employerCountry: "",
+    employmentContractReceived: "",
     workCountryModes: [],
     workCountryDenmarkFields: [],
     workCountryCustomChecked: [],
@@ -645,8 +652,12 @@ export function renderSagsbehandling(elements, state) {
     if (isBeskatningsretSubtab) {
       const selectedResidenceCountryMode = String(facts.residenceCountryMode || "").trim();
       const residenceCountryOther = String(facts.residenceCountryOther || "").trim();
+      const residenceAvailableInWorkCountry = Boolean(facts.residenceAvailableInWorkCountry);
+      const taxResidenceDenmarkFact = String(facts.taxResidenceDenmarkFact || "").trim();
       const selectedEmployerResidenceMode = String(facts.employerResidenceMode || "").trim();
       const employerName = String(facts.employerName || "").trim();
+      const employerName2 = String(facts.employerName2 || "").trim();
+      const employerCountMode = String(facts.employerCountMode || "one").trim() || "one";
       const employerCountry = String(facts.employerCountry || "").trim();
       const selectedWorkCountryModes = Array.isArray(facts.workCountryModes)
         ? facts.workCountryModes.map((value) => String(value || "").trim()).filter((value) => value)
@@ -702,6 +713,20 @@ export function renderSagsbehandling(elements, state) {
       otherRow.appendChild(otherText);
       residenceWrap.appendChild(otherRow);
 
+      const availableRow = document.createElement("label");
+      availableRow.className = "sags-facts-suboption-item";
+      const availableCheckbox = document.createElement("input");
+      availableCheckbox.type = "checkbox";
+      availableCheckbox.className = "sags-facts-suboption-radio";
+      availableCheckbox.dataset.sagsResidenceAvailableInWorkCountry = "true";
+      availableCheckbox.checked = residenceAvailableInWorkCountry;
+      availableCheckbox.disabled = isFactsLocked;
+      availableRow.appendChild(availableCheckbox);
+      const availableText = document.createElement("span");
+      availableText.textContent = "Bopæl til rådighed i arbejdsland";
+      availableRow.appendChild(availableText);
+      residenceWrap.appendChild(availableRow);
+
       const residenceOtherInput = document.createElement("input");
       residenceOtherInput.type = "text";
       residenceOtherInput.className = "input sags-facts-residence-inline-input";
@@ -711,6 +736,26 @@ export function renderSagsbehandling(elements, state) {
       residenceOtherInput.disabled = selectedResidenceCountryMode !== "other" || isFactsLocked;
       residenceWrap.appendChild(residenceOtherInput);
       elements.sagsFactsBeskatningsretCountryBlock.appendChild(residenceWrap);
+
+      const showTaxResidenceFact =
+        residenceAvailableInWorkCountry
+        && (selectedResidenceCountryMode === "danmark" || selectedResidenceCountryMode === "other");
+      const taxResidenceLabel = document.createElement("div");
+      taxResidenceLabel.className = "sags-facts-factor-detail-label";
+      taxResidenceLabel.textContent = "Skattemæssigt hjemsted/Danmark";
+      taxResidenceLabel.classList.toggle("hidden", !showTaxResidenceFact);
+      elements.sagsFactsBeskatningsretCountryBlock.appendChild(taxResidenceLabel);
+
+      const taxResidenceInput = document.createElement("textarea");
+      taxResidenceInput.className = "input sags-facts-factor-detail-input";
+      taxResidenceInput.rows = 2;
+      taxResidenceInput.placeholder =
+        "Skriv fakta der afgør, at skattemæssigt hjemsted falder til Danmark";
+      taxResidenceInput.dataset.sagsTaxResidenceDenmarkFact = "true";
+      taxResidenceInput.value = taxResidenceDenmarkFact;
+      taxResidenceInput.disabled = isFactsLocked || !showTaxResidenceFact;
+      taxResidenceInput.classList.toggle("hidden", !showTaxResidenceFact);
+      elements.sagsFactsBeskatningsretCountryBlock.appendChild(taxResidenceInput);
 
       const employerTitle = document.createElement("div");
       employerTitle.className = "sags-facts-factor-detail-label";
@@ -747,8 +792,31 @@ export function renderSagsbehandling(elements, state) {
 
       const employerNameLabel = document.createElement("div");
       employerNameLabel.className = "sags-facts-factor-detail-label";
-      employerNameLabel.textContent = "Navn på din arbejdsgiver";
+      employerNameLabel.textContent = "Navn på arbejdsgiver";
       elements.sagsFactsBeskatningsretCountryBlock.appendChild(employerNameLabel);
+
+      const employerCountWrap = document.createElement("div");
+      employerCountWrap.className = "sags-facts-suboptions sags-beskatningsret-employer-row";
+      [
+        { id: "one", label: "En arbejdsgiver" },
+        { id: "two", label: "To arbejdsgivere" },
+      ].forEach((option) => {
+        const optionRow = document.createElement("label");
+        optionRow.className = "sags-facts-suboption-item";
+        const optionRadio = document.createElement("input");
+        optionRadio.type = "radio";
+        optionRadio.name = "sagsBeskatningsretEmployerCountMode";
+        optionRadio.className = "sags-facts-suboption-radio";
+        optionRadio.dataset.sagsEmployerCountMode = option.id;
+        optionRadio.checked = employerCountMode === option.id;
+        optionRadio.disabled = isFactsLocked;
+        optionRow.appendChild(optionRadio);
+        const optionText = document.createElement("span");
+        optionText.textContent = option.label;
+        optionRow.appendChild(optionText);
+        employerCountWrap.appendChild(optionRow);
+      });
+      elements.sagsFactsBeskatningsretCountryBlock.appendChild(employerCountWrap);
 
       const employerNameInput = document.createElement("input");
       employerNameInput.type = "text";
@@ -758,6 +826,15 @@ export function renderSagsbehandling(elements, state) {
       employerNameInput.value = employerName;
       employerNameInput.disabled = isFactsLocked;
       elements.sagsFactsBeskatningsretCountryBlock.appendChild(employerNameInput);
+
+      const employerNameInput2 = document.createElement("input");
+      employerNameInput2.type = "text";
+      employerNameInput2.className = "input sags-facts-input";
+      employerNameInput2.placeholder = "Angiv arbejdsgivers navn (nr. 2)";
+      employerNameInput2.dataset.sagsEmployerName2 = "true";
+      employerNameInput2.value = employerName2;
+      employerNameInput2.disabled = isFactsLocked || employerCountMode !== "two";
+      elements.sagsFactsBeskatningsretCountryBlock.appendChild(employerNameInput2);
 
       const employerCountryLabel = document.createElement("div");
       employerCountryLabel.className = "sags-facts-factor-detail-label";
@@ -902,6 +979,7 @@ export function renderSagsbehandling(elements, state) {
             ? (Number.isInteger(pct) ? `${pct} %` : `${pct.toFixed(1).replace(".", ",")} %`)
             : "—";
           pctCell.className = "sags-beskatningsret-workdays-pct";
+          pctCell.dataset.sagsWorkCountryPctCountry = country;
           row.appendChild(pctCell);
           tbody.appendChild(row);
         });
@@ -926,6 +1004,7 @@ export function renderSagsbehandling(elements, state) {
         const totalPctCell = document.createElement("td");
         totalPctCell.textContent = totalDays > 0 ? "100 %" : "—";
         totalPctCell.className = "sags-beskatningsret-workdays-pct";
+        totalPctCell.dataset.sagsWorkDaysPctTotal = "true";
         totalRow.appendChild(totalPctCell);
         tbody.appendChild(totalRow);
         table.appendChild(tbody);
@@ -945,6 +1024,42 @@ export function renderSagsbehandling(elements, state) {
   if (elements.sagsFactsForeignAssetsLiabilities) {
     elements.sagsFactsForeignAssetsLiabilities.placeholder =
       factsUiCfg.foreignAssetsLiabilitiesPlaceholder || "";
+    elements.sagsFactsForeignAssetsLiabilities.disabled = isFactsLocked;
+  }
+  const contractOptionsNode = document.getElementById("sagsFactsEmploymentContractOptions");
+  if (activeSubtab === "beskatningsret_indkomst" && elements.sagsFactsForeignAssetsLiabilities) {
+    const selectedEmploymentContract = String(facts.employmentContractReceived || "").trim();
+    const optionsWrap = contractOptionsNode instanceof HTMLElement
+      ? contractOptionsNode
+      : document.createElement("div");
+    optionsWrap.id = "sagsFactsEmploymentContractOptions";
+    optionsWrap.className = "sags-facts-suboptions sags-beskatningsret-employer-row";
+    optionsWrap.innerHTML = "";
+    [
+      { id: "ja", label: "Ja" },
+      { id: "nej", label: "Nej" },
+    ].forEach((option) => {
+      const optionRow = document.createElement("label");
+      optionRow.className = "sags-facts-suboption-item";
+      const optionRadio = document.createElement("input");
+      optionRadio.type = "radio";
+      optionRadio.name = "sagsEmploymentContractReceived";
+      optionRadio.className = "sags-facts-suboption-radio";
+      optionRadio.dataset.sagsEmploymentContractReceived = option.id;
+      optionRadio.checked = selectedEmploymentContract === option.id;
+      optionRadio.disabled = isFactsLocked;
+      optionRow.appendChild(optionRadio);
+      const optionText = document.createElement("span");
+      optionText.textContent = option.label;
+      optionRow.appendChild(optionText);
+      optionsWrap.appendChild(optionRow);
+    });
+    const parentNode = elements.sagsFactsForeignAssetsLiabilities.parentElement;
+    if (parentNode) {
+      parentNode.insertBefore(optionsWrap, elements.sagsFactsForeignAssetsLiabilities);
+    }
+  } else if (contractOptionsNode instanceof HTMLElement) {
+    contractOptionsNode.remove();
   }
 
   if (elements.sagsFactsFactorChecklist) {
