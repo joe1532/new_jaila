@@ -190,7 +190,15 @@ const elements = {
   sagsFunctionList: document.getElementById("sagsFunctionList"),
   sagsSubtabButtons: Array.from(document.querySelectorAll(".sags-subtab-button")),
   sagsFactsToggleBtn: document.getElementById("sagsFactsToggleBtn"),
+  sagsLegalLibraryToggleBtn: document.getElementById("sagsLegalLibraryToggleBtn"),
   sagsFactsPanel: document.getElementById("sagsFactsPanel"),
+  sagsLegalLibraryPanel: document.getElementById("sagsLegalLibraryPanel"),
+  sagsLegalLibraryCloseBtn: document.getElementById("sagsLegalLibraryCloseBtn"),
+  sagsLegalLibrarySearch: document.getElementById("sagsLegalLibrarySearch"),
+  sagsLegalLibraryCategories: document.getElementById("sagsLegalLibraryCategories"),
+  sagsLegalLibrarySources: document.getElementById("sagsLegalLibrarySources"),
+  sagsLegalPreviewTitle: document.getElementById("sagsLegalPreviewTitle"),
+  sagsLegalPreviewText: document.getElementById("sagsLegalPreviewText"),
   sagsFactsPanelTitle: document.getElementById("sagsFactsPanelTitle"),
   sagsFactsIncomeYearsLabel: document.getElementById("sagsFactsIncomeYearsLabel"),
   sagsFactsFactorSelectionLabel: document.getElementById("sagsFactsFactorSelectionLabel"),
@@ -1390,6 +1398,9 @@ function getSagsbehandlingCasePatchFromState() {
     facts_locked_by_subtab: sags.factsLockedBySubtab || {},
     facts_by_subtab: sags.factsBySubtab || {},
     context_by_subtab: sags.contextBySubtab || {},
+    selected_legal_sources_by_subtab: sags.selectedLegalSourcesBySubtab || {},
+    legal_library_active_category_by_subtab: sags.legalLibraryActiveCategoryBySubtab || {},
+    legal_library_preview_source_by_subtab: sags.legalLibraryPreviewSourceBySubtab || {},
     messages_by_subtab: Object.fromEntries(
       Object.entries(sags.messagesBySubtab || {}).map(([subtab, messages]) => [
         subtab,
@@ -1465,6 +1476,11 @@ function applyCaseToSagsbehandlingState(caseEntry) {
       factsBySubtab: caseEntry?.facts_by_subtab || {},
       contextBySubtab: caseEntry?.context_by_subtab || {},
       factsPanelOpen: false,
+      legalLibraryPanelOpen: false,
+      legalLibrarySearchQuery: "",
+      selectedLegalSourcesBySubtab: caseEntry?.selected_legal_sources_by_subtab || {},
+      legalLibraryActiveCategoryBySubtab: caseEntry?.legal_library_active_category_by_subtab || {},
+      legalLibraryPreviewSourceBySubtab: caseEntry?.legal_library_preview_source_by_subtab || {},
     },
   });
 }
@@ -1634,6 +1650,11 @@ async function deleteActiveSagsCase() {
         subtabOutputLocked: {},
         factsLockedBySubtab: {},
         factsPanelOpen: false,
+        legalLibraryPanelOpen: false,
+        legalLibrarySearchQuery: "",
+        selectedLegalSourcesBySubtab: {},
+        legalLibraryActiveCategoryBySubtab: {},
+        legalLibraryPreviewSourceBySubtab: {},
         factsBySubtab: {},
         contextBySubtab: {},
       },
@@ -1697,6 +1718,11 @@ async function logout() {
         subtabOutputLocked: {},
         factsLockedBySubtab: {},
         factsPanelOpen: false,
+        legalLibraryPanelOpen: false,
+        legalLibrarySearchQuery: "",
+        selectedLegalSourcesBySubtab: {},
+        legalLibraryActiveCategoryBySubtab: {},
+        legalLibraryPreviewSourceBySubtab: {},
         factsBySubtab: {},
         contextBySubtab: {},
         legalBasisBySubtab: {},
@@ -2105,7 +2131,7 @@ async function runSagsbehandling() {
         : []),
       ["Indkomst/faktum", facts.foreignIncome],
       ["Aktiver/passiver", facts.foreignAssetsLiabilities],
-      ["Bopælsfaktum", facts.residenceFact],
+      ...(activeSubtab === "beskatningsret_indkomst" ? [] : [["Bopælsfaktum", facts.residenceFact]]),
       ["Noter", facts.notes],
     ]
       .map(([label, value]) => [label, String(value || "").trim()])
@@ -2823,6 +2849,8 @@ function bindEvents() {
             previousResponseId: previousBySubtab[subtab] || null,
             usedModel: usedModelBySubtab[subtab] || null,
             factsPanelOpen: false,
+            legalLibraryPanelOpen: false,
+            legalLibrarySearchQuery: "",
           },
         });
         renderSagsbehandling(elements, getState());
@@ -2918,9 +2946,21 @@ function bindEvents() {
       if (!functionLabel) {
         return;
       }
+      const activeSubtab = getState().sagsbehandling.activeSubtab || "";
+      const activeCategoryBySubtab = getState().sagsbehandling.legalLibraryActiveCategoryBySubtab || {};
+      const nextCategoryBySubtab = activeSubtab === "beskatningsret_indkomst"
+        ? {
+          ...activeCategoryBySubtab,
+          [activeSubtab]: activeCategoryBySubtab[activeSubtab] || "lovbekendtgoerelser",
+        }
+        : activeCategoryBySubtab;
       setState({
         sagsbehandling: {
           activeFunction: functionLabel,
+          legalLibraryPanelOpen:
+            activeSubtab === "beskatningsret_indkomst" && functionLabel === "Retskilder",
+          factsPanelOpen: false,
+          legalLibraryActiveCategoryBySubtab: nextCategoryBySubtab,
         },
       });
       renderSagsbehandling(elements, getState());
@@ -2934,6 +2974,7 @@ function bindEvents() {
       setState({
         sagsbehandling: {
           factsPanelOpen: !isOpen,
+          legalLibraryPanelOpen: false,
         },
       });
       renderSagsbehandling(elements, getState());
@@ -2948,6 +2989,111 @@ function bindEvents() {
       setState({
         sagsbehandling: {
           factsPanelOpen: false,
+        },
+      });
+      renderSagsbehandling(elements, getState());
+    });
+  }
+
+  if (elements.sagsLegalLibraryToggleBtn) {
+    elements.sagsLegalLibraryToggleBtn.addEventListener("click", () => {
+      const sags = getState().sagsbehandling || {};
+      const activeSubtab = sags.activeSubtab || "";
+      if (activeSubtab !== "beskatningsret_indkomst") {
+        setStatus("Retskildebibliotek er kun aktiv i undertab: Beskatningsret til indkomst.", "error");
+        return;
+      }
+      const isOpen = Boolean(sags.legalLibraryPanelOpen);
+      setState({
+        sagsbehandling: {
+          legalLibraryPanelOpen: !isOpen,
+          factsPanelOpen: false,
+          legalLibraryActiveCategoryBySubtab: {
+            ...(sags.legalLibraryActiveCategoryBySubtab || {}),
+            [activeSubtab]: (sags.legalLibraryActiveCategoryBySubtab || {})[activeSubtab] || "lovbekendtgoerelser",
+          },
+        },
+      });
+      renderSagsbehandling(elements, getState());
+    });
+  }
+
+  if (elements.sagsLegalLibraryCloseBtn) {
+    elements.sagsLegalLibraryCloseBtn.addEventListener("click", () => {
+      setState({
+        sagsbehandling: {
+          legalLibraryPanelOpen: false,
+        },
+      });
+      renderSagsbehandling(elements, getState());
+    });
+  }
+
+  if (elements.sagsLegalLibrarySearch) {
+    elements.sagsLegalLibrarySearch.addEventListener("input", () => {
+      setState({
+        sagsbehandling: {
+          legalLibrarySearchQuery: elements.sagsLegalLibrarySearch.value,
+        },
+      });
+      renderSagsbehandling(elements, getState());
+    });
+  }
+
+  if (elements.sagsLegalLibraryCategories) {
+    elements.sagsLegalLibraryCategories.addEventListener("click", (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLElement)) {
+        return;
+      }
+      const categoryButton = target.closest("[data-sags-legal-category-id]");
+      if (!(categoryButton instanceof HTMLElement)) {
+        return;
+      }
+      const categoryId = String(categoryButton.dataset.sagsLegalCategoryId || "").trim();
+      if (!categoryId) {
+        return;
+      }
+      const activeSubtab = getState().sagsbehandling.activeSubtab || "";
+      const activeBySubtab = getState().sagsbehandling.legalLibraryActiveCategoryBySubtab || {};
+      setState({
+        sagsbehandling: {
+          legalLibraryActiveCategoryBySubtab: {
+            ...activeBySubtab,
+            [activeSubtab]: categoryId,
+          },
+          legalLibraryPreviewSourceBySubtab: {
+            ...(getState().sagsbehandling.legalLibraryPreviewSourceBySubtab || {}),
+            [activeSubtab]: "",
+          },
+        },
+      });
+      renderSagsbehandling(elements, getState());
+    });
+  }
+
+  if (elements.sagsLegalLibrarySources) {
+    elements.sagsLegalLibrarySources.addEventListener("click", (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLElement)) {
+        return;
+      }
+      const sourceButton = target.closest("[data-sags-legal-source-id]");
+      if (!(sourceButton instanceof HTMLElement)) {
+        return;
+      }
+      const sourceId = String(sourceButton.dataset.sagsLegalSourceId || "").trim();
+      if (!sourceId) {
+        return;
+      }
+      const activeSubtab = getState().sagsbehandling.activeSubtab || "";
+      const previewBySubtab = getState().sagsbehandling.legalLibraryPreviewSourceBySubtab || {};
+      setState({
+        sagsbehandling: {
+          legalLibraryPreviewSourceBySubtab: {
+            ...previewBySubtab,
+            [activeSubtab]: sourceId,
+          },
         },
       });
       renderSagsbehandling(elements, getState());
@@ -2978,6 +3124,7 @@ function bindEvents() {
             [activeSubtab]: nextLockedState,
           },
           factsPanelOpen: nextLockedState ? false : true,
+          legalLibraryPanelOpen: false,
         },
       });
       addSagsbehandlingMessage("system", nextLockedState

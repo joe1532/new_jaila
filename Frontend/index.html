@@ -135,6 +135,9 @@
                 <button id="sagsFactsToggleBtn" type="button" class="button-secondary sags-facts-toggle">
                   Tilføj fakta
                 </button>
+                <button id="sagsLegalLibraryToggleBtn" type="button" class="button-secondary sags-facts-toggle">
+                  Retskilder
+                </button>
               </div>
               <div id="sagsFunctionList" class="sags-function-actions">
                 <button type="button" class="button-secondary" disabled>Vælg undertab...</button>
@@ -233,6 +236,43 @@
                   <button id="sagsFactsSaveBtn" type="button" class="button-secondary sags-facts-mini">
                     Gem fakta
                   </button>
+                </div>
+              </section>
+              <section
+                id="sagsLegalLibraryPanel"
+                class="sags-facts-panel sags-facts-overlay sags-legal-library-overlay hidden"
+                aria-label="Retskildebibliotek"
+              >
+                <div class="sags-facts-overlay-header">
+                  <h3 class="sags-facts-title">Retskildebibliotek</h3>
+                  <div class="sags-facts-overlay-actions">
+                    <button
+                      id="sagsLegalLibraryCloseBtn"
+                      type="button"
+                      class="button-secondary sags-facts-close"
+                    >
+                      Luk
+                    </button>
+                  </div>
+                </div>
+                <label class="label" for="sagsLegalLibrarySearch">Søg retskilde</label>
+                <input
+                  id="sagsLegalLibrarySearch"
+                  class="input sags-facts-input"
+                  type="text"
+                  placeholder="Søg fx: dbo tyskland art 15"
+                />
+                <div class="sags-legal-library-layout">
+                  <section class="sags-legal-library-preview">
+                    <h4 id="sagsLegalPreviewTitle" class="sags-legal-library-category-title">Vælg en retskilde</h4>
+                    <div id="sagsLegalPreviewText" class="sags-legal-preview-text">
+                      Vælg først en kategori til højre, og derefter en retskilde for at se teksten her.
+                    </div>
+                  </section>
+                  <section class="sags-legal-library-nav">
+                    <div id="sagsLegalLibraryCategories" class="sags-legal-library-categories"></div>
+                    <div id="sagsLegalLibrarySources" class="sags-legal-library-list"></div>
+                  </section>
                 </div>
               </section>
             </section>

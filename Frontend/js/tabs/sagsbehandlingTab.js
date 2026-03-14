@@ -23,7 +23,7 @@ const SUBTAB_CONFIG = {
     title: "Sagsbehandling - Beskatningsret til indkomst",
     placeholder: "Beskriv spørgsmålet om beskatningsret (dummy)...",
     functions: [
-      "Fordel beskatningsret (dummy)",
+      "Retskilder",
       "Vurder DBO-relevans (dummy)",
       "Opsummer hjemmel (dummy)",
     ],
@@ -50,6 +50,60 @@ const SUBTAB_CONFIG = {
     enabled: true,
   },
 };
+
+const LEGAL_SOURCE_CATEGORIES = [
+  { id: "lovbekendtgoerelser", title: "Lovbekendtgørelser" },
+  { id: "juridisk_vejledning", title: "Den juridiske vejledning" },
+  { id: "bekendtgoerelser_cirkulaerer", title: "Bekendtgørelser og cirkulærer" },
+  { id: "dobbeltbeskatningsoverenskomster", title: "Dobbeltbeskatningsoverenskomster" },
+  { id: "afgoerelser_domme", title: "Afgørelser og domme" },
+];
+
+// Midlertidigt lokalt katalog til UI-flow. Skal senere erstattes af backend-katalog.
+const LEGAL_SOURCE_CATALOG = [
+  {
+    sourceId: "ll_lbkg_2024_01_01",
+    title: "Ligningsloven (lovbekendtgørelse)",
+    category: "lovbekendtgoerelser",
+    tags: ["ligningsloven", "lovbekendtgørelse"],
+    text: "Eksempeltekst: Ligningsloven indeholder regler om blandt andet fradrag, personalegoder og særlige indkomstforhold.",
+  },
+  {
+    sourceId: "djv_cf_8_2_2",
+    title: "Den juridiske vejledning - C.F.8.2.2 Dobbeltbeskatning",
+    category: "juridisk_vejledning",
+    tags: ["juridisk vejledning", "dobbeltbeskatning"],
+    text: "Eksempeltekst: Vejledningen beskriver praksis for fordeling af beskatningsret mellem Danmark og udlandet.",
+  },
+  {
+    sourceId: "bek_1305_2018",
+    title: "Bekendtgørelse nr. 1305 af 14. november 2018",
+    category: "bekendtgoerelser_cirkulaerer",
+    tags: ["bekendtgørelse", "ligningsfrist"],
+    text: "Eksempeltekst: Bekendtgørelsen præciserer frister og oplysningskrav i relevante skattesager.",
+  },
+  {
+    sourceId: "norden_dbo_art15_v1996",
+    title: "Nordisk DBO - artikel 15 (Personlige tjenesteydelser)",
+    category: "dobbeltbeskatningsoverenskomster",
+    tags: ["dbo", "norden", "artikel 15"],
+    text: "Art. 15 (personlige tjenesteydelser): Løn beskattes normalt i arbejdsstaten, med undtagelser efter 183-dages-reglen.",
+  },
+  {
+    sourceId: "norden_dbo_art04_v1996",
+    title: "Nordisk DBO - artikel 4 (Skattemæssigt hjemsted)",
+    category: "dobbeltbeskatningsoverenskomster",
+    tags: ["dbo", "norden", "artikel 4", "hjemsted"],
+    text: "Art. 4 (skattemæssigt hjemsted): Fastlægger hvilken stat en person anses hjemmehørende i ved dobbelt bopæl.",
+  },
+  {
+    sourceId: "skm2024_123_hr",
+    title: "SKM2024.123.HR (eksempel)",
+    category: "afgoerelser_domme",
+    tags: ["dom", "højesteret"],
+    text: "Eksempeltekst: Dommen illustrerer afvejning af tilknytningsmomenter ved vurdering af beskatningsret.",
+  },
+];
 
 const SKATTEPLIGT_FACTORS = [
   {
@@ -247,7 +301,7 @@ const FACTS_UI_CONFIG = {
     foreignAssetsLiabilitiesPlaceholder: "Skriv relevante fakta",
     residenceLabel: "Skattemæssigt hjemsted (faktum)",
     residencePlaceholder: "Fx bopæl, familie, opholdsmønster",
-    notesLabel: "Supplerende DBO-fakta",
+    notesLabel: "Retskilder",
     notesPlaceholder: "Fx artikelhenvisning, kildebeskatning, credit",
   },
   lempelse: {
@@ -584,6 +638,89 @@ export function renderSagsbehandling(elements, state) {
 
   if (elements.sagsFactsPanel) {
     elements.sagsFactsPanel.classList.toggle("hidden", !state.sagsbehandling.factsPanelOpen);
+  }
+  if (elements.sagsLegalLibraryToggleBtn) {
+    const isBeskatningsretSubtab = activeSubtab === "beskatningsret_indkomst";
+    elements.sagsLegalLibraryToggleBtn.classList.toggle("hidden", !isBeskatningsretSubtab);
+    if (isBeskatningsretSubtab) {
+      elements.sagsLegalLibraryToggleBtn.textContent = state.sagsbehandling.legalLibraryPanelOpen
+        ? "Skjul retskilder"
+        : "Retskilder";
+    }
+  }
+  if (elements.sagsLegalLibraryPanel) {
+    const showLibraryPanel =
+      activeSubtab === "beskatningsret_indkomst" && Boolean(state.sagsbehandling.legalLibraryPanelOpen);
+    elements.sagsLegalLibraryPanel.classList.toggle("hidden", !showLibraryPanel);
+  }
+  if (elements.sagsLegalLibrarySearch) {
+    const searchValue = String(state.sagsbehandling.legalLibrarySearchQuery || "");
+    if (elements.sagsLegalLibrarySearch.value !== searchValue) {
+      elements.sagsLegalLibrarySearch.value = searchValue;
+    }
+  }
+  if (elements.sagsLegalLibraryCategories && elements.sagsLegalLibrarySources) {
+    const query = String(state.sagsbehandling.legalLibrarySearchQuery || "").trim().toLowerCase();
+    const activeCategoryBySubtab = state.sagsbehandling.legalLibraryActiveCategoryBySubtab || {};
+    const previewBySubtab = state.sagsbehandling.legalLibraryPreviewSourceBySubtab || {};
+    const activeCategory = String(activeCategoryBySubtab[activeSubtab] || "").trim();
+    const previewSourceId = String(previewBySubtab[activeSubtab] || "").trim();
+    elements.sagsLegalLibraryCategories.innerHTML = "";
+    elements.sagsLegalLibrarySources.innerHTML = "";
+    LEGAL_SOURCE_CATEGORIES.forEach((category) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "button-secondary sags-legal-category-button";
+      button.dataset.sagsLegalCategoryId = category.id;
+      if (activeCategory === category.id) {
+        button.classList.add("sags-legal-category-button-active");
+      }
+      button.textContent = category.title;
+      elements.sagsLegalLibraryCategories.appendChild(button);
+    });
+
+    const visibleSources = LEGAL_SOURCE_CATALOG.filter((item) => {
+      if (activeCategory && item.category !== activeCategory) return false;
+      if (!query) return true;
+      const haystack = `${item.title} ${item.sourceId} ${(item.tags || []).join(" ")}`.toLowerCase();
+      return haystack.includes(query);
+    });
+    if (!activeCategory) {
+      const empty = document.createElement("div");
+      empty.className = "sags-legal-library-empty";
+      empty.textContent = "Vælg en kategori ovenfor for at se retskilder.";
+      elements.sagsLegalLibrarySources.appendChild(empty);
+    } else if (!visibleSources.length) {
+      const empty = document.createElement("div");
+      empty.className = "sags-legal-library-empty";
+      empty.textContent = "Ingen retskilder matcher søgningen i den valgte kategori.";
+      elements.sagsLegalLibrarySources.appendChild(empty);
+    } else {
+      visibleSources.forEach((item) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "button-secondary sags-legal-source-button";
+        button.dataset.sagsLegalSourceId = item.sourceId;
+        if (previewSourceId === item.sourceId) {
+          button.classList.add("sags-legal-source-button-active");
+        }
+        button.textContent = item.title;
+        elements.sagsLegalLibrarySources.appendChild(button);
+      });
+    }
+    if (elements.sagsLegalPreviewTitle && elements.sagsLegalPreviewText) {
+      const selectedSource = LEGAL_SOURCE_CATALOG.find(
+        (item) => item.sourceId === previewSourceId,
+      ) || null;
+      if (selectedSource) {
+        elements.sagsLegalPreviewTitle.textContent = selectedSource.title;
+        elements.sagsLegalPreviewText.textContent = selectedSource.text || "Ingen tekst fundet.";
+      } else {
+        elements.sagsLegalPreviewTitle.textContent = "Vælg en retskilde";
+        elements.sagsLegalPreviewText.textContent =
+          "Vælg først en kategori til højre, og derefter en retskilde for at se teksten her.";
+      }
+    }
   }
 
   if (elements.sagsFactsPanelTitle) {
@@ -1354,7 +1491,13 @@ export function renderSagsbehandling(elements, state) {
   }
   if (elements.sagsFactsResidence) {
     elements.sagsFactsResidence.placeholder = factsUiCfg.residencePlaceholder || "";
-    elements.sagsFactsResidence.classList.toggle("hidden", activeSubtab === "skattepligt_ligningsfrist");
+    elements.sagsFactsResidence.classList.toggle(
+      "hidden",
+      activeSubtab === "skattepligt_ligningsfrist" || activeSubtab === "beskatningsret_indkomst",
+    );
+  }
+  if (elements.sagsFactsResidenceLabel) {
+    elements.sagsFactsResidenceLabel.classList.toggle("hidden", activeSubtab === "beskatningsret_indkomst");
   }
   if (elements.sagsFactsNotes && elements.sagsFactsNotes.value !== (facts.notes ?? "")) {
     elements.sagsFactsNotes.value = facts.notes ?? "";
