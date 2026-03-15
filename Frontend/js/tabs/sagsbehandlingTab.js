@@ -59,52 +59,6 @@ const LEGAL_SOURCE_CATEGORIES = [
   { id: "afgoerelser_domme", title: "Afgørelser og domme" },
 ];
 
-// Midlertidigt lokalt katalog til UI-flow. Skal senere erstattes af backend-katalog.
-const LEGAL_SOURCE_CATALOG = [
-  {
-    sourceId: "ll_lbkg_2024_01_01",
-    title: "Ligningsloven (lovbekendtgørelse)",
-    category: "lovbekendtgoerelser",
-    tags: ["ligningsloven", "lovbekendtgørelse"],
-    text: "Eksempeltekst: Ligningsloven indeholder regler om blandt andet fradrag, personalegoder og særlige indkomstforhold.",
-  },
-  {
-    sourceId: "djv_cf_8_2_2",
-    title: "Den juridiske vejledning - C.F.8.2.2 Dobbeltbeskatning",
-    category: "juridisk_vejledning",
-    tags: ["juridisk vejledning", "dobbeltbeskatning"],
-    text: "Eksempeltekst: Vejledningen beskriver praksis for fordeling af beskatningsret mellem Danmark og udlandet.",
-  },
-  {
-    sourceId: "bek_1305_2018",
-    title: "Bekendtgørelse nr. 1305 af 14. november 2018",
-    category: "bekendtgoerelser_cirkulaerer",
-    tags: ["bekendtgørelse", "ligningsfrist"],
-    text: "Eksempeltekst: Bekendtgørelsen præciserer frister og oplysningskrav i relevante skattesager.",
-  },
-  {
-    sourceId: "norden_dbo_art15_v1996",
-    title: "Nordisk DBO - artikel 15 (Personlige tjenesteydelser)",
-    category: "dobbeltbeskatningsoverenskomster",
-    tags: ["dbo", "norden", "artikel 15"],
-    text: "Art. 15 (personlige tjenesteydelser): Løn beskattes normalt i arbejdsstaten, med undtagelser efter 183-dages-reglen.",
-  },
-  {
-    sourceId: "norden_dbo_art04_v1996",
-    title: "Nordisk DBO - artikel 4 (Skattemæssigt hjemsted)",
-    category: "dobbeltbeskatningsoverenskomster",
-    tags: ["dbo", "norden", "artikel 4", "hjemsted"],
-    text: "Art. 4 (skattemæssigt hjemsted): Fastlægger hvilken stat en person anses hjemmehørende i ved dobbelt bopæl.",
-  },
-  {
-    sourceId: "skm2024_123_hr",
-    title: "SKM2024.123.HR (eksempel)",
-    category: "afgoerelser_domme",
-    tags: ["dom", "højesteret"],
-    text: "Eksempeltekst: Dommen illustrerer afvejning af tilknytningsmomenter ved vurdering af beskatningsret.",
-  },
-];
-
 const SKATTEPLIGT_FACTORS = [
   {
     id: "self_employed_business",
@@ -660,18 +614,37 @@ export function renderSagsbehandling(elements, state) {
     }
   }
   if (elements.sagsLegalLibraryCategories && elements.sagsLegalLibrarySources) {
+    const legalCatalog = Array.isArray(state.sagsbehandling.legalLibraryCatalog)
+      ? state.sagsbehandling.legalLibraryCatalog
+      : [];
+    const libraryCategories = LEGAL_SOURCE_CATEGORIES;
     const query = String(state.sagsbehandling.legalLibrarySearchQuery || "").trim().toLowerCase();
     const activeCategoryBySubtab = state.sagsbehandling.legalLibraryActiveCategoryBySubtab || {};
-    const previewBySubtab = state.sagsbehandling.legalLibraryPreviewSourceBySubtab || {};
+    const activeDocumentBySubtab = state.sagsbehandling.legalLibraryActiveDocumentBySubtab || {};
+    const activeVersionBySubtab = state.sagsbehandling.legalLibraryActiveVersionBySubtab || {};
+    const previewBySubtab = state.sagsbehandling.legalLibraryPreviewSectionBySubtab || {};
     const activeCategory = String(activeCategoryBySubtab[activeSubtab] || "").trim();
-    const previewSourceId = String(previewBySubtab[activeSubtab] || "").trim();
+    const activeDocumentId = String(activeDocumentBySubtab[activeSubtab] || "").trim();
+    const activeVersionId = String(activeVersionBySubtab[activeSubtab] || "").trim();
+    const previewSectionId = String(previewBySubtab[activeSubtab] || "").trim();
     elements.sagsLegalLibraryCategories.innerHTML = "";
     elements.sagsLegalLibrarySources.innerHTML = "";
-    LEGAL_SOURCE_CATEGORIES.forEach((category) => {
+
+    const matchesQuery = (doc, version, section) => {
+      if (!query) {
+        return true;
+      }
+      const partDoc = `${doc.title} ${(doc.tags || []).join(" ")}`.toLowerCase();
+      const partVersion = `${version.label} ${version.id}`.toLowerCase();
+      const partSection = `${section.title} ${section.text}`.toLowerCase();
+      return partDoc.includes(query) || partVersion.includes(query) || partSection.includes(query);
+    };
+
+    libraryCategories.forEach((category) => {
       const button = document.createElement("button");
       button.type = "button";
       button.className = "button-secondary sags-legal-category-button";
-      button.dataset.sagsLegalCategoryId = category.id;
+      button.dataset.sagsLegalCategoryToggleId = category.id;
       if (activeCategory === category.id) {
         button.classList.add("sags-legal-category-button-active");
       }
@@ -679,46 +652,203 @@ export function renderSagsbehandling(elements, state) {
       elements.sagsLegalLibraryCategories.appendChild(button);
     });
 
-    const visibleSources = LEGAL_SOURCE_CATALOG.filter((item) => {
-      if (activeCategory && item.category !== activeCategory) return false;
-      if (!query) return true;
-      const haystack = `${item.title} ${item.sourceId} ${(item.tags || []).join(" ")}`.toLowerCase();
-      return haystack.includes(query);
-    });
-    if (!activeCategory) {
+    if (!legalCatalog.length) {
       const empty = document.createElement("div");
       empty.className = "sags-legal-library-empty";
-      empty.textContent = "Vælg en kategori ovenfor for at se retskilder.";
+      empty.textContent = "Ingen retskilder fundet fra server endnu.";
       elements.sagsLegalLibrarySources.appendChild(empty);
-    } else if (!visibleSources.length) {
+    } else if (!activeCategory) {
       const empty = document.createElement("div");
       empty.className = "sags-legal-library-empty";
-      empty.textContent = "Ingen retskilder matcher søgningen i den valgte kategori.";
+      empty.textContent = "Vælg en kategori for at se dokumenter.";
       elements.sagsLegalLibrarySources.appendChild(empty);
     } else {
-      visibleSources.forEach((item) => {
-        const button = document.createElement("button");
-        button.type = "button";
-        button.className = "button-secondary sags-legal-source-button";
-        button.dataset.sagsLegalSourceId = item.sourceId;
-        if (previewSourceId === item.sourceId) {
-          button.classList.add("sags-legal-source-button-active");
-        }
-        button.textContent = item.title;
-        elements.sagsLegalLibrarySources.appendChild(button);
-      });
-    }
-    if (elements.sagsLegalPreviewTitle && elements.sagsLegalPreviewText) {
-      const selectedSource = LEGAL_SOURCE_CATALOG.find(
-        (item) => item.sourceId === previewSourceId,
-      ) || null;
-      if (selectedSource) {
-        elements.sagsLegalPreviewTitle.textContent = selectedSource.title;
-        elements.sagsLegalPreviewText.textContent = selectedSource.text || "Ingen tekst fundet.";
+      const visibleDocs = legalCatalog
+        .filter((doc) => doc.category === activeCategory)
+        .filter((doc) =>
+          (Array.isArray(doc.versions) ? doc.versions : []).some((version) =>
+            (Array.isArray(version.sections) ? version.sections : []).some((section) =>
+              matchesQuery(doc, version, section),
+            ),
+          ),
+        );
+      if (!visibleDocs.length) {
+        const empty = document.createElement("div");
+        empty.className = "sags-legal-library-empty";
+        empty.textContent = "Ingen dokumenter matcher søgningen i den valgte kategori.";
+        elements.sagsLegalLibrarySources.appendChild(empty);
       } else {
-        elements.sagsLegalPreviewTitle.textContent = "Vælg en retskilde";
+        visibleDocs.forEach((doc) => {
+          const docButton = document.createElement("button");
+          docButton.type = "button";
+          docButton.className = "button-secondary sags-legal-source-button";
+          docButton.dataset.sagsLegalDocumentId = doc.id;
+          if (activeDocumentId === doc.id) {
+            docButton.classList.add("sags-legal-source-button-active");
+          }
+          docButton.textContent = doc.title;
+          elements.sagsLegalLibrarySources.appendChild(docButton);
+
+          if (activeDocumentId !== doc.id) {
+            return;
+          }
+          const versions = (Array.isArray(doc.versions) ? doc.versions : [])
+            .filter((version) =>
+              (Array.isArray(version.sections) ? version.sections : []).some((section) =>
+                matchesQuery(doc, version, section),
+              ),
+            )
+            .sort((a, b) => String(b.validFrom || "").localeCompare(String(a.validFrom || "")));
+          const hasStoredActiveVersion = versions.some((version) => version.id === activeVersionId);
+          const effectiveActiveVersionId = hasStoredActiveVersion
+            ? activeVersionId
+            : (versions[0] ? versions[0].id : "");
+          versions.forEach((version) => {
+            const versionButton = document.createElement("button");
+            versionButton.type = "button";
+            versionButton.className = "button-secondary sags-legal-source-button sags-legal-version-button";
+            versionButton.dataset.sagsLegalVersionId = version.id;
+            if (effectiveActiveVersionId === version.id) {
+              versionButton.classList.add("sags-legal-source-button-active");
+            }
+            const validTo = String(version.validTo || "").trim();
+            const rangeLabel = validTo
+              ? `${version.validFrom || "ukendt"} - ${validTo}`
+              : `${version.validFrom || "ukendt"} - `;
+            versionButton.textContent = `${version.label} (gyldig: ${rangeLabel})`;
+            elements.sagsLegalLibrarySources.appendChild(versionButton);
+
+            if (effectiveActiveVersionId !== version.id) {
+              return;
+            }
+            const sections = (Array.isArray(version.sections) ? version.sections : [])
+              .filter((section) => matchesQuery(doc, version, section));
+            sections.forEach((section) => {
+              const sectionRow = document.createElement("div");
+              sectionRow.className = "sags-legal-section-row";
+
+              const sectionButton = document.createElement("button");
+              sectionButton.type = "button";
+              sectionButton.className = "button-secondary sags-legal-source-button sags-legal-section-button";
+              sectionButton.dataset.sagsLegalSourceId = `${version.id}:${section.id}`;
+              sectionButton.dataset.sagsLegalSourceRef = String(section.sourceId || "").trim();
+              if (previewSectionId === `${version.id}:${section.id}`) {
+                sectionButton.classList.add("sags-legal-source-button-active");
+              }
+              sectionButton.textContent = section.title;
+              sectionRow.appendChild(sectionButton);
+
+              const addButton = document.createElement("button");
+              addButton.type = "button";
+              addButton.className = "button-secondary sags-facts-mini";
+              addButton.textContent = "Tilføj";
+              addButton.dataset.sagsLegalAddSectionId = section.id;
+              addButton.dataset.sagsLegalAddSourceId = version.id;
+              addButton.dataset.sagsLegalAddTitle =
+                `${doc.title} - ${version.label} - ${section.title}`;
+              addButton.dataset.sagsLegalAddText = section.text || "";
+              sectionRow.appendChild(addButton);
+
+              elements.sagsLegalLibrarySources.appendChild(sectionRow);
+            });
+          });
+        });
+      }
+    }
+
+    if (elements.sagsLegalPreviewTitle && elements.sagsLegalPreviewText) {
+      let selectedSection = null;
+      let selectedDocTitle = "";
+      let selectedVersionLabel = "";
+      let selectedSourceId = "";
+      const sectionTextCache = state.sagsbehandling.legalLibrarySectionTextBySourceId || {};
+      const loadingSourceId = String(state.sagsbehandling.legalLibraryPreviewLoadingSourceId || "").trim();
+      const previewPageBySourceId = state.sagsbehandling.legalLibraryPreviewPageBySourceId || {};
+      const previewTotalPagesBySourceId = state.sagsbehandling.legalLibraryPreviewTotalPagesBySourceId || {};
+      legalCatalog.forEach((doc) => {
+        (Array.isArray(doc.versions) ? doc.versions : []).forEach((version) => {
+          (Array.isArray(version.sections) ? version.sections : []).forEach((section) => {
+            const sectionKey = `${version.id}:${section.id}`;
+            if (sectionKey === previewSectionId) {
+              selectedSection = section;
+              selectedDocTitle = doc.title;
+              selectedVersionLabel = version.label;
+              selectedSourceId = String(section.sourceId || "").trim();
+            }
+          });
+        });
+      });
+      if (selectedSection) {
+        elements.sagsLegalPreviewTitle.textContent =
+          `${selectedDocTitle} - ${selectedVersionLabel} - ${selectedSection.title}`;
+        const currentPage = Math.max(1, Number(previewPageBySourceId[selectedSourceId] || 1) || 1);
+        const cacheKey = `${selectedSourceId}::${currentPage}`;
+        const totalPages = Math.max(1, Number(previewTotalPagesBySourceId[selectedSourceId] || 1) || 1);
+        if (selectedSourceId && loadingSourceId === selectedSourceId) {
+          elements.sagsLegalPreviewText.textContent = "Indlæser indhold fra kilde...";
+        } else if (selectedSourceId && String(sectionTextCache[cacheKey] || "").trim()) {
+          elements.sagsLegalPreviewText.textContent = String(sectionTextCache[cacheKey] || "");
+        } else {
+          elements.sagsLegalPreviewText.textContent = selectedSection.text || "Ingen tekst fundet.";
+        }
+        if (
+          elements.sagsLegalPreviewPager
+          && elements.sagsLegalPrevPageBtn
+          && elements.sagsLegalNextPageBtn
+          && elements.sagsLegalPreviewPageInfo
+        ) {
+          elements.sagsLegalPreviewPager.classList.remove("hidden");
+          elements.sagsLegalPreviewPageInfo.textContent = `Side ${currentPage}/${totalPages}`;
+          elements.sagsLegalPrevPageBtn.disabled = currentPage <= 1 || loadingSourceId === selectedSourceId;
+          elements.sagsLegalNextPageBtn.disabled = currentPage >= totalPages || loadingSourceId === selectedSourceId;
+          elements.sagsLegalPrevPageBtn.dataset.sagsLegalSourceId = selectedSourceId;
+          elements.sagsLegalNextPageBtn.dataset.sagsLegalSourceId = selectedSourceId;
+          elements.sagsLegalPrevPageBtn.dataset.sagsLegalCurrentPage = String(currentPage);
+          elements.sagsLegalNextPageBtn.dataset.sagsLegalCurrentPage = String(currentPage);
+          elements.sagsLegalNextPageBtn.dataset.sagsLegalTotalPages = String(totalPages);
+        }
+      } else {
+        elements.sagsLegalPreviewTitle.textContent = "Vælg en paragraf";
         elements.sagsLegalPreviewText.textContent =
-          "Vælg først en kategori til højre, og derefter en retskilde for at se teksten her.";
+          "Vælg kategori, dokument, version og derefter paragraf i højre side.";
+        if (
+          elements.sagsLegalPreviewPager
+          && elements.sagsLegalPrevPageBtn
+          && elements.sagsLegalNextPageBtn
+          && elements.sagsLegalPreviewPageInfo
+        ) {
+          elements.sagsLegalPreviewPager.classList.add("hidden");
+          elements.sagsLegalPreviewPageInfo.textContent = "Side 1/1";
+          elements.sagsLegalPrevPageBtn.dataset.sagsLegalSourceId = "";
+          elements.sagsLegalNextPageBtn.dataset.sagsLegalSourceId = "";
+          elements.sagsLegalPrevPageBtn.disabled = true;
+          elements.sagsLegalNextPageBtn.disabled = true;
+        }
+      }
+      if (elements.sagsLegalOpenSourceBtn) {
+        const showOpenSource = Boolean(selectedSection && selectedSourceId);
+        elements.sagsLegalOpenSourceBtn.classList.toggle("hidden", !showOpenSource);
+        if (showOpenSource) {
+          elements.sagsLegalOpenSourceBtn.dataset.sagsLegalSourceId = selectedSourceId;
+        } else {
+          elements.sagsLegalOpenSourceBtn.dataset.sagsLegalSourceId = "";
+        }
+      }
+      if (elements.sagsLegalAddSelectionBtn) {
+        const showAddSelection = Boolean(selectedSection && selectedSourceId);
+        elements.sagsLegalAddSelectionBtn.classList.toggle("hidden", !showAddSelection);
+        if (showAddSelection) {
+          elements.sagsLegalAddSelectionBtn.dataset.sagsLegalSourceId = selectedSourceId;
+          elements.sagsLegalAddSelectionBtn.dataset.sagsLegalSectionId = String(selectedSection.id || "").trim();
+          elements.sagsLegalAddSelectionBtn.dataset.sagsLegalSectionTitle = String(selectedSection.title || "").trim();
+          elements.sagsLegalAddSelectionBtn.dataset.sagsLegalContextTitle =
+            `${selectedDocTitle} - ${selectedVersionLabel} - ${selectedSection.title}`;
+        } else {
+          elements.sagsLegalAddSelectionBtn.dataset.sagsLegalSourceId = "";
+          elements.sagsLegalAddSelectionBtn.dataset.sagsLegalSectionId = "";
+          elements.sagsLegalAddSelectionBtn.dataset.sagsLegalSectionTitle = "";
+          elements.sagsLegalAddSelectionBtn.dataset.sagsLegalContextTitle = "";
+        }
       }
     }
   }

@@ -36,6 +36,7 @@ COUNTRY_ALIASES = {
     "island": "is",
     "nordiske lande": "norden",
 }
+NORDIC_SEARCH_COUNTRIES = ["norge", "sverige", "finland", "island", "færøerne", "grønland"]
 
 
 def normalize_text(text: str) -> str:
@@ -144,7 +145,7 @@ def build_aliases(jurisdiction: str, article_or_section: str, title: str) -> lis
     """Generate simple search aliases for catalog search."""
     aliases = ["dbo", "dobbeltbeskatningsoverenskomst", title.lower()]
     if jurisdiction == "norden":
-        aliases.extend(["norden", "nordiske lande", "nordisk dbo"])
+        aliases.extend(NORDIC_SEARCH_COUNTRIES)
     if jurisdiction.startswith("dk-"):
         right = jurisdiction.split("-", 1)[1]
         aliases.extend([jurisdiction, f"danmark {right}", f"dbo {right}"])

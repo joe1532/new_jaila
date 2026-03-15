@@ -262,9 +262,33 @@
                   type="text"
                   placeholder="Søg fx: dbo tyskland art 15"
                 />
+                <div id="sagsLegalLibraryLatency" class="sags-legal-library-latency">Latency: -</div>
                 <div class="sags-legal-library-layout">
                   <section class="sags-legal-library-preview">
                     <h4 id="sagsLegalPreviewTitle" class="sags-legal-library-category-title">Vælg en retskilde</h4>
+                    <button
+                      id="sagsLegalOpenSourceBtn"
+                      type="button"
+                      class="button-secondary sags-facts-mini hidden"
+                    >
+                      Åbn kilde (PDF)
+                    </button>
+                    <button
+                      id="sagsLegalAddSelectionBtn"
+                      type="button"
+                      class="button-secondary sags-facts-mini hidden"
+                    >
+                      Tilføj markeret tekst
+                    </button>
+                    <div id="sagsLegalPreviewPager" class="sags-legal-preview-pager hidden">
+                      <button id="sagsLegalPrevPageBtn" type="button" class="button-secondary sags-facts-mini">
+                        Forrige side
+                      </button>
+                      <span id="sagsLegalPreviewPageInfo" class="sags-legal-preview-page-info">Side 1/1</span>
+                      <button id="sagsLegalNextPageBtn" type="button" class="button-secondary sags-facts-mini">
+                        Næste side
+                      </button>
+                    </div>
                     <div id="sagsLegalPreviewText" class="sags-legal-preview-text">
                       Vælg først en kategori til højre, og derefter en retskilde for at se teksten her.
                     </div>

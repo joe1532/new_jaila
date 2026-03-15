@@ -164,6 +164,20 @@ class SagsLegalBasisResponse(BaseModel):
     documents: list[str] = Field(default_factory=list)
 
 
+class LegalSourcesCatalogResponse(BaseModel):
+    categories: list[dict[str, Any]] = Field(default_factory=list)
+    documents: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class LegalSourceSectionResponse(BaseModel):
+    source_id: str
+    title: str
+    text: str
+    truncated: bool = False
+    page: int = 1
+    total_pages: int = 1
+
+
 class CaseCreateRequest(BaseModel):
     user: str = Field(..., min_length=1, description="Brugernavn")
     title: str | None = Field(default=None, description="Valgfri sags-titel")

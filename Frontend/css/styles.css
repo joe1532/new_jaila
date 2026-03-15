@@ -470,6 +470,11 @@ a {
   flex: 1;
 }
 
+.sags-legal-library-latency {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
 .sags-legal-library-preview,
 .sags-legal-library-nav {
   border: 1px solid var(--border);
@@ -483,6 +488,7 @@ a {
   flex-direction: column;
   gap: 8px;
   min-height: 0;
+  overflow: hidden;
 }
 
 .sags-legal-library-preview {
@@ -506,6 +512,10 @@ a {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding-right: 4px;
 }
 
 .sags-legal-library-empty {
@@ -516,6 +526,25 @@ a {
 .sags-legal-source-button {
   width: 100%;
   text-align: left;
+}
+
+.sags-legal-version-button {
+  margin-left: 12px;
+  width: calc(100% - 12px);
+  font-size: 0.84rem;
+}
+
+.sags-legal-section-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px;
+  margin-left: 24px;
+}
+
+.sags-legal-section-button {
+  width: 100%;
+  text-align: left;
+  font-size: 0.82rem;
 }
 
 .sags-legal-category-button {
@@ -531,12 +560,28 @@ a {
 
 .sags-legal-preview-text {
   white-space: pre-wrap;
-  color: var(--text);
-  font-size: 0.9rem;
-  line-height: 1.4;
+  color: #111111;
+  background: #ffffff;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  font-size: 1rem;
+  line-height: 1.6;
   flex: 1;
   min-height: 0;
   overflow: auto;
+  padding: 8px 10px;
+}
+
+.sags-legal-preview-pager {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.sags-legal-preview-page-info {
+  color: var(--muted);
+  font-size: 0.85rem;
 }
 
 .sags-facts-title {

@@ -5,6 +5,7 @@ import logging
 import os
 import re
 import time
+import unicodedata
 from pathlib import Path
 from uuid import uuid4
 
@@ -54,6 +55,8 @@ from backend.models import (
     ChatLogSaveResponse,
     ChatRequest,
     ChatResponse,
+    LegalSourcesCatalogResponse,
+    LegalSourceSectionResponse,
     SagsLegalBasisResponse,
 )
 from backend.services.analyse_logs import (
@@ -84,6 +87,19 @@ MAX_EXCEL_SHEETS = 10
 MAX_EXCEL_ROWS_PER_SHEET = 400
 MAX_SAGS_CONTEXT_CHARS = 6000
 MAX_SAGS_CONTEXT_LOGS = 8
+LEGAL_SOURCES_DIR = Path(os.getenv("LEGAL_SOURCES_DIR", "/var/lib/jaila/legal_sources")).resolve()
+LEGAL_SOURCES_NORDEN_FILES_DIR = (LEGAL_SOURCES_DIR / "norden" / "files").resolve()
+LEGAL_SOURCES_PREVIEWS_PATH = (LEGAL_SOURCES_DIR / "norden_previews.json").resolve()
+LEGAL_SOURCE_PREVIEW_CACHE: dict[str, dict[str, object]] = {}
+LEGAL_SOURCE_PRECOMPUTED_CACHE: dict[str, dict[str, object]] | None = None
+LEGAL_SOURCE_PRECOMPUTED_MTIME: float = -1.0
+LEGAL_PREVIEW_REMOVE_PATTERNS = [
+    re.compile(r"printet fra karnov til brug i overensstemmelse med licensvilk[aå]rene", re.IGNORECASE),
+]
+LEGAL_PREVIEW_START_MARKER_PATTERN = re.compile(
+    r"er\s+blevet\s+enige\s+om\s+f[oø]lgende\s*:?",
+    re.IGNORECASE,
+)
 
 allowed_origins = get_allowed_origins()
 app.add_middleware(
@@ -112,6 +128,129 @@ def normalize_text(text: str) -> str:
     cleaned = text.replace("\r\n", "\n").replace("\r", "\n")
     cleaned = cleaned.strip()
     return cleaned
+
+
+def normalize_match_text(text: str) -> str:
+    lowered = str(text or "").lower()
+    normalized = unicodedata.normalize("NFKD", lowered)
+    without_marks = "".join(ch for ch in normalized if not unicodedata.combining(ch))
+    return re.sub(r"\s+", " ", without_marks).strip()
+
+
+def clean_legal_preview_text(text: str) -> str:
+    """Remove repeated license/footer noise from preview text."""
+    lines = [line.strip() for line in str(text or "").splitlines()]
+    kept: list[str] = []
+    for line in lines:
+        if not line:
+            kept.append("")
+            continue
+        if any(pattern.search(line) for pattern in LEGAL_PREVIEW_REMOVE_PATTERNS):
+            continue
+        kept.append(line)
+    normalized = "\n".join(kept)
+    normalized = re.sub(r"\n{3,}", "\n\n", normalized)
+    normalized = normalized.strip()
+    match = LEGAL_PREVIEW_START_MARKER_PATTERN.search(normalized)
+    if match:
+        normalized = normalized[match.end() :].strip()
+    return normalized
+
+
+def resolve_norden_pdf_by_source_id(source_id: str) -> Path:
+    safe_id = str(source_id or "").strip().lower()
+    if not re.fullmatch(r"[a-z0-9_]{5,160}", safe_id):
+        raise HTTPException(status_code=400, detail="Ugyldigt source_id-format")
+    if not safe_id.startswith("norden_dbo_"):
+        raise HTTPException(status_code=400, detail="Kun norden_dbo source_id er understøttet")
+    if not LEGAL_SOURCES_NORDEN_FILES_DIR.exists():
+        raise HTTPException(status_code=404, detail="Retskilde-filer er ikke tilgængelige")
+
+    article_match = re.search(r"_art(\d{1,2})_v\d{4}$", safe_id)
+    is_protocol = bool(re.search(r"_protokol_v\d{4}$", safe_id))
+    normalized_target = None
+    if article_match:
+        normalized_target = f"artikel {int(article_match.group(1))}"
+    elif is_protocol:
+        normalized_target = "protokol"
+    else:
+        raise HTTPException(status_code=404, detail="Kunne ikke mappe source_id til PDF-fil")
+
+    candidates = sorted(path for path in LEGAL_SOURCES_NORDEN_FILES_DIR.glob("*.pdf") if path.is_file())
+    for candidate in candidates:
+        stem_norm = normalize_match_text(candidate.stem)
+        if is_protocol and "protokol" in stem_norm:
+            return candidate
+        if normalized_target and normalized_target in stem_norm:
+            return candidate
+
+    raise HTTPException(status_code=404, detail="PDF-kilde blev ikke fundet for source_id")
+
+
+def extract_pdf_preview_text(file_path: Path, max_chars: int = 14000) -> tuple[str, bool]:
+    """Extract plain text preview from PDF for in-app reading."""
+    try:
+        reader = PdfReader(str(file_path))
+        text_parts: list[str] = []
+        for page in reader.pages:
+            chunk = normalize_text(page.extract_text() or "")
+            if chunk:
+                text_parts.append(chunk)
+            if sum(len(part) for part in text_parts) >= max_chars:
+                break
+        joined = "\n\n".join(text_parts).strip()
+        if not joined:
+            return "Kunne ikke udtrække tekst fra PDF.", False
+        cleaned = clean_legal_preview_text(joined)
+        if not cleaned:
+            return "Kunne ikke udtrække tekst fra PDF.", False
+        return truncate_text(cleaned, max_chars)
+    except Exception:
+        return "Kunne ikke udtrække tekst fra PDF.", False
+
+
+def extract_pdf_preview_pages(file_path: Path) -> list[str]:
+    """Extract and clean text per page for paginated preview."""
+    try:
+        reader = PdfReader(str(file_path))
+        pages: list[str] = []
+        for page in reader.pages:
+            chunk = clean_legal_preview_text(normalize_text(page.extract_text() or ""))
+            if chunk:
+                pages.append(chunk)
+        return pages
+    except Exception:
+        return []
+
+
+def load_precomputed_legal_previews() -> dict[str, dict[str, object]]:
+    global LEGAL_SOURCE_PRECOMPUTED_MTIME
+    global LEGAL_SOURCE_PRECOMPUTED_CACHE
+    if not LEGAL_SOURCES_PREVIEWS_PATH.exists():
+        LEGAL_SOURCE_PRECOMPUTED_MTIME = -1.0
+        LEGAL_SOURCE_PRECOMPUTED_CACHE = {}
+        return LEGAL_SOURCE_PRECOMPUTED_CACHE
+    try:
+        current_mtime = float(LEGAL_SOURCES_PREVIEWS_PATH.stat().st_mtime)
+    except Exception:
+        current_mtime = -1.0
+    if (
+        LEGAL_SOURCE_PRECOMPUTED_CACHE is not None
+        and LEGAL_SOURCE_PRECOMPUTED_MTIME == current_mtime
+    ):
+        return LEGAL_SOURCE_PRECOMPUTED_CACHE
+    try:
+        payload = json.loads(LEGAL_SOURCES_PREVIEWS_PATH.read_text(encoding="utf-8"))
+        entries = payload.get("entries") if isinstance(payload, dict) else {}
+        if isinstance(entries, dict):
+            LEGAL_SOURCE_PRECOMPUTED_MTIME = current_mtime
+            LEGAL_SOURCE_PRECOMPUTED_CACHE = entries
+            return LEGAL_SOURCE_PRECOMPUTED_CACHE
+    except Exception:
+        pass
+    LEGAL_SOURCE_PRECOMPUTED_MTIME = current_mtime
+    LEGAL_SOURCE_PRECOMPUTED_CACHE = {}
+    return LEGAL_SOURCE_PRECOMPUTED_CACHE
 
 
 def truncate_text(text: str, max_chars: int) -> tuple[str, bool]:
@@ -1318,6 +1457,111 @@ def sagsbehandling_legal_basis(subtab: str) -> SagsLegalBasisResponse:
         )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Kunne ikke hente retsgrundlag: {exc}") from exc
+
+
+@app.get("/api/legal-sources/catalog", response_model=LegalSourcesCatalogResponse)
+def get_legal_sources_catalog() -> LegalSourcesCatalogResponse:
+    catalog_path = LEGAL_SOURCES_DIR / "norden_catalog.json"
+    if not catalog_path.exists():
+        return LegalSourcesCatalogResponse(categories=[], documents=[])
+    try:
+        payload = json.loads(catalog_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Kunne ikke læse retskildekatalog: {exc}") from exc
+    categories = payload.get("categories")
+    documents = payload.get("documents")
+    return LegalSourcesCatalogResponse(
+        categories=categories if isinstance(categories, list) else [],
+        documents=documents if isinstance(documents, list) else [],
+    )
+
+
+@app.get("/api/legal-sources/file/{source_id}")
+def get_legal_source_file(source_id: str) -> FileResponse:
+    file_path = resolve_norden_pdf_by_source_id(source_id)
+    return FileResponse(path=file_path, media_type="application/pdf", filename=file_path.name)
+
+
+@app.get("/api/legal-sources/section/{source_id}", response_model=LegalSourceSectionResponse)
+def get_legal_source_section(
+    source_id: str,
+    page: int = Query(default=1, ge=1, description="1-indexed preview page"),
+    chunk_size: int = Query(default=8, ge=1, le=100, description="Number of PDF pages per preview chunk"),
+) -> LegalSourceSectionResponse:
+    file_path = resolve_norden_pdf_by_source_id(source_id)
+    cache_key = str(source_id or "").strip().lower()
+    precomputed = load_precomputed_legal_previews().get(cache_key)
+    if isinstance(precomputed, dict):
+        pages = precomputed.get("pages")
+        title = str(precomputed.get("title", file_path.stem))
+        if isinstance(pages, list) and pages:
+            total_pages = max(1, (len(pages) + chunk_size - 1) // chunk_size)
+            safe_page = max(1, min(page, total_pages))
+            start_idx = (safe_page - 1) * chunk_size
+            end_idx = min(len(pages), start_idx + chunk_size)
+            text_block = "\n\n".join(str(pages[idx] or "") for idx in range(start_idx, end_idx)).strip()
+            return LegalSourceSectionResponse(
+                source_id=source_id,
+                title=title,
+                text=clean_legal_preview_text(text_block),
+                truncated=False,
+                page=safe_page,
+                total_pages=total_pages,
+            )
+
+    try:
+        file_mtime = float(file_path.stat().st_mtime)
+    except Exception:
+        file_mtime = 0.0
+    cached = LEGAL_SOURCE_PREVIEW_CACHE.get(cache_key)
+    if (
+        isinstance(cached, dict)
+        and float(cached.get("mtime", -1.0)) == file_mtime
+        and isinstance(cached.get("pages"), list)
+    ):
+        cached_pages = [str(item or "") for item in cached.get("pages", []) if str(item or "").strip()]
+        if not cached_pages:
+            cached_pages = [str(cached.get("text", ""))]
+        total_pages = max(1, (len(cached_pages) + chunk_size - 1) // chunk_size)
+        safe_page = max(1, min(page, total_pages))
+        start_idx = (safe_page - 1) * chunk_size
+        end_idx = min(len(cached_pages), start_idx + chunk_size)
+        text_block = "\n\n".join(str(cached_pages[idx] or "") for idx in range(start_idx, end_idx)).strip()
+        return LegalSourceSectionResponse(
+            source_id=source_id,
+            title=str(cached.get("title", file_path.stem)),
+            text=clean_legal_preview_text(text_block),
+            truncated=bool(cached.get("truncated", False)),
+            page=safe_page,
+            total_pages=total_pages,
+        )
+
+    preview_pages = extract_pdf_preview_pages(file_path)
+    if not preview_pages:
+        preview_text, truncated = extract_pdf_preview_text(file_path)
+        preview_pages = [preview_text]
+    else:
+        truncated = False
+    LEGAL_SOURCE_PREVIEW_CACHE[cache_key] = {
+        "mtime": file_mtime,
+        "title": file_path.stem,
+        "pages": preview_pages,
+        "text": preview_pages[0] if preview_pages else "",
+        "truncated": truncated,
+    }
+    total_pages = max(1, (len(preview_pages) + chunk_size - 1) // chunk_size)
+    safe_page = max(1, min(page, total_pages))
+    start_idx = (safe_page - 1) * chunk_size
+    end_idx = min(len(preview_pages), start_idx + chunk_size)
+    text_block = "\n\n".join(str(preview_pages[idx] or "") for idx in range(start_idx, end_idx)).strip()
+    return LegalSourceSectionResponse(
+        source_id=source_id,
+        title=file_path.stem,
+        text=clean_legal_preview_text(text_block),
+        truncated=truncated,
+        page=safe_page,
+        total_pages=total_pages,
+    )
 
 
 @app.post("/api/cases", response_model=CaseGetResponse)

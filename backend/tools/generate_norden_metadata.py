@@ -18,6 +18,8 @@ from typing import Any
 
 ARTICLE_PATTERN = re.compile(r"artikel\s*(\d+)", re.IGNORECASE)
 PROTOCOL_PATTERN = re.compile(r"protokol", re.IGNORECASE)
+NORDIC_SEARCH_COUNTRIES = ["norge", "sverige", "finland", "island", "færøerne", "grønland"]
+PAREN_SUFFIX_PATTERN = re.compile(r"\(([^()]*)\)\s*$")
 
 
 def compute_sha256(file_path: Path) -> str:
@@ -29,16 +31,99 @@ def compute_sha256(file_path: Path) -> str:
     return digest.hexdigest()
 
 
-def build_source_id(file_name: str, version_tag: str) -> tuple[str, str]:
-    """Build source_id and article_or_section from filename."""
+def normalize_alias(value: str) -> str:
+    """Normalize alias text to lowercase and collapse whitespace."""
+    lowered = str(value or "").lower().strip()
+    return re.sub(r"\s+", " ", lowered)
+
+
+def infer_section_from_filename(file_name: str) -> tuple[str, str, str]:
+    """Infer section fields from filename.
+
+    Assumption: article/protocol markers are only trusted when present in filename.
+    """
     article_match = ARTICLE_PATTERN.search(file_name)
     if article_match:
         article_number = int(article_match.group(1))
-        return f"norden_dbo_art{article_number:02d}_{version_tag}", f"artikel {article_number}"
+        return "article", str(article_number), f"artikel {article_number}"
     if PROTOCOL_PATTERN.search(file_name):
-        return f"norden_dbo_protokol_{version_tag}", "protokol"
+        return "protocol", "", "protokol"
+    return "document", "", ""
+
+
+def infer_section_title_from_filename(file_name: str) -> str:
+    """Infer section title from the trailing parenthesis in filename.
+
+    Example:
+    "... artikel 21 (Virksomhed ... kulbrinteforekomster)" -> "Virksomhed ... kulbrinteforekomster"
+    """
+    match = PAREN_SUFFIX_PATTERN.search(str(file_name or "").strip())
+    if not match:
+        return ""
+    return str(match.group(1) or "").strip()
+
+
+def build_source_id(file_name: str, instrument_id: str, version_tag: str) -> tuple[str, str, str, str]:
+    """Build source_id and section fields from filename."""
+    section_type, section_number, section_label = infer_section_from_filename(file_name)
+    if section_type == "article":
+        return (
+            f"{instrument_id}_art{int(section_number):02d}_{version_tag}",
+            section_type,
+            section_number,
+            section_label,
+        )
+    if section_type == "protocol":
+        return (
+            f"{instrument_id}_protokol_{version_tag}",
+            section_type,
+            section_number,
+            section_label,
+        )
     sanitized = re.sub(r"[^a-z0-9]+", "_", file_name.lower()).strip("_")
-    return f"norden_dbo_{sanitized}_{version_tag}", ""
+    return f"{instrument_id}_{sanitized}_{version_tag}", section_type, section_number, section_label
+
+
+def build_search_aliases(
+    *,
+    title: str,
+    instrument_id: str,
+    section_type: str,
+    section_number: str,
+    section_label: str,
+) -> list[str]:
+    """Build a compact alias set for resilient text search.
+
+    Structural fields are still primary for precision; aliases are only fallback.
+    """
+    aliases: list[str] = [
+        "dbo",
+        "dobbeltbeskatningsoverenskomst",
+        *NORDIC_SEARCH_COUNTRIES,
+        title,
+        instrument_id,
+    ]
+    if section_type == "article" and section_number:
+        aliases.extend(
+            [
+                section_label,
+                f"art {section_number}",
+                f"article {section_number}",
+                f"{instrument_id} art {section_number}",
+            ],
+        )
+    elif section_type == "protocol":
+        aliases.extend([section_label, f"{instrument_id} protokol"])
+
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for alias in aliases:
+        normalized = normalize_alias(alias)
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        deduped.append(normalized)
+    return deduped
 
 
 def build_metadata_for_file(
@@ -46,23 +131,29 @@ def build_metadata_for_file(
     *,
     title: str,
     document_type: str,
-    jurisdiction: str,
+    country_values: list[str],
+    instrument_id: str,
     version_tag: str,
     status: str,
 ) -> dict[str, Any]:
     """Create metadata dictionary for one PDF file."""
-    source_id, article_or_section = build_source_id(file_path.stem, version_tag)
-    canonical_path = f"/documents/dbo/norden/{source_id}/source.pdf"
+    source_id, section_type, section_number, section_label = build_source_id(
+        file_path.stem,
+        instrument_id,
+        version_tag,
+    )
+    section_title = infer_section_title_from_filename(file_path.stem)
     return {
         "source_id": source_id,
+        "instrument_id": instrument_id,
         "title": title,
         "document_type": document_type,
-        "jurisdiction": jurisdiction,
-        "canonical_path": canonical_path,
-        "sha256": compute_sha256(file_path),
+        "country": country_values,
+        "section_type": section_type,
+        "section_number": section_number,
+        "section_label": section_label,
+        "section_title": section_title,
         "status": status,
-        "article_or_section": article_or_section,
-        "filename_original": file_path.name,
     }
 
 
@@ -115,9 +206,17 @@ def parse_args() -> argparse.Namespace:
         help="Metadata document_type.",
     )
     parser.add_argument(
-        "--jurisdiction",
-        default="norden",
-        help="Metadata jurisdiction.",
+        "--country",
+        default="norge,sverige,finland,island,færøerne,grønland",
+        help=(
+            "Comma-separated country/scope values for metadata (default: "
+            "norge,sverige,finland,island,færøerne,grønland)."
+        ),
+    )
+    parser.add_argument(
+        "--instrument-id",
+        default="norden_dbo",
+        help="Logical instrument identifier (default: norden_dbo).",
     )
     parser.add_argument(
         "--version-tag",
@@ -140,6 +239,14 @@ def main() -> int:
     input_dir = (repo_root / args.input_dir).resolve()
     output_json = (repo_root / args.output_json).resolve()
     output_csv = (repo_root / args.output_csv).resolve()
+    country_values = [
+        value.strip()
+        for value in str(args.country or "").split(",")
+        if value.strip()
+    ]
+    if not country_values:
+        print("[ERROR] --country must contain at least one value")
+        return 1
 
     if not input_dir.exists():
         print(f"[ERROR] Input folder does not exist: {input_dir}")
@@ -158,7 +265,8 @@ def main() -> int:
             file_path,
             title=args.title,
             document_type=args.document_type,
-            jurisdiction=args.jurisdiction,
+            country_values=country_values,
+            instrument_id=args.instrument_id,
             version_tag=args.version_tag,
             status=args.status,
         )

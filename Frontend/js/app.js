@@ -8,6 +8,7 @@ import {
 import { deleteChatLog, getChatLog, listChatLogs, saveChatLog } from "./api/chatLogsApi.js";
 import { createCase, deleteCase, getCase, listCases, updateCase } from "./api/casesApi.js";
 import { getSagsLegalBasis } from "./api/sagsbehandlingApi.js";
+import { getLegalSourceSection, getLegalSourcesCatalog } from "./api/legalSourcesApi.js";
 import { exportChatPdf, sendChat, sendChatStream } from "./api/chatApi.js";
 import {
   clearChatContextFiles,
@@ -195,10 +196,17 @@ const elements = {
   sagsLegalLibraryPanel: document.getElementById("sagsLegalLibraryPanel"),
   sagsLegalLibraryCloseBtn: document.getElementById("sagsLegalLibraryCloseBtn"),
   sagsLegalLibrarySearch: document.getElementById("sagsLegalLibrarySearch"),
+  sagsLegalLibraryLatency: document.getElementById("sagsLegalLibraryLatency"),
   sagsLegalLibraryCategories: document.getElementById("sagsLegalLibraryCategories"),
   sagsLegalLibrarySources: document.getElementById("sagsLegalLibrarySources"),
   sagsLegalPreviewTitle: document.getElementById("sagsLegalPreviewTitle"),
   sagsLegalPreviewText: document.getElementById("sagsLegalPreviewText"),
+  sagsLegalOpenSourceBtn: document.getElementById("sagsLegalOpenSourceBtn"),
+  sagsLegalAddSelectionBtn: document.getElementById("sagsLegalAddSelectionBtn"),
+  sagsLegalPreviewPager: document.getElementById("sagsLegalPreviewPager"),
+  sagsLegalPrevPageBtn: document.getElementById("sagsLegalPrevPageBtn"),
+  sagsLegalNextPageBtn: document.getElementById("sagsLegalNextPageBtn"),
+  sagsLegalPreviewPageInfo: document.getElementById("sagsLegalPreviewPageInfo"),
   sagsFactsPanelTitle: document.getElementById("sagsFactsPanelTitle"),
   sagsFactsIncomeYearsLabel: document.getElementById("sagsFactsIncomeYearsLabel"),
   sagsFactsFactorSelectionLabel: document.getElementById("sagsFactsFactorSelectionLabel"),
@@ -1379,6 +1387,92 @@ async function loadLegalBasisForSubtab(subtab) {
   }
 }
 
+async function loadLegalSourcesCatalogIfNeeded(forceReload = false) {
+  const sags = getState().sagsbehandling || {};
+  const hasExistingCatalog =
+    Array.isArray(sags.legalLibraryCatalog) && sags.legalLibraryCatalog.length > 0;
+  if (!forceReload && sags.legalLibraryCatalogLoaded && hasExistingCatalog) {
+    return;
+  }
+  try {
+    const data = await getLegalSourcesCatalog();
+    const categories = Array.isArray(data.categories) ? data.categories : [];
+    const documents = Array.isArray(data.documents) ? data.documents : [];
+    setState({
+      sagsbehandling: {
+        legalLibraryCategories: categories,
+        legalLibraryCatalog: documents,
+        legalLibraryCatalogLoaded: true,
+      },
+    });
+    renderSagsbehandling(elements, getState());
+  } catch (err) {
+    setStatus("Kunne ikke hente retskildekatalog fra server: " + (err.message || "Ukendt fejl"), "error");
+  }
+}
+
+async function loadLegalSourceSectionTextIfNeeded(sourceId, page = 1) {
+  const safeSourceId = String(sourceId || "").trim();
+  if (!safeSourceId) {
+    return;
+  }
+  const safePage = Math.max(1, Number(page) || 1);
+  const cacheKey = `${safeSourceId}::${safePage}`;
+  const sags = getState().sagsbehandling || {};
+  const cache = sags.legalLibrarySectionTextBySourceId || {};
+  if (cache[cacheKey]) {
+    setState({
+      sagsbehandling: {
+        legalLibraryPreviewPageBySourceId: {
+          ...(getState().sagsbehandling.legalLibraryPreviewPageBySourceId || {}),
+          [safeSourceId]: safePage,
+        },
+      },
+    });
+    renderSagsbehandling(elements, getState());
+    return;
+  }
+  setState({
+    sagsbehandling: {
+      legalLibraryPreviewLoadingSourceId: safeSourceId,
+    },
+  });
+  renderSagsbehandling(elements, getState());
+  try {
+    const data = await getLegalSourceSection(safeSourceId, safePage);
+    const previewText = String((data && data.text) || "").trim();
+    const responsePage = Math.max(1, Number((data && data.page) || safePage) || safePage);
+    const responseTotalPages = Math.max(1, Number((data && data.total_pages) || 1) || 1);
+    const responseCacheKey = `${safeSourceId}::${responsePage}`;
+    setState({
+      sagsbehandling: {
+        legalLibrarySectionTextBySourceId: {
+          ...(getState().sagsbehandling.legalLibrarySectionTextBySourceId || {}),
+          [responseCacheKey]: previewText || "Ingen tekst fundet.",
+        },
+        legalLibraryPreviewPageBySourceId: {
+          ...(getState().sagsbehandling.legalLibraryPreviewPageBySourceId || {}),
+          [safeSourceId]: responsePage,
+        },
+        legalLibraryPreviewTotalPagesBySourceId: {
+          ...(getState().sagsbehandling.legalLibraryPreviewTotalPagesBySourceId || {}),
+          [safeSourceId]: responseTotalPages,
+        },
+        legalLibraryPreviewLoadingSourceId: "",
+      },
+    });
+    renderSagsbehandling(elements, getState());
+  } catch (err) {
+    setState({
+      sagsbehandling: {
+        legalLibraryPreviewLoadingSourceId: "",
+      },
+    });
+    renderSagsbehandling(elements, getState());
+    setStatus("Kunne ikke hente visning af retskilde: " + (err.message || "Ukendt fejl"), "error");
+  }
+}
+
 function normalizeMessagesForSave(messages) {
   return (Array.isArray(messages) ? messages : [])
     .map((msg) => ({
@@ -1401,6 +1495,9 @@ function getSagsbehandlingCasePatchFromState() {
     selected_legal_sources_by_subtab: sags.selectedLegalSourcesBySubtab || {},
     legal_library_active_category_by_subtab: sags.legalLibraryActiveCategoryBySubtab || {},
     legal_library_preview_source_by_subtab: sags.legalLibraryPreviewSourceBySubtab || {},
+    legal_library_active_document_by_subtab: sags.legalLibraryActiveDocumentBySubtab || {},
+    legal_library_active_version_by_subtab: sags.legalLibraryActiveVersionBySubtab || {},
+    legal_library_preview_section_by_subtab: sags.legalLibraryPreviewSectionBySubtab || {},
     messages_by_subtab: Object.fromEntries(
       Object.entries(sags.messagesBySubtab || {}).map(([subtab, messages]) => [
         subtab,
@@ -1481,6 +1578,16 @@ function applyCaseToSagsbehandlingState(caseEntry) {
       selectedLegalSourcesBySubtab: caseEntry?.selected_legal_sources_by_subtab || {},
       legalLibraryActiveCategoryBySubtab: caseEntry?.legal_library_active_category_by_subtab || {},
       legalLibraryPreviewSourceBySubtab: caseEntry?.legal_library_preview_source_by_subtab || {},
+      legalLibraryActiveDocumentBySubtab: caseEntry?.legal_library_active_document_by_subtab || {},
+      legalLibraryActiveVersionBySubtab: caseEntry?.legal_library_active_version_by_subtab || {},
+      legalLibraryPreviewSectionBySubtab: caseEntry?.legal_library_preview_section_by_subtab || {},
+      legalLibraryCategories: [],
+      legalLibraryCatalog: [],
+      legalLibraryCatalogLoaded: false,
+      legalLibrarySectionTextBySourceId: {},
+      legalLibraryPreviewLoadingSourceId: "",
+      legalLibraryPreviewPageBySourceId: {},
+      legalLibraryPreviewTotalPagesBySourceId: {},
     },
   });
 }
@@ -1655,6 +1762,16 @@ async function deleteActiveSagsCase() {
         selectedLegalSourcesBySubtab: {},
         legalLibraryActiveCategoryBySubtab: {},
         legalLibraryPreviewSourceBySubtab: {},
+        legalLibraryActiveDocumentBySubtab: {},
+        legalLibraryActiveVersionBySubtab: {},
+        legalLibraryPreviewSectionBySubtab: {},
+        legalLibraryCategories: [],
+        legalLibraryCatalog: [],
+        legalLibraryCatalogLoaded: false,
+        legalLibrarySectionTextBySourceId: {},
+        legalLibraryPreviewLoadingSourceId: "",
+        legalLibraryPreviewPageBySourceId: {},
+        legalLibraryPreviewTotalPagesBySourceId: {},
         factsBySubtab: {},
         contextBySubtab: {},
       },
@@ -1723,6 +1840,16 @@ async function logout() {
         selectedLegalSourcesBySubtab: {},
         legalLibraryActiveCategoryBySubtab: {},
         legalLibraryPreviewSourceBySubtab: {},
+        legalLibraryActiveDocumentBySubtab: {},
+        legalLibraryActiveVersionBySubtab: {},
+        legalLibraryPreviewSectionBySubtab: {},
+        legalLibraryCategories: [],
+        legalLibraryCatalog: [],
+        legalLibraryCatalogLoaded: false,
+        legalLibrarySectionTextBySourceId: {},
+        legalLibraryPreviewLoadingSourceId: "",
+        legalLibraryPreviewPageBySourceId: {},
+        legalLibraryPreviewTotalPagesBySourceId: {},
         factsBySubtab: {},
         contextBySubtab: {},
         legalBasisBySubtab: {},
@@ -2609,6 +2736,26 @@ function downloadAnalysePdf() {
 }
 
 function bindEvents() {
+  const legalLibraryLatencySamples = [];
+  const showLegalLibraryLatency = (actionLabel, startMs) => {
+    if (!elements.sagsLegalLibraryLatency) {
+      return;
+    }
+    const elapsedMs = Math.max(0, Math.round(performance.now() - startMs));
+    legalLibraryLatencySamples.push(elapsedMs);
+    if (legalLibraryLatencySamples.length > 10) {
+      legalLibraryLatencySamples.shift();
+    }
+    const avgMs = Math.round(
+      legalLibraryLatencySamples.reduce((sum, value) => sum + value, 0)
+      / Math.max(1, legalLibraryLatencySamples.length),
+    );
+    const label = String(actionLabel || "").trim();
+    elements.sagsLegalLibraryLatency.textContent = label
+      ? `${label}: ${elapsedMs} ms (snit ${legalLibraryLatencySamples.length}: ${avgMs} ms)`
+      : `Latency: ${elapsedMs} ms (snit ${legalLibraryLatencySamples.length}: ${avgMs} ms)`;
+  };
+
   elements.tabButtons.forEach((btn) => {
     btn.addEventListener("click", () => {
       switchTab(btn.dataset.tab || "analyse");
@@ -2851,6 +2998,18 @@ function bindEvents() {
             factsPanelOpen: false,
             legalLibraryPanelOpen: false,
             legalLibrarySearchQuery: "",
+            legalLibraryActiveDocumentBySubtab: {
+              ...(sags.legalLibraryActiveDocumentBySubtab || {}),
+              [subtab]: "",
+            },
+            legalLibraryActiveVersionBySubtab: {
+              ...(sags.legalLibraryActiveVersionBySubtab || {}),
+              [subtab]: "",
+            },
+            legalLibraryPreviewSectionBySubtab: {
+              ...(sags.legalLibraryPreviewSectionBySubtab || {}),
+              [subtab]: "",
+            },
           },
         });
         renderSagsbehandling(elements, getState());
@@ -2951,7 +3110,7 @@ function bindEvents() {
       const nextCategoryBySubtab = activeSubtab === "beskatningsret_indkomst"
         ? {
           ...activeCategoryBySubtab,
-          [activeSubtab]: activeCategoryBySubtab[activeSubtab] || "lovbekendtgoerelser",
+          [activeSubtab]: "dobbeltbeskatningsoverenskomster",
         }
         : activeCategoryBySubtab;
       setState({
@@ -2960,10 +3119,26 @@ function bindEvents() {
           legalLibraryPanelOpen:
             activeSubtab === "beskatningsret_indkomst" && functionLabel === "Retskilder",
           factsPanelOpen: false,
+          legalLibrarySearchQuery: "",
           legalLibraryActiveCategoryBySubtab: nextCategoryBySubtab,
+          legalLibraryActiveDocumentBySubtab: {
+            ...(getState().sagsbehandling.legalLibraryActiveDocumentBySubtab || {}),
+            [activeSubtab]: "",
+          },
+          legalLibraryActiveVersionBySubtab: {
+            ...(getState().sagsbehandling.legalLibraryActiveVersionBySubtab || {}),
+            [activeSubtab]: "",
+          },
+          legalLibraryPreviewSectionBySubtab: {
+            ...(getState().sagsbehandling.legalLibraryPreviewSectionBySubtab || {}),
+            [activeSubtab]: "",
+          },
         },
       });
       renderSagsbehandling(elements, getState());
+      if (activeSubtab === "beskatningsret_indkomst" && functionLabel === "Retskilder") {
+        loadLegalSourcesCatalogIfNeeded(true);
+      }
     });
   }
 
@@ -2997,6 +3172,7 @@ function bindEvents() {
 
   if (elements.sagsLegalLibraryToggleBtn) {
     elements.sagsLegalLibraryToggleBtn.addEventListener("click", () => {
+      const startMs = performance.now();
       const sags = getState().sagsbehandling || {};
       const activeSubtab = sags.activeSubtab || "";
       if (activeSubtab !== "beskatningsret_indkomst") {
@@ -3008,13 +3184,30 @@ function bindEvents() {
         sagsbehandling: {
           legalLibraryPanelOpen: !isOpen,
           factsPanelOpen: false,
+          legalLibrarySearchQuery: "",
           legalLibraryActiveCategoryBySubtab: {
             ...(sags.legalLibraryActiveCategoryBySubtab || {}),
-            [activeSubtab]: (sags.legalLibraryActiveCategoryBySubtab || {})[activeSubtab] || "lovbekendtgoerelser",
+            [activeSubtab]: "dobbeltbeskatningsoverenskomster",
+          },
+          legalLibraryActiveDocumentBySubtab: {
+            ...(sags.legalLibraryActiveDocumentBySubtab || {}),
+            [activeSubtab]: "",
+          },
+          legalLibraryActiveVersionBySubtab: {
+            ...(sags.legalLibraryActiveVersionBySubtab || {}),
+            [activeSubtab]: "",
+          },
+          legalLibraryPreviewSectionBySubtab: {
+            ...(sags.legalLibraryPreviewSectionBySubtab || {}),
+            [activeSubtab]: "",
           },
         },
       });
       renderSagsbehandling(elements, getState());
+      if (!isOpen) {
+        loadLegalSourcesCatalogIfNeeded(true);
+      }
+      showLegalLibraryLatency("Toggle panel", startMs);
     });
   }
 
@@ -3031,51 +3224,159 @@ function bindEvents() {
 
   if (elements.sagsLegalLibrarySearch) {
     elements.sagsLegalLibrarySearch.addEventListener("input", () => {
+      const startMs = performance.now();
       setState({
         sagsbehandling: {
           legalLibrarySearchQuery: elements.sagsLegalLibrarySearch.value,
         },
       });
       renderSagsbehandling(elements, getState());
+      showLegalLibraryLatency("Søgning", startMs);
     });
   }
 
   if (elements.sagsLegalLibraryCategories) {
     elements.sagsLegalLibraryCategories.addEventListener("click", (event) => {
+      const startMs = performance.now();
       const target = event.target;
       if (!(target instanceof HTMLElement)) {
         return;
       }
-      const categoryButton = target.closest("[data-sags-legal-category-id]");
+      const categoryButton = target.closest("[data-sags-legal-category-toggle-id]");
       if (!(categoryButton instanceof HTMLElement)) {
         return;
       }
-      const categoryId = String(categoryButton.dataset.sagsLegalCategoryId || "").trim();
+      const categoryId = String(categoryButton.dataset.sagsLegalCategoryToggleId || "").trim();
       if (!categoryId) {
         return;
       }
       const activeSubtab = getState().sagsbehandling.activeSubtab || "";
       const activeBySubtab = getState().sagsbehandling.legalLibraryActiveCategoryBySubtab || {};
+      const currentlyOpen = String(activeBySubtab[activeSubtab] || "").trim();
+      const nextCategory = currentlyOpen === categoryId ? "" : categoryId;
       setState({
         sagsbehandling: {
           legalLibraryActiveCategoryBySubtab: {
             ...activeBySubtab,
-            [activeSubtab]: categoryId,
+            [activeSubtab]: nextCategory,
           },
-          legalLibraryPreviewSourceBySubtab: {
-            ...(getState().sagsbehandling.legalLibraryPreviewSourceBySubtab || {}),
+          legalLibraryActiveDocumentBySubtab: {
+            ...(getState().sagsbehandling.legalLibraryActiveDocumentBySubtab || {}),
+            [activeSubtab]: "",
+          },
+          legalLibraryActiveVersionBySubtab: {
+            ...(getState().sagsbehandling.legalLibraryActiveVersionBySubtab || {}),
+            [activeSubtab]: "",
+          },
+          legalLibraryPreviewSectionBySubtab: {
+            ...(getState().sagsbehandling.legalLibraryPreviewSectionBySubtab || {}),
             [activeSubtab]: "",
           },
         },
       });
       renderSagsbehandling(elements, getState());
+      showLegalLibraryLatency("Kategori", startMs);
     });
   }
 
   if (elements.sagsLegalLibrarySources) {
     elements.sagsLegalLibrarySources.addEventListener("click", (event) => {
+      const startMs = performance.now();
       const target = event.target;
       if (!(target instanceof HTMLElement)) {
+        return;
+      }
+      const activeSubtab = getState().sagsbehandling.activeSubtab || "";
+      const documentButton = target.closest("[data-sags-legal-document-id]");
+      if (documentButton instanceof HTMLElement) {
+        const documentId = String(documentButton.dataset.sagsLegalDocumentId || "").trim();
+        if (!documentId) {
+          return;
+        }
+        setState({
+          sagsbehandling: {
+            legalLibraryActiveDocumentBySubtab: {
+              ...(getState().sagsbehandling.legalLibraryActiveDocumentBySubtab || {}),
+              [activeSubtab]: documentId,
+            },
+            legalLibraryActiveVersionBySubtab: {
+              ...(getState().sagsbehandling.legalLibraryActiveVersionBySubtab || {}),
+              [activeSubtab]: "",
+            },
+            legalLibraryPreviewSectionBySubtab: {
+              ...(getState().sagsbehandling.legalLibraryPreviewSectionBySubtab || {}),
+              [activeSubtab]: "",
+            },
+          },
+        });
+        renderSagsbehandling(elements, getState());
+        showLegalLibraryLatency("Dokument", startMs);
+        return;
+      }
+      const versionButton = target.closest("[data-sags-legal-version-id]");
+      if (versionButton instanceof HTMLElement) {
+        const versionId = String(versionButton.dataset.sagsLegalVersionId || "").trim();
+        if (!versionId) {
+          return;
+        }
+        setState({
+          sagsbehandling: {
+            legalLibraryActiveVersionBySubtab: {
+              ...(getState().sagsbehandling.legalLibraryActiveVersionBySubtab || {}),
+              [activeSubtab]: versionId,
+            },
+            legalLibraryPreviewSectionBySubtab: {
+              ...(getState().sagsbehandling.legalLibraryPreviewSectionBySubtab || {}),
+              [activeSubtab]: "",
+            },
+          },
+        });
+        renderSagsbehandling(elements, getState());
+        showLegalLibraryLatency("Version", startMs);
+        return;
+      }
+      const addSectionButton = target.closest("[data-sags-legal-add-section-id]");
+      if (addSectionButton instanceof HTMLElement) {
+        const sectionId = String(addSectionButton.dataset.sagsLegalAddSectionId || "").trim();
+        const sourceId = String(addSectionButton.dataset.sagsLegalAddSourceId || "").trim();
+        const contextTitle = String(addSectionButton.dataset.sagsLegalAddTitle || "").trim();
+        const previewText = String(addSectionButton.dataset.sagsLegalAddText || "").trim();
+        if (!sectionId || !sourceId || !contextTitle || !previewText) {
+          return;
+        }
+        const logId = `legal:${sourceId}:${sectionId}`;
+        const contextBySubtab = getState().sagsbehandling.contextBySubtab || {};
+        const currentListRaw = contextBySubtab[activeSubtab];
+        const currentList = Array.isArray(currentListRaw)
+          ? currentListRaw
+          : currentListRaw
+            ? [currentListRaw]
+            : [];
+        const nextList = currentList.some((entry) => String(entry.logId || "") === logId)
+          ? currentList
+          : [
+            ...currentList,
+            {
+              logId,
+              sourceType: "legal",
+              title: contextTitle,
+              createdAt: "Retskilde",
+              previewText,
+              approved: true,
+            },
+          ];
+        setState({
+          sagsbehandling: {
+            contextBySubtab: {
+              ...contextBySubtab,
+              [activeSubtab]: nextList,
+            },
+          },
+        });
+        renderSagsbehandling(elements, getState());
+        setStatus("Paragraf tilføjet som kontekst for undertab.", "ok");
+        showLegalLibraryLatency("Tilføj paragraf", startMs);
+        saveCurrentSagsCaseSnapshot();
         return;
       }
       const sourceButton = target.closest("[data-sags-legal-source-id]");
@@ -3083,20 +3384,132 @@ function bindEvents() {
         return;
       }
       const sourceId = String(sourceButton.dataset.sagsLegalSourceId || "").trim();
+      const sourceRefId = String(sourceButton.dataset.sagsLegalSourceRef || "").trim();
       if (!sourceId) {
         return;
       }
-      const activeSubtab = getState().sagsbehandling.activeSubtab || "";
-      const previewBySubtab = getState().sagsbehandling.legalLibraryPreviewSourceBySubtab || {};
+      const previewBySubtab = getState().sagsbehandling.legalLibraryPreviewSectionBySubtab || {};
+      const previewPageBySourceId = getState().sagsbehandling.legalLibraryPreviewPageBySourceId || {};
       setState({
         sagsbehandling: {
-          legalLibraryPreviewSourceBySubtab: {
+          legalLibraryPreviewSectionBySubtab: {
             ...previewBySubtab,
             [activeSubtab]: sourceId,
+          },
+          legalLibraryPreviewPageBySourceId: sourceRefId
+            ? {
+              ...previewPageBySourceId,
+              [sourceRefId]: 1,
+            }
+            : previewPageBySourceId,
+        },
+      });
+      renderSagsbehandling(elements, getState());
+      showLegalLibraryLatency("Paragraf visning", startMs);
+      if (sourceRefId) {
+        loadLegalSourceSectionTextIfNeeded(sourceRefId, 1);
+      }
+    });
+  }
+
+  if (elements.sagsLegalOpenSourceBtn) {
+    elements.sagsLegalOpenSourceBtn.addEventListener("click", () => {
+      const sourceId = String(elements.sagsLegalOpenSourceBtn.dataset.sagsLegalSourceId || "").trim();
+      if (!sourceId) {
+        setStatus("Ingen kilde valgt endnu.", "error");
+        return;
+      }
+      window.open(`/api/legal-sources/file/${encodeURIComponent(sourceId)}`, "_blank", "noopener,noreferrer");
+    });
+  }
+
+  if (elements.sagsLegalAddSelectionBtn) {
+    elements.sagsLegalAddSelectionBtn.addEventListener("click", () => {
+      const previewEl = elements.sagsLegalPreviewText;
+      if (!(previewEl instanceof HTMLElement)) {
+        return;
+      }
+      const selection = window.getSelection();
+      if (!selection || selection.rangeCount === 0) {
+        setStatus("Markér først den tekst, du vil tilføje.", "error");
+        return;
+      }
+      const selectedText = String(selection.toString() || "").trim();
+      if (!selectedText || selectedText.length < 10) {
+        setStatus("Markeringen er for kort. Vælg et større tekstudsnit.", "error");
+        return;
+      }
+      const range = selection.getRangeAt(0);
+      const containerNode = range.commonAncestorContainer;
+      const selectionNode = containerNode.nodeType === Node.TEXT_NODE
+        ? containerNode.parentNode
+        : containerNode;
+      if (!(selectionNode instanceof Node) || !previewEl.contains(selectionNode)) {
+        setStatus("Markeringen skal være inde i visningsboksen.", "error");
+        return;
+      }
+      const sourceId = String(elements.sagsLegalAddSelectionBtn.dataset.sagsLegalSourceId || "").trim();
+      const sectionId = String(elements.sagsLegalAddSelectionBtn.dataset.sagsLegalSectionId || "").trim();
+      const contextTitleRaw = String(elements.sagsLegalAddSelectionBtn.dataset.sagsLegalContextTitle || "").trim();
+      if (!sourceId || !sectionId || !contextTitleRaw) {
+        setStatus("Vælg en paragraf først.", "error");
+        return;
+      }
+      const activeSubtab = getState().sagsbehandling.activeSubtab || "";
+      const contextBySubtab = getState().sagsbehandling.contextBySubtab || {};
+      const currentListRaw = contextBySubtab[activeSubtab];
+      const currentList = Array.isArray(currentListRaw)
+        ? currentListRaw
+        : currentListRaw
+          ? [currentListRaw]
+          : [];
+      const trimmedText = selectedText.length > 6000 ? `${selectedText.slice(0, 6000)}...` : selectedText;
+      const logId = `legal_selection:${sourceId}:${sectionId}:${Date.now()}`;
+      const nextList = [
+        ...currentList,
+        {
+          logId,
+          sourceType: "legal_selection",
+          title: `${contextTitleRaw} (markeret tekst)`,
+          createdAt: "Retskilde",
+          previewText: trimmedText,
+          approved: true,
+        },
+      ];
+      setState({
+        sagsbehandling: {
+          contextBySubtab: {
+            ...contextBySubtab,
+            [activeSubtab]: nextList,
           },
         },
       });
       renderSagsbehandling(elements, getState());
+      setStatus("Markeret tekst tilføjet som kontekst for undertab.", "ok");
+      saveCurrentSagsCaseSnapshot();
+    });
+  }
+
+  if (elements.sagsLegalPrevPageBtn) {
+    elements.sagsLegalPrevPageBtn.addEventListener("click", () => {
+      const sourceId = String(elements.sagsLegalPrevPageBtn.dataset.sagsLegalSourceId || "").trim();
+      if (!sourceId) return;
+      const currentPage = Math.max(1, Number(elements.sagsLegalPrevPageBtn.dataset.sagsLegalCurrentPage || "1") || 1);
+      const nextPage = Math.max(1, currentPage - 1);
+      if (nextPage === currentPage) return;
+      loadLegalSourceSectionTextIfNeeded(sourceId, nextPage);
+    });
+  }
+
+  if (elements.sagsLegalNextPageBtn) {
+    elements.sagsLegalNextPageBtn.addEventListener("click", () => {
+      const sourceId = String(elements.sagsLegalNextPageBtn.dataset.sagsLegalSourceId || "").trim();
+      if (!sourceId) return;
+      const currentPage = Math.max(1, Number(elements.sagsLegalNextPageBtn.dataset.sagsLegalCurrentPage || "1") || 1);
+      const totalPages = Math.max(1, Number(elements.sagsLegalNextPageBtn.dataset.sagsLegalTotalPages || "1") || 1);
+      const nextPage = Math.min(totalPages, currentPage + 1);
+      if (nextPage === currentPage) return;
+      loadLegalSourceSectionTextIfNeeded(sourceId, nextPage);
     });
   }
 
