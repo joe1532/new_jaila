@@ -364,6 +364,60 @@ a {
   text-align: center;
 }
 
+.analyse-context-panel {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: rgba(154, 166, 191, 0.06);
+  padding: 10px;
+  margin-bottom: 10px;
+}
+
+.analyse-context-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.analyse-context-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 180px;
+  overflow: auto;
+  margin-bottom: 10px;
+}
+
+.analyse-context-item {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px;
+  background: #0d1a32;
+}
+
+.analyse-context-item-title {
+  margin: 0 0 6px;
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+
+.analyse-context-item-preview {
+  margin: 0 0 8px;
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.4;
+  white-space: pre-wrap;
+}
+
+.analyse-context-checkbox {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  font-size: 0.86rem;
+  color: var(--muted);
+}
+
 .sagsbehandling-side-actions .button-secondary {
   width: 100%;
   text-align: center;
@@ -416,13 +470,15 @@ a {
 
 .sags-facts-overlay {
   position: absolute;
-  inset: 8px;
+  inset: 0;
   z-index: 20;
   margin-top: 0;
   background: #0b162c;
   border: 1px solid var(--border);
+  border-radius: 12px;
   box-shadow: 0 16px 36px rgba(0, 0, 0, 0.35);
   overflow: auto;
+  padding: 14px;
 }
 
 .sags-facts-overlay-header {
@@ -460,6 +516,7 @@ a {
   gap: 8px;
   min-height: 0;
   overflow: hidden;
+  position: relative;
 }
 
 .sags-legal-library-layout {
@@ -561,15 +618,19 @@ a {
 .sags-legal-preview-text {
   white-space: pre-wrap;
   color: #111111;
-  background: #ffffff;
+  background: #f9fafb;
   border: 1px solid #d1d5db;
   border-radius: 8px;
+  font-family: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
   font-size: 1rem;
-  line-height: 1.6;
+  line-height: 1.65;
+  max-width: 95ch;
+  width: 100%;
+  margin-right: auto;
   flex: 1;
   min-height: 0;
   overflow: auto;
-  padding: 8px 10px;
+  padding: 20px 24px;
 }
 
 .sags-legal-preview-pager {
@@ -885,6 +946,7 @@ a {
   flex-direction: column;
   height: var(--panel-height);
   overflow: hidden;
+  position: relative;
 }
 
 .sagsbehandling-main-panel {
@@ -1189,6 +1251,12 @@ a {
     height: auto;
   }
 
+  .sags-facts-overlay {
+    position: static;
+    inset: auto;
+    padding: 10px;
+  }
+
   .chat-layout {
     flex-direction: column;
     min-height: 0;
@@ -1299,4 +1367,14 @@ a {
   margin: 0;
   color: var(--text);
   line-height: 1.5;
+}
+
+/* Force overlays to fill full main-panel height/width. */
+.analyse-main-panel > #analyseLegalLibraryPanel.sags-facts-overlay,
+.sagsbehandling-main-panel > #sagsLegalLibraryPanel.sags-facts-overlay,
+.sagsbehandling-main-panel > #sagsFactsPanel.sags-facts-overlay {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  z-index: 30;
 }

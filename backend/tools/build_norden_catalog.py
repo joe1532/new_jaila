@@ -17,8 +17,12 @@ KARNOV_LINE_PATTERN = re.compile(
     r"printet fra karnov til brug i overensstemmelse med licensvilk[aå]rene",
     re.IGNORECASE,
 )
-PREVIEW_START_MARKER_PATTERN = re.compile(
+PREVIEW_DEFAULT_START_MARKER_PATTERN = re.compile(
     r"er\s+blevet\s+enige\s+om\s+f[oø]lgende\s*:?",
+    re.IGNORECASE,
+)
+PREVIEW_TYSKLAND_START_MARKER_PATTERN = re.compile(
+    r"der\s+har\s+til\s+hensigt\s*:?",
     re.IGNORECASE,
 )
 
@@ -71,7 +75,15 @@ def normalize_line(line: str) -> str:
     return re.sub(r"\s+", " ", str(line or "").strip())
 
 
-def clean_preview_page(text: str) -> str:
+def normalize_wrapped_preview_lines(text: str) -> str:
+    """Join hard line wraps from PDF extraction without removing paragraph breaks."""
+    value = str(text or "")
+    value = re.sub(r"(?<=[A-Za-zÆØÅæøå0-9])-\n(?=[A-Za-zÆØÅæøå0-9])", "", value)
+    value = re.sub(r"(?<=[A-Za-zÆØÅæøå0-9,;:)\]])\n(?=[a-zæøå])", " ", value)
+    return value
+
+
+def clean_preview_page(text: str, namespace: str = "") -> str:
     lines = [normalize_line(line) for line in str(text or "").splitlines()]
     kept: list[str] = []
     for line in lines:
@@ -83,18 +95,24 @@ def clean_preview_page(text: str) -> str:
         kept.append(line)
     page_text = "\n".join(kept).strip()
     page_text = re.sub(r"\n{3,}", "\n\n", page_text)
-    marker_match = PREVIEW_START_MARKER_PATTERN.search(page_text)
+    namespace_key = str(namespace or "").strip().lower()
+    marker_match = None
+    if namespace_key == "tyskland":
+        marker_match = PREVIEW_TYSKLAND_START_MARKER_PATTERN.search(page_text)
+    if not marker_match:
+        marker_match = PREVIEW_DEFAULT_START_MARKER_PATTERN.search(page_text)
     if marker_match:
         page_text = page_text[marker_match.end() :].strip()
+    page_text = normalize_wrapped_preview_lines(page_text).strip()
     return page_text.strip()
 
 
-def extract_pdf_pages(file_path: Path) -> list[str]:
+def extract_pdf_pages(file_path: Path, namespace: str = "") -> list[str]:
     try:
         reader = PdfReader(str(file_path))
         pages: list[str] = []
         for page in reader.pages:
-            cleaned = clean_preview_page(page.extract_text() or "")
+            cleaned = clean_preview_page(page.extract_text() or "", namespace=namespace)
             if cleaned:
                 pages.append(cleaned)
         return pages
@@ -141,6 +159,7 @@ def main() -> int:
     first = rows[0]
     instrument_id = str(first.get("instrument_id", "norden_dbo")).strip() or "norden_dbo"
     title = str(first.get("title", "Nordisk DBO")).strip() or "Nordisk DBO"
+    jurisdiction_tag = instrument_id.replace("_dbo", "").strip("_")
 
     sections = sorted(rows, key=section_sort_key)
     pdf_files = sorted([p for p in pdf_root_dir.glob("*.pdf") if p.is_file()])
@@ -169,7 +188,7 @@ def main() -> int:
         )
         pdf_path = find_pdf_for_row(row, pdf_files)
         if pdf_path and pdf_path.exists():
-            pages = extract_pdf_pages(pdf_path)
+            pages = extract_pdf_pages(pdf_path, namespace=jurisdiction_tag)
         else:
             pages = []
         preview_entries[source_id.lower()] = {
@@ -186,7 +205,7 @@ def main() -> int:
                 "id": instrument_id,
                 "category": "dobbeltbeskatningsoverenskomster",
                 "title": title,
-                "tags": ["dbo", "norden"],
+                "tags": ["dbo", jurisdiction_tag or "dokument"],
                 "versions": [
                     {
                         "id": version_id,

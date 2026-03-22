@@ -12,8 +12,13 @@ function buildContextPayload(safeContext) {
     case_id: safeContext.caseId || null,
     case_user: safeContext.caseUser || null,
     case_facts: safeContext.caseFacts || null,
+    sags_decision_package: safeContext.sagsDecisionPackage || null,
     context_user: safeContext.contextUser || null,
     context_approved: Boolean(safeContext.contextApproved),
+    legal_context_blocks: Array.isArray(safeContext.legalContextBlocks)
+      ? safeContext.legalContextBlocks
+      : null,
+    use_semantic_search_with_legal_context: Boolean(safeContext.useSemanticSearchWithLegalContext),
   };
   if (contextLogIds.length > 0) {
     payload.context_log_ids = contextLogIds;

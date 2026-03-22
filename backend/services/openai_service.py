@@ -520,6 +520,7 @@ def analyze_question(
     models_to_try: list[str] | None = None,
     reasoning_effort: str | None = None,
     prompt_cache_key: str | None = None,
+    use_file_search: bool = True,
 ) -> tuple[dict[str, Any], str, str]:
     effective_vector_store_ids = vector_store_ids or VECTOR_STORE_IDS
     effective_instructions = instructions or ANSWER_INSTRUCTIONS
@@ -541,17 +542,18 @@ def analyze_question(
                 "instructions": effective_instructions,
                 "input": question,
                 "reasoning": {"effort": effective_reasoning},
-                "tools": [
+                "prompt_cache_key": effective_cache_key,
+                "prompt_cache_retention": PROMPT_CACHE_RETENTION,
+            }
+            if use_file_search:
+                request_payload["tools"] = [
                     {
                         "type": "file_search",
                         "vector_store_ids": selected_vector_store_ids,
                         "max_num_results": MAX_NUM_RESULTS,
                     }
-                ],
-                "include": ["file_search_call.results"],
-                "prompt_cache_key": effective_cache_key,
-                "prompt_cache_retention": PROMPT_CACHE_RETENTION,
-            }
+                ]
+                request_payload["include"] = ["file_search_call.results"]
             if previous_response_id:
                 request_payload["previous_response_id"] = previous_response_id
 
@@ -571,7 +573,7 @@ def analyze_question(
                 parsed = enforce_strict_sourcing(parsed)
             else:
                 parsed = ensure_sources_section(parsed)
-            parsed["used_vector_store_ids"] = selected_vector_store_ids
+            parsed["used_vector_store_ids"] = selected_vector_store_ids if use_file_search else []
             response_id = str(get_value(resp, "id", ""))
             return parsed, model, response_id
         except Exception as exc:
@@ -592,6 +594,7 @@ def analyze_question_stream(
     models_to_try: list[str] | None = None,
     reasoning_effort: str | None = None,
     prompt_cache_key: str | None = None,
+    use_file_search: bool = True,
 ):
     """
     Streaming variant af analyze_question. Yielder dict-events: delta, done, error.
@@ -615,18 +618,19 @@ def analyze_question_stream(
                 "instructions": effective_instructions,
                 "input": question,
                 "reasoning": {"effort": effective_reasoning},
-                "tools": [
+                "prompt_cache_key": effective_cache_key,
+                "prompt_cache_retention": PROMPT_CACHE_RETENTION,
+                "stream": True,
+            }
+            if use_file_search:
+                request_payload["tools"] = [
                     {
                         "type": "file_search",
                         "vector_store_ids": selected_vector_store_ids,
                         "max_num_results": MAX_NUM_RESULTS,
                     }
-                ],
-                "include": ["file_search_call.results"],
-                "prompt_cache_key": effective_cache_key,
-                "prompt_cache_retention": PROMPT_CACHE_RETENTION,
-                "stream": True,
-            }
+                ]
+                request_payload["include"] = ["file_search_call.results"]
             if previous_response_id:
                 request_payload["previous_response_id"] = previous_response_id
 
@@ -654,7 +658,7 @@ def analyze_question_stream(
                         parsed = enforce_strict_sourcing(parsed)
                     else:
                         parsed = ensure_sources_section(parsed)
-                    parsed["used_vector_store_ids"] = selected_vector_store_ids
+                    parsed["used_vector_store_ids"] = selected_vector_store_ids if use_file_search else []
                     response_id = str(get_value(resp, "id", ""))
                     log_path = save_pdf_log(log_question or question, parsed, model)
                     yield {
@@ -664,7 +668,7 @@ def analyze_question_stream(
                         "response_id": response_id,
                         "citations": parsed.get("citations", []),
                         "retrieval_results": parsed.get("retrieved_chunks", []),
-                        "used_vector_store_ids": selected_vector_store_ids,
+                        "used_vector_store_ids": selected_vector_store_ids if use_file_search else [],
                         "log_pdf_filename": log_path.name,
                         "log_pdf_url": f"/api/logs/{log_path.name}",
                     }

@@ -47,7 +47,7 @@
               <div class="analyse-side-actions">
                 <button id="resetBtn" type="button" class="button-secondary">Ny analyse</button>
                 <button id="pdfLogLink" type="button" class="button-secondary">Download analyse</button>
-                <button id="analyseExtraBtn" type="button" class="button-secondary" disabled>Ekstra (dummy)</button>
+                <button id="analyseExtraBtn" type="button" class="button-secondary">Tilføj retskilde</button>
               </div>
                 <div class="side-status-block">
                   <div class="status status-compact" data-connection-status>Forbindelse til database</div>
@@ -61,6 +61,17 @@
             </aside>
             <section class="result analyse-main-panel">
               <h2>Analyse</h2>
+              <div id="analyseLegalContextPanel" class="analyse-context-panel hidden">
+                <div class="analyse-context-header">
+                  <strong>Valgt retskildekontekst</strong>
+                  <button id="analyseLegalContextClearBtn" type="button" class="button-secondary sags-facts-mini">Fjern alle</button>
+                </div>
+                <div id="analyseLegalContextList" class="analyse-context-list"></div>
+                <label class="analyse-context-checkbox">
+                  <input id="analyseUseSemanticWithLegalContext" type="checkbox" />
+                  Brug også semantisk søgning sammen med valgt retskildekontekst
+                </label>
+              </div>
               <div id="analyseConversation" class="conversation"></div>
               <label class="label" for="question">Spørgsmål</label>
               <textarea
@@ -74,6 +85,63 @@
                 <button id="analyzeBtn" type="button">Kør analyse</button>
                 <button id="analyzeAbortBtn" type="button" class="button-secondary" disabled>Afbryd</button>
               </div>
+              <section
+                id="analyseLegalLibraryPanel"
+                class="sags-facts-panel sags-facts-overlay sags-legal-library-overlay hidden"
+                aria-label="Retskildebibliotek til analyse"
+              >
+                <div class="sags-facts-overlay-header">
+                  <h3 class="sags-facts-title">Tilføj retskilde til analyse</h3>
+                  <div class="sags-facts-overlay-actions">
+                    <button id="analyseLegalLibraryCloseBtn" type="button" class="button-secondary sags-facts-close">
+                      Luk
+                    </button>
+                  </div>
+                </div>
+                <label class="label" for="analyseLegalLibrarySearch">Søg retskilde</label>
+                <input
+                  id="analyseLegalLibrarySearch"
+                  class="input sags-facts-input"
+                  type="text"
+                  placeholder="Søg fx: dbo tyskland art 15"
+                />
+                <div id="analyseLegalLibraryLatency" class="sags-legal-library-latency">Latency: -</div>
+                <div class="sags-legal-library-layout">
+                  <section class="sags-legal-library-preview">
+                    <h4 id="analyseLegalPreviewTitle" class="sags-legal-library-category-title">Vælg en retskilde</h4>
+                    <button
+                      id="analyseLegalOpenSourceBtn"
+                      type="button"
+                      class="button-secondary sags-facts-mini hidden"
+                    >
+                      Åbn kilde (PDF)
+                    </button>
+                    <button
+                      id="analyseLegalAddSelectionBtn"
+                      type="button"
+                      class="button-secondary sags-facts-mini hidden"
+                    >
+                      Tilføj markeret tekst
+                    </button>
+                    <div id="analyseLegalPreviewPager" class="sags-legal-preview-pager hidden">
+                      <button id="analyseLegalPrevPageBtn" type="button" class="button-secondary sags-facts-mini">
+                        Forrige side
+                      </button>
+                      <span id="analyseLegalPreviewPageInfo" class="sags-legal-preview-page-info">Side 1/1</span>
+                      <button id="analyseLegalNextPageBtn" type="button" class="button-secondary sags-facts-mini">
+                        Næste side
+                      </button>
+                    </div>
+                    <div id="analyseLegalPreviewText" class="sags-legal-preview-text">
+                      Vælg først en kategori til højre, og derefter en retskilde for at se teksten her.
+                    </div>
+                  </section>
+                  <section class="sags-legal-library-nav">
+                    <div id="analyseLegalLibraryCategories" class="sags-legal-library-categories"></div>
+                    <div id="analyseLegalLibrarySources" class="sags-legal-library-list"></div>
+                  </section>
+                </div>
+              </section>
 
             </section>
           </div>

@@ -87,17 +87,21 @@ MAX_EXCEL_SHEETS = 10
 MAX_EXCEL_ROWS_PER_SHEET = 400
 MAX_SAGS_CONTEXT_CHARS = 6000
 MAX_SAGS_CONTEXT_LOGS = 8
+MAX_ANALYSE_LEGAL_CONTEXT_BLOCKS = 10
+MAX_ANALYSE_LEGAL_CONTEXT_CHARS = 12000
 LEGAL_SOURCES_DIR = Path(os.getenv("LEGAL_SOURCES_DIR", "/var/lib/jaila/legal_sources")).resolve()
-LEGAL_SOURCES_NORDEN_FILES_DIR = (LEGAL_SOURCES_DIR / "norden" / "files").resolve()
-LEGAL_SOURCES_PREVIEWS_PATH = (LEGAL_SOURCES_DIR / "norden_previews.json").resolve()
 LEGAL_SOURCE_PREVIEW_CACHE: dict[str, dict[str, object]] = {}
-LEGAL_SOURCE_PRECOMPUTED_CACHE: dict[str, dict[str, object]] | None = None
-LEGAL_SOURCE_PRECOMPUTED_MTIME: float = -1.0
+LEGAL_SOURCE_PRECOMPUTED_CACHE_BY_NAMESPACE: dict[str, dict[str, dict[str, object]]] = {}
+LEGAL_SOURCE_PRECOMPUTED_MTIME_BY_NAMESPACE: dict[str, float] = {}
 LEGAL_PREVIEW_REMOVE_PATTERNS = [
     re.compile(r"printet fra karnov til brug i overensstemmelse med licensvilk[aå]rene", re.IGNORECASE),
 ]
-LEGAL_PREVIEW_START_MARKER_PATTERN = re.compile(
+LEGAL_PREVIEW_DEFAULT_START_MARKER_PATTERN = re.compile(
     r"er\s+blevet\s+enige\s+om\s+f[oø]lgende\s*:?",
+    re.IGNORECASE,
+)
+LEGAL_PREVIEW_TYSKLAND_START_MARKER_PATTERN = re.compile(
+    r"der\s+har\s+til\s+hensigt\s*:?",
     re.IGNORECASE,
 )
 
@@ -137,7 +141,17 @@ def normalize_match_text(text: str) -> str:
     return re.sub(r"\s+", " ", without_marks).strip()
 
 
-def clean_legal_preview_text(text: str) -> str:
+def normalize_wrapped_preview_lines(text: str) -> str:
+    """Join hard line wraps from PDF extraction without removing paragraph breaks."""
+    value = str(text or "")
+    # Join hyphenated line breaks, e.g. "for-\nhold" -> "forhold".
+    value = re.sub(r"(?<=[A-Za-zÆØÅæøå0-9])-\n(?=[A-Za-zÆØÅæøå0-9])", "", value)
+    # Join single line breaks where next line starts lowercase (typical hard-wrap mid-sentence).
+    value = re.sub(r"(?<=[A-Za-zÆØÅæøå0-9,;:)\]])\n(?=[a-zæøå])", " ", value)
+    return value
+
+
+def clean_legal_preview_text(text: str, namespace: str = "") -> str:
     """Remove repeated license/footer noise from preview text."""
     lines = [line.strip() for line in str(text or "").splitlines()]
     kept: list[str] = []
@@ -151,43 +165,59 @@ def clean_legal_preview_text(text: str) -> str:
     normalized = "\n".join(kept)
     normalized = re.sub(r"\n{3,}", "\n\n", normalized)
     normalized = normalized.strip()
-    match = LEGAL_PREVIEW_START_MARKER_PATTERN.search(normalized)
-    if match:
-        normalized = normalized[match.end() :].strip()
+    namespace_key = str(namespace or "").strip().lower()
+    marker_match = None
+    if namespace_key == "tyskland":
+        marker_match = LEGAL_PREVIEW_TYSKLAND_START_MARKER_PATTERN.search(normalized)
+    if not marker_match:
+        marker_match = LEGAL_PREVIEW_DEFAULT_START_MARKER_PATTERN.search(normalized)
+    if marker_match:
+        normalized = normalized[marker_match.end() :].strip()
+    normalized = normalize_wrapped_preview_lines(normalized).strip()
     return normalized
 
 
-def resolve_norden_pdf_by_source_id(source_id: str) -> Path:
+def parse_legal_source_namespace(source_id: str) -> tuple[str, str]:
     safe_id = str(source_id or "").strip().lower()
     if not re.fullmatch(r"[a-z0-9_]{5,160}", safe_id):
         raise HTTPException(status_code=400, detail="Ugyldigt source_id-format")
-    if not safe_id.startswith("norden_dbo_"):
-        raise HTTPException(status_code=400, detail="Kun norden_dbo source_id er understøttet")
-    if not LEGAL_SOURCES_NORDEN_FILES_DIR.exists():
+    namespace = safe_id.split("_dbo_", 1)[0] if "_dbo_" in safe_id else ""
+    if not namespace:
+        raise HTTPException(status_code=400, detail="Kunne ikke udlede namespace fra source_id")
+    return safe_id, namespace
+
+
+def resolve_legal_pdf_by_source_id(source_id: str) -> Path:
+    safe_id, namespace = parse_legal_source_namespace(source_id)
+    legal_files_dir = (LEGAL_SOURCES_DIR / namespace / "files").resolve()
+    if not legal_files_dir.exists():
         raise HTTPException(status_code=404, detail="Retskilde-filer er ikke tilgængelige")
 
     article_match = re.search(r"_art(\d{1,2})_v\d{4}$", safe_id)
     is_protocol = bool(re.search(r"_protokol_v\d{4}$", safe_id))
+    document_slug_match = re.search(r"_dbo_(.+?)_v\d{4}$", safe_id)
+    document_slug = str(document_slug_match.group(1) if document_slug_match else "").strip().lower()
     normalized_target = None
     if article_match:
         normalized_target = f"artikel {int(article_match.group(1))}"
     elif is_protocol:
         normalized_target = "protokol"
-    else:
-        raise HTTPException(status_code=404, detail="Kunne ikke mappe source_id til PDF-fil")
 
-    candidates = sorted(path for path in LEGAL_SOURCES_NORDEN_FILES_DIR.glob("*.pdf") if path.is_file())
+    candidates = sorted(path for path in legal_files_dir.glob("*.pdf") if path.is_file())
     for candidate in candidates:
         stem_norm = normalize_match_text(candidate.stem)
+        stem_slug = re.sub(r"[^a-z0-9]+", "_", stem_norm).strip("_")
         if is_protocol and "protokol" in stem_norm:
             return candidate
         if normalized_target and normalized_target in stem_norm:
+            return candidate
+        if document_slug and document_slug == stem_slug:
             return candidate
 
     raise HTTPException(status_code=404, detail="PDF-kilde blev ikke fundet for source_id")
 
 
-def extract_pdf_preview_text(file_path: Path, max_chars: int = 14000) -> tuple[str, bool]:
+def extract_pdf_preview_text(file_path: Path, namespace: str = "", max_chars: int = 14000) -> tuple[str, bool]:
     """Extract plain text preview from PDF for in-app reading."""
     try:
         reader = PdfReader(str(file_path))
@@ -201,7 +231,7 @@ def extract_pdf_preview_text(file_path: Path, max_chars: int = 14000) -> tuple[s
         joined = "\n\n".join(text_parts).strip()
         if not joined:
             return "Kunne ikke udtrække tekst fra PDF.", False
-        cleaned = clean_legal_preview_text(joined)
+        cleaned = clean_legal_preview_text(joined, namespace=namespace)
         if not cleaned:
             return "Kunne ikke udtrække tekst fra PDF.", False
         return truncate_text(cleaned, max_chars)
@@ -209,13 +239,13 @@ def extract_pdf_preview_text(file_path: Path, max_chars: int = 14000) -> tuple[s
         return "Kunne ikke udtrække tekst fra PDF.", False
 
 
-def extract_pdf_preview_pages(file_path: Path) -> list[str]:
+def extract_pdf_preview_pages(file_path: Path, namespace: str = "") -> list[str]:
     """Extract and clean text per page for paginated preview."""
     try:
         reader = PdfReader(str(file_path))
         pages: list[str] = []
         for page in reader.pages:
-            chunk = clean_legal_preview_text(normalize_text(page.extract_text() or ""))
+            chunk = clean_legal_preview_text(normalize_text(page.extract_text() or ""), namespace=namespace)
             if chunk:
                 pages.append(chunk)
         return pages
@@ -223,34 +253,32 @@ def extract_pdf_preview_pages(file_path: Path) -> list[str]:
         return []
 
 
-def load_precomputed_legal_previews() -> dict[str, dict[str, object]]:
-    global LEGAL_SOURCE_PRECOMPUTED_MTIME
-    global LEGAL_SOURCE_PRECOMPUTED_CACHE
-    if not LEGAL_SOURCES_PREVIEWS_PATH.exists():
-        LEGAL_SOURCE_PRECOMPUTED_MTIME = -1.0
-        LEGAL_SOURCE_PRECOMPUTED_CACHE = {}
-        return LEGAL_SOURCE_PRECOMPUTED_CACHE
+def load_precomputed_legal_previews(namespace: str) -> dict[str, dict[str, object]]:
+    preview_path = (LEGAL_SOURCES_DIR / f"{namespace}_previews.json").resolve()
+    if not preview_path.exists():
+        LEGAL_SOURCE_PRECOMPUTED_MTIME_BY_NAMESPACE[namespace] = -1.0
+        LEGAL_SOURCE_PRECOMPUTED_CACHE_BY_NAMESPACE[namespace] = {}
+        return LEGAL_SOURCE_PRECOMPUTED_CACHE_BY_NAMESPACE[namespace]
     try:
-        current_mtime = float(LEGAL_SOURCES_PREVIEWS_PATH.stat().st_mtime)
+        current_mtime = float(preview_path.stat().st_mtime)
     except Exception:
         current_mtime = -1.0
-    if (
-        LEGAL_SOURCE_PRECOMPUTED_CACHE is not None
-        and LEGAL_SOURCE_PRECOMPUTED_MTIME == current_mtime
-    ):
-        return LEGAL_SOURCE_PRECOMPUTED_CACHE
+    current_cache = LEGAL_SOURCE_PRECOMPUTED_CACHE_BY_NAMESPACE.get(namespace)
+    current_cache_mtime = float(LEGAL_SOURCE_PRECOMPUTED_MTIME_BY_NAMESPACE.get(namespace, -2.0))
+    if current_cache is not None and current_cache_mtime == current_mtime:
+        return current_cache
     try:
-        payload = json.loads(LEGAL_SOURCES_PREVIEWS_PATH.read_text(encoding="utf-8"))
+        payload = json.loads(preview_path.read_text(encoding="utf-8"))
         entries = payload.get("entries") if isinstance(payload, dict) else {}
         if isinstance(entries, dict):
-            LEGAL_SOURCE_PRECOMPUTED_MTIME = current_mtime
-            LEGAL_SOURCE_PRECOMPUTED_CACHE = entries
-            return LEGAL_SOURCE_PRECOMPUTED_CACHE
+            LEGAL_SOURCE_PRECOMPUTED_MTIME_BY_NAMESPACE[namespace] = current_mtime
+            LEGAL_SOURCE_PRECOMPUTED_CACHE_BY_NAMESPACE[namespace] = entries
+            return entries
     except Exception:
         pass
-    LEGAL_SOURCE_PRECOMPUTED_MTIME = current_mtime
-    LEGAL_SOURCE_PRECOMPUTED_CACHE = {}
-    return LEGAL_SOURCE_PRECOMPUTED_CACHE
+    LEGAL_SOURCE_PRECOMPUTED_MTIME_BY_NAMESPACE[namespace] = current_mtime
+    LEGAL_SOURCE_PRECOMPUTED_CACHE_BY_NAMESPACE[namespace] = {}
+    return LEGAL_SOURCE_PRECOMPUTED_CACHE_BY_NAMESPACE[namespace]
 
 
 def truncate_text(text: str, max_chars: int) -> tuple[str, bool]:
@@ -434,6 +462,146 @@ def format_case_shared_facts_for_llm(case_entry: dict | None, active_subtab: str
             lines.append(f"Tidligere delresultat fra undertab '{subtab}':")
             lines.append(answer[:2000])
     if not lines:
+        return ""
+    block = "\n".join(lines)
+    block, _ = truncate_text(block, MAX_SAGS_CONTEXT_CHARS)
+    return block
+
+
+def format_sags_decision_package_for_llm(decision_package: object | None) -> str:
+    """Lav kompakt, deterministisk tekstblok fra struktureret beslutningspakke."""
+    if not decision_package:
+        return ""
+
+    if hasattr(decision_package, "model_dump"):
+        try:
+            package = decision_package.model_dump()
+        except Exception:
+            package = {}
+    elif isinstance(decision_package, dict):
+        package = decision_package
+    else:
+        package = {}
+
+    if not isinstance(package, dict) or not package:
+        return ""
+
+    lines: list[str] = ["Beslutningspakke (struktureret vurderingsgrundlag):"]
+    sagskontekst = package.get("sagskontekst") or {}
+    if isinstance(sagskontekst, dict):
+        indkomsttype = normalize_fact_value(sagskontekst.get("indkomsttype"))
+        bopaelsland = normalize_fact_value(sagskontekst.get("bopaelsland"))
+        arbejdsgivertype = normalize_fact_value(sagskontekst.get("arbejdsgivertype"))
+        if indkomsttype:
+            lines.append(f"- Sagskontekst / indkomsttype: {indkomsttype}")
+        if bopaelsland:
+            lines.append(f"- Sagskontekst / bopælsland: {bopaelsland}")
+        if arbejdsgivertype:
+            lines.append(f"- Sagskontekst / arbejdsgivertype: {arbejdsgivertype}")
+        selected_article = sagskontekst.get("valgt_artikel") or {}
+        if isinstance(selected_article, dict):
+            article = selected_article.get("article")
+            section = selected_article.get("section")
+            raw_text = normalize_fact_value(selected_article.get("raw_text"))
+            if article:
+                article_label = f"artikel {article}"
+                if section:
+                    article_label += f", stk. {section}"
+                lines.append(f"- Sagskontekst / valgt artikel: {article_label}")
+            elif raw_text:
+                lines.append(f"- Sagskontekst / valgt artikel (rå): {raw_text}")
+
+    rule_profile = package.get("regelprofil") or {}
+    if isinstance(rule_profile, dict):
+        profile_id = normalize_fact_value(rule_profile.get("profile_id"))
+        if profile_id:
+            lines.append(f"- Regelprofil: {profile_id}")
+
+    constated_facts = package.get("konstaterede_fakta") or []
+    if isinstance(constated_facts, list) and constated_facts:
+        lines.append("Konstaterede fakta:")
+        for fact in constated_facts[:20]:
+            if not isinstance(fact, dict):
+                continue
+            fact_key = normalize_fact_value(fact.get("fact_key"))
+            value = fact.get("value")
+            value_text = normalize_fact_value(value if isinstance(value, str) else json.dumps(value, ensure_ascii=False))
+            if fact_key and value_text:
+                lines.append(f"- {fact_key}: {value_text}")
+
+    premises = package.get("afledte_praemisser") or []
+    if isinstance(premises, list) and premises:
+        lines.append("Afledte præmisser:")
+        for premise in premises[:12]:
+            text = normalize_fact_value(premise)
+            if text:
+                lines.append(f"- {text}")
+
+    legal_sources = package.get("relevante_retskilder") or []
+    if isinstance(legal_sources, list) and legal_sources:
+        lines.append("Relevante retskilder:")
+        for source in legal_sources[:12]:
+            if isinstance(source, dict):
+                label = normalize_fact_value(source.get("label") or source.get("title") or source.get("name"))
+                reason = normalize_fact_value(source.get("reason") or source.get("why"))
+                if label and reason:
+                    lines.append(f"- {label} ({reason})")
+                elif label:
+                    lines.append(f"- {label}")
+            else:
+                text = normalize_fact_value(source)
+                if text:
+                    lines.append(f"- {text}")
+
+    unresolved = package.get("uafklarede_sporgsmaal") or []
+    if isinstance(unresolved, list) and unresolved:
+        lines.append("Uafklarede spørgsmål:")
+        for item in unresolved[:12]:
+            text = normalize_fact_value(item)
+            if text:
+                lines.append(f"- {text}")
+
+    allocation = package.get("fordelingsmetode") or {}
+    if isinstance(allocation, dict):
+        method_id = normalize_fact_value(allocation.get("method_id"))
+        description = normalize_fact_value(allocation.get("description"))
+        if method_id or description:
+            lines.append("Fordelingsmetode:")
+            if method_id:
+                lines.append(f"- Metode: {method_id}")
+            if description:
+                lines.append(f"- Beskrivelse: {description}")
+
+    preliminary_tax_right = package.get("foreloebig_beskatningsret") or []
+    if isinstance(preliminary_tax_right, list) and preliminary_tax_right:
+        lines.append("Foreløbig beskatningsret:")
+        for item in preliminary_tax_right[:20]:
+            if not isinstance(item, dict):
+                continue
+            country = normalize_fact_value(item.get("country"))
+            label = normalize_fact_value(item.get("label"))
+            basis = normalize_fact_value(item.get("basis"))
+            if country or label or basis:
+                parts = [part for part in [country, label, basis] if part]
+                lines.append(f"- {' | '.join(parts)}")
+
+    conflicts = package.get("konflikter") or []
+    if isinstance(conflicts, list) and conflicts:
+        lines.append("Konflikter:")
+        for item in conflicts[:12]:
+            text = normalize_fact_value(item)
+            if text:
+                lines.append(f"- {text}")
+
+    warnings = package.get("advarsler") or []
+    if isinstance(warnings, list) and warnings:
+        lines.append("Advarsler:")
+        for item in warnings[:12]:
+            text = normalize_fact_value(item)
+            if text:
+                lines.append(f"- {text}")
+
+    if len(lines) <= 1:
         return ""
     block = "\n".join(lines)
     block, _ = truncate_text(block, MAX_SAGS_CONTEXT_CHARS)
@@ -1296,6 +1464,7 @@ def analyze(
     models_override: list[str] | None = None
     instructions_override: str | None = None
     llm_question = question
+    use_file_search = True
     if source_tab == "sagsbehandling" and subtab in SAGSBEHANDLING_VECTOR_STORES:
         vector_store_ids_override = SAGSBEHANDLING_VECTOR_STORES[subtab]
         models_override = SAGSBEHANDLING_MODELS.get(subtab)
@@ -1317,6 +1486,16 @@ def analyze(
                 + case_block
                 + "\n---\n"
                 + "Brug de fælles sagsfakta som baggrund, men følg file_search-kilder ved konflikt."
+            )
+        decision_block = format_sags_decision_package_for_llm(payload.sags_decision_package)
+        if decision_block:
+            llm_question = (
+                llm_question
+                + "\n\n---\n"
+                + decision_block
+                + "\n---\n"
+                + "Brug beslutningspakken som primær struktur for analysen. "
+                + "Skeln tydeligt mellem konstaterede fakta, afledte præmisser, metode, foreløbig beskatningsret, konflikter og advarsler."
             )
 
     context_log_ids_to_use: list[str] = []
@@ -1360,6 +1539,31 @@ def analyze(
                 + "Brug konteksten som baggrund. Hvis den strider mod file_search-kilder, følg file_search-kilderne."
             )
 
+    legal_context_blocks_raw = payload.legal_context_blocks or []
+    legal_context_blocks_to_use: list[str] = []
+    for block in legal_context_blocks_raw:
+        clean_block = str(block or "").strip()
+        if not clean_block:
+            continue
+        clean_block, _ = truncate_text(clean_block, MAX_ANALYSE_LEGAL_CONTEXT_CHARS)
+        legal_context_blocks_to_use.append(clean_block)
+        if len(legal_context_blocks_to_use) >= MAX_ANALYSE_LEGAL_CONTEXT_BLOCKS:
+            break
+    if source_tab == "analyse" and legal_context_blocks_to_use:
+        context_text = "\n\n".join(
+            f"[Retskildekontekst {index + 1}]\n{block}"
+            for index, block in enumerate(legal_context_blocks_to_use)
+        )
+        llm_question = (
+            llm_question
+            + "\n\n---\n"
+            + context_text
+            + "\n---\n"
+            + "Brug denne retskildekontekst som primær baggrund for analysen."
+        )
+        if not payload.use_semantic_search_with_legal_context:
+            use_file_search = False
+
     if stream:
         def gen():
             try:
@@ -1376,6 +1580,7 @@ def analyze(
                     models_to_try=models_override,
                     reasoning_effort=reasoning_effort,
                     prompt_cache_key=prompt_cache_key,
+                    use_file_search=use_file_search,
                 ):
                     yield _sse_line(evt)
             except Exception as exc:
@@ -1400,6 +1605,7 @@ def analyze(
             models_to_try=models_override,
             reasoning_effort=reasoning_effort,
             prompt_cache_key=prompt_cache_key,
+            use_file_search=use_file_search,
         )
         log_path = save_pdf_log(llm_question, parsed, used_model)
     except Exception as exc:
@@ -1461,24 +1667,33 @@ def sagsbehandling_legal_basis(subtab: str) -> SagsLegalBasisResponse:
 
 @app.get("/api/legal-sources/catalog", response_model=LegalSourcesCatalogResponse)
 def get_legal_sources_catalog() -> LegalSourcesCatalogResponse:
-    catalog_path = LEGAL_SOURCES_DIR / "norden_catalog.json"
-    if not catalog_path.exists():
+    catalog_files = sorted(LEGAL_SOURCES_DIR.glob("*_catalog.json"))
+    if not catalog_files:
         return LegalSourcesCatalogResponse(categories=[], documents=[])
+    categories_by_id: dict[str, dict[str, object]] = {}
+    documents: list[dict[str, object]] = []
     try:
-        payload = json.loads(catalog_path.read_text(encoding="utf-8"))
+        for catalog_path in catalog_files:
+            payload = json.loads(catalog_path.read_text(encoding="utf-8"))
+            categories = payload.get("categories")
+            for category in categories if isinstance(categories, list) else []:
+                category_id = str((category or {}).get("id", "")).strip().lower()
+                if category_id and category_id not in categories_by_id:
+                    categories_by_id[category_id] = category
+            source_documents = payload.get("documents")
+            if isinstance(source_documents, list):
+                documents.extend(source_documents)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Kunne ikke læse retskildekatalog: {exc}") from exc
-    categories = payload.get("categories")
-    documents = payload.get("documents")
     return LegalSourcesCatalogResponse(
-        categories=categories if isinstance(categories, list) else [],
-        documents=documents if isinstance(documents, list) else [],
+        categories=list(categories_by_id.values()),
+        documents=documents,
     )
 
 
 @app.get("/api/legal-sources/file/{source_id}")
 def get_legal_source_file(source_id: str) -> FileResponse:
-    file_path = resolve_norden_pdf_by_source_id(source_id)
+    file_path = resolve_legal_pdf_by_source_id(source_id)
     return FileResponse(path=file_path, media_type="application/pdf", filename=file_path.name)
 
 
@@ -1488,9 +1703,9 @@ def get_legal_source_section(
     page: int = Query(default=1, ge=1, description="1-indexed preview page"),
     chunk_size: int = Query(default=8, ge=1, le=100, description="Number of PDF pages per preview chunk"),
 ) -> LegalSourceSectionResponse:
-    file_path = resolve_norden_pdf_by_source_id(source_id)
-    cache_key = str(source_id or "").strip().lower()
-    precomputed = load_precomputed_legal_previews().get(cache_key)
+    file_path = resolve_legal_pdf_by_source_id(source_id)
+    cache_key, namespace = parse_legal_source_namespace(source_id)
+    precomputed = load_precomputed_legal_previews(namespace).get(cache_key)
     if isinstance(precomputed, dict):
         pages = precomputed.get("pages")
         title = str(precomputed.get("title", file_path.stem))
@@ -1503,7 +1718,7 @@ def get_legal_source_section(
             return LegalSourceSectionResponse(
                 source_id=source_id,
                 title=title,
-                text=clean_legal_preview_text(text_block),
+                text=clean_legal_preview_text(text_block, namespace=namespace),
                 truncated=False,
                 page=safe_page,
                 total_pages=total_pages,
@@ -1530,15 +1745,15 @@ def get_legal_source_section(
         return LegalSourceSectionResponse(
             source_id=source_id,
             title=str(cached.get("title", file_path.stem)),
-            text=clean_legal_preview_text(text_block),
+            text=clean_legal_preview_text(text_block, namespace=namespace),
             truncated=bool(cached.get("truncated", False)),
             page=safe_page,
             total_pages=total_pages,
         )
 
-    preview_pages = extract_pdf_preview_pages(file_path)
+    preview_pages = extract_pdf_preview_pages(file_path, namespace=namespace)
     if not preview_pages:
-        preview_text, truncated = extract_pdf_preview_text(file_path)
+        preview_text, truncated = extract_pdf_preview_text(file_path, namespace=namespace)
         preview_pages = [preview_text]
     else:
         truncated = False
@@ -1557,7 +1772,7 @@ def get_legal_source_section(
     return LegalSourceSectionResponse(
         source_id=source_id,
         title=file_path.stem,
-        text=clean_legal_preview_text(text_block),
+        text=clean_legal_preview_text(text_block, namespace=namespace),
         truncated=truncated,
         page=safe_page,
         total_pages=total_pages,

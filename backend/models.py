@@ -1,5 +1,78 @@
 from pydantic import BaseModel, Field
 from typing import Any
+from typing import Literal
+
+
+class DecisionSelectedArticle(BaseModel):
+    article: int | None = None
+    section: int | None = None
+    raw_text: str = ""
+    source: str = "ui"
+    origin: Literal["oplyst", "udledt", "beregnet", "valgt"] = "valgt"
+    certainty: Literal["høj", "middel", "lav"] = "middel"
+    status: Literal["aktiv", "konfliktende", "uafklaret"] = "uafklaret"
+    candidate_articles: list[str] = Field(default_factory=list)
+
+
+class DecisionSagskontekst(BaseModel):
+    indkomsttype: str = ""
+    valgt_artikel: DecisionSelectedArticle = Field(default_factory=DecisionSelectedArticle)
+    bopaelsland: str = ""
+    arbejdsgivertype: str = ""
+
+
+class DecisionRuleProfile(BaseModel):
+    profile_id: str = ""
+    requires_day_allocation: bool = False
+    requires_employer_assessment: bool = False
+
+
+class DecisionFact(BaseModel):
+    fact_key: str
+    value: Any = None
+    source: str = "ui"
+    origin: Literal["oplyst", "udledt", "beregnet", "valgt"] = "oplyst"
+    certainty: Literal["høj", "middel", "lav"] = "middel"
+    status: Literal["aktiv", "konfliktende", "uafklaret"] = "aktiv"
+    note: str = ""
+
+
+class DecisionFordelingsmetode(BaseModel):
+    method_id: str = ""
+    description: str = ""
+    basis: str = ""
+    period: str = ""
+    assumptions: list[str] = Field(default_factory=list)
+
+
+class DecisionTaxRightShare(BaseModel):
+    label: str = ""
+    country: str = ""
+    amount: float | None = None
+    currency: str = "DKK"
+    share_ratio: float | None = None
+    basis: str = ""
+    status: Literal["aktiv", "konfliktende", "uafklaret"] = "uafklaret"
+    note: str = ""
+
+
+class DecisionInputQuality(BaseModel):
+    niveau: Literal["høj", "middel", "lav"] = "middel"
+    begrundelse: list[str] = Field(default_factory=list)
+
+
+class SagsDecisionPackage(BaseModel):
+    sagskontekst: DecisionSagskontekst = Field(default_factory=DecisionSagskontekst)
+    regelprofil: DecisionRuleProfile = Field(default_factory=DecisionRuleProfile)
+    konstaterede_fakta: list[DecisionFact] = Field(default_factory=list)
+    afledte_praemisser: list[str] = Field(default_factory=list)
+    relevante_retskilder: list[dict[str, Any]] = Field(default_factory=list)
+    uafklarede_sporgsmaal: list[str] = Field(default_factory=list)
+    fordelingsmetode: DecisionFordelingsmetode = Field(default_factory=DecisionFordelingsmetode)
+    foreloebig_beskatningsret: list[DecisionTaxRightShare] = Field(default_factory=list)
+    konflikter: list[str] = Field(default_factory=list)
+    advarsler: list[str] = Field(default_factory=list)
+    input_kvalitet: DecisionInputQuality = Field(default_factory=DecisionInputQuality)
 
 
 class AnalyzeRequest(BaseModel):
@@ -19,6 +92,10 @@ class AnalyzeRequest(BaseModel):
     case_facts: dict[str, Any] | None = Field(
         default=None,
         description="Strukturerede faktafelter fra sagsbehandling",
+    )
+    sags_decision_package: SagsDecisionPackage | None = Field(
+        default=None,
+        description="Struktureret beslutningspakke til LLM-vurdering",
     )
     context_log_id: str | None = Field(
         default=None,
@@ -43,6 +120,14 @@ class AnalyzeRequest(BaseModel):
     case_user: str | None = Field(
         default=None,
         description="Ejer af aktiv sag i sagsbehandling",
+    )
+    legal_context_blocks: list[str] | None = Field(
+        default=None,
+        description="Valgte retskilde-tekstblokke fra Analyse-fanen",
+    )
+    use_semantic_search_with_legal_context: bool = Field(
+        default=False,
+        description="Hvis true bruges file_search også når legal_context_blocks er sat",
     )
 
 

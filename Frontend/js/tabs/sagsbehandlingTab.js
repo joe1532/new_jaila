@@ -22,11 +22,7 @@ const SUBTAB_CONFIG = {
   beskatningsret_indkomst: {
     title: "Sagsbehandling - Beskatningsret til indkomst",
     placeholder: "Beskriv spørgsmålet om beskatningsret (dummy)...",
-    functions: [
-      "Retskilder",
-      "Vurder DBO-relevans (dummy)",
-      "Opsummer hjemmel (dummy)",
-    ],
+    functions: [],
     enabled: true,
   },
   lempelse: {
@@ -58,6 +54,102 @@ const LEGAL_SOURCE_CATEGORIES = [
   { id: "dobbeltbeskatningsoverenskomster", title: "Dobbeltbeskatningsoverenskomster" },
   { id: "afgoerelser_domme", title: "Afgørelser og domme" },
 ];
+
+const LEGAL_INSTRUMENT_SEARCH_HINTS = [
+  {
+    instrumentPrefix: "norden_dbo",
+    terms: [
+      "norden",
+      "nordisk",
+      "nordiske",
+      "nordiske dbo",
+      "nordisk dbo",
+      "norge",
+      "sverige",
+      "finland",
+      "island",
+      "færøerne",
+      "faeroeerne",
+    ],
+  },
+  {
+    instrumentPrefix: "tyskland_dbo",
+    terms: ["tyskland", "dk-de", "danmark tyskland", "tysk dbo", "dbo tyskland"],
+  },
+];
+
+function normalizeSearchValue(value) {
+  return String(value || "")
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function extractArticleNumberFromQuery(normalizedQuery) {
+  const explicitMatch = normalizedQuery.match(/\b(?:art|artikel)\s*(\d{1,2})\b/);
+  if (explicitMatch) {
+    return Number(explicitMatch[1]);
+  }
+  const numberTokens = normalizedQuery
+    .split(" ")
+    .filter((token) => /^\d{1,2}$/.test(token))
+    .map((token) => Number(token));
+  return numberTokens.length === 1 ? numberTokens[0] : null;
+}
+
+function extractCompactArticleNumberFromHint(normalizedQuery, matchedTerm) {
+  const term = String(matchedTerm || "").trim();
+  if (!term) {
+    return null;
+  }
+  const escapedTerm = term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const compactPattern = new RegExp(`${escapedTerm}\\s*(\\d{1,2})\\b`);
+  const match = normalizedQuery.match(compactPattern);
+  if (!match) {
+    return null;
+  }
+  return Number(match[1]);
+}
+
+function detectInstrumentHint(normalizedQuery) {
+  if (!normalizedQuery) {
+    return { instrumentPrefix: "", matchedTerm: "" };
+  }
+  let bestMatch = { instrumentPrefix: "", matchedTerm: "" };
+  LEGAL_INSTRUMENT_SEARCH_HINTS.forEach((candidate) => {
+    (candidate.terms || []).forEach((term) => {
+      if (normalizedQuery.includes(term) && term.length > bestMatch.matchedTerm.length) {
+        bestMatch = {
+          instrumentPrefix: candidate.instrumentPrefix,
+          matchedTerm: term,
+        };
+      }
+    });
+  });
+  return bestMatch;
+}
+
+function buildResidualSearchTokens(normalizedQuery, matchedInstrumentTerm, articleNumber) {
+  let residual = String(normalizedQuery || "");
+  if (matchedInstrumentTerm) {
+    residual = residual.replace(matchedInstrumentTerm, " ");
+  }
+  residual = residual.replace(/\bdbo\b/g, " ");
+  residual = residual.replace(/\b(?:art|artikel)\s*\d{1,2}\b/g, " ");
+  if (articleNumber != null) {
+    if (matchedInstrumentTerm) {
+      const escapedTerm = String(matchedInstrumentTerm).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      residual = residual.replace(new RegExp(`${escapedTerm}\\s*${articleNumber}\\b`, "g"), " ");
+    }
+    residual = residual.replace(new RegExp(`\\b${articleNumber}\\b`, "g"), " ");
+  }
+  return residual
+    .split(" ")
+    .map((token) => token.trim())
+    .filter((token) => token.length >= 2);
+}
 
 const SKATTEPLIGT_FACTORS = [
   {
@@ -255,8 +347,8 @@ const FACTS_UI_CONFIG = {
     foreignAssetsLiabilitiesPlaceholder: "Skriv relevante fakta",
     residenceLabel: "Skattemæssigt hjemsted (faktum)",
     residencePlaceholder: "Fx bopæl, familie, opholdsmønster",
-    notesLabel: "Retskilder",
-    notesPlaceholder: "Fx artikelhenvisning, kildebeskatning, credit",
+    notesLabel: "Tilføj kontekst til fakta",
+    notesPlaceholder: "Tilføj eventuelle bemærkninger til hvordan fakta skal fortolkes  og hvilke pointer der skal fremhæves i afsnittet",
   },
   lempelse: {
     panelTitle: "Fakta - Lempelse",
@@ -290,8 +382,37 @@ function withRequiredMarker(label, isRequired) {
   return isRequired ? `${label} *` : label;
 }
 
+function buildBeskatningsretBindingPreviewText(facts, contextList = []) {
+  const legalContextTitles = (Array.isArray(contextList) ? contextList : [])
+    .map((entry) => String(entry && entry.title ? entry.title : "").trim())
+    .filter((value) => value);
+  const lines = [
+    String(facts.residenceCountryMode || "").trim()
+      ? `Bopælsland: ${String(facts.residenceCountryMode || "").trim()}`
+      : "",
+    String(facts.employerResidenceMode || "").trim()
+      ? `Arbejdsgiver hjemmehørende i: ${String(facts.employerResidenceMode || "").trim()}`
+      : "",
+    String(facts.employerCountry || "").trim()
+      ? `Land, hvor arbejdsgiver er hjemmehørende: ${String(facts.employerCountry || "").trim()}`
+      : "",
+    String(facts.incomeDboArticle || "").trim()
+      ? `DBO-artikel for indkomsten: ${String(facts.incomeDboArticle || "").trim()}`
+      : "",
+    String(facts.foreignAssetsLiabilities || "").trim()
+      ? `Kommentarer til ansættelseskontrakt: ${String(facts.foreignAssetsLiabilities || "").trim()}`
+      : "",
+    String(facts.notes || "").trim()
+      ? `Retskildebemærkninger: ${String(facts.notes || "").trim()}`
+      : "",
+    legalContextTitles.length ? `Valgte retskilder: ${legalContextTitles.join(" | ")}` : "",
+  ].filter((line) => line);
+  return lines.join("\n");
+}
+
 export function renderSagsbehandling(elements, state) {
   const activeCaseId = String(state.sagsbehandling.activeCaseId || "").trim();
+  const hasCase = Boolean(activeCaseId);
   const activeCaseTitle = (() => {
     const cases = Array.isArray(state.sagsbehandling.cases) ? state.sagsbehandling.cases : [];
     const found = cases.find((entry) => String(entry.id || "") === activeCaseId);
@@ -332,6 +453,7 @@ export function renderSagsbehandling(elements, state) {
     employerName2: "",
     employerCountMode: "one",
     employerCountry: "",
+    incomeDboArticle: "",
     employmentContractReceived: "",
     workCountryModes: [],
     workCountryDenmarkFields: [],
@@ -416,7 +538,6 @@ export function renderSagsbehandling(elements, state) {
         hasValidResidenceFact;
     const contextReady =
       contextList.length === 0 || contextList.every((c) => Boolean(c.approved));
-    const hasCase = Boolean(activeCaseId);
     elements.sagsbehandlingSendBtn.disabled = !cfg.enabled || !requiredFactsComplete || !hasCase;
     if (elements.sagsbehandlingSendBtn.disabled === false && !contextReady) {
       elements.sagsbehandlingSendBtn.disabled = true;
@@ -599,12 +720,18 @@ export function renderSagsbehandling(elements, state) {
     if (isBeskatningsretSubtab) {
       elements.sagsLegalLibraryToggleBtn.textContent = state.sagsbehandling.legalLibraryPanelOpen
         ? "Skjul retskilder"
-        : "Retskilder";
+        : "Tilføj retskilder";
+      elements.sagsLegalLibraryToggleBtn.disabled = !hasCase;
+      elements.sagsLegalLibraryToggleBtn.title = hasCase
+        ? ""
+        : "Vælg eller opret først en sag for at tilføje retskilder.";
     }
   }
   if (elements.sagsLegalLibraryPanel) {
     const showLibraryPanel =
-      activeSubtab === "beskatningsret_indkomst" && Boolean(state.sagsbehandling.legalLibraryPanelOpen);
+      activeSubtab === "beskatningsret_indkomst"
+      && hasCase
+      && Boolean(state.sagsbehandling.legalLibraryPanelOpen);
     elements.sagsLegalLibraryPanel.classList.toggle("hidden", !showLibraryPanel);
   }
   if (elements.sagsLegalLibrarySearch) {
@@ -618,7 +745,16 @@ export function renderSagsbehandling(elements, state) {
       ? state.sagsbehandling.legalLibraryCatalog
       : [];
     const libraryCategories = LEGAL_SOURCE_CATEGORIES;
-    const query = String(state.sagsbehandling.legalLibrarySearchQuery || "").trim().toLowerCase();
+    const queryRaw = String(state.sagsbehandling.legalLibrarySearchQuery || "").trim();
+    const normalizedQuery = normalizeSearchValue(queryRaw);
+    const instrumentHint = detectInstrumentHint(normalizedQuery);
+    const articleNumber = extractArticleNumberFromQuery(normalizedQuery)
+      ?? extractCompactArticleNumberFromHint(normalizedQuery, instrumentHint.matchedTerm);
+    const residualTokens = buildResidualSearchTokens(
+      normalizedQuery,
+      instrumentHint.matchedTerm,
+      articleNumber,
+    );
     const activeCategoryBySubtab = state.sagsbehandling.legalLibraryActiveCategoryBySubtab || {};
     const activeDocumentBySubtab = state.sagsbehandling.legalLibraryActiveDocumentBySubtab || {};
     const activeVersionBySubtab = state.sagsbehandling.legalLibraryActiveVersionBySubtab || {};
@@ -631,13 +767,32 @@ export function renderSagsbehandling(elements, state) {
     elements.sagsLegalLibrarySources.innerHTML = "";
 
     const matchesQuery = (doc, version, section) => {
-      if (!query) {
+      if (!normalizedQuery) {
         return true;
       }
-      const partDoc = `${doc.title} ${(doc.tags || []).join(" ")}`.toLowerCase();
-      const partVersion = `${version.label} ${version.id}`.toLowerCase();
-      const partSection = `${section.title} ${section.text}`.toLowerCase();
-      return partDoc.includes(query) || partVersion.includes(query) || partSection.includes(query);
+      const docId = normalizeSearchValue(String(doc.id || ""));
+      if (instrumentHint.instrumentPrefix && !docId.startsWith(instrumentHint.instrumentPrefix)) {
+        return false;
+      }
+      if (articleNumber != null) {
+        const sectionNumber = Number(String(section.sectionNumber || section.number || "").trim());
+        const titleText = normalizeSearchValue(`${section.title} ${section.text || ""}`);
+        const hasArticleNumber = (
+          (Number.isFinite(sectionNumber) && sectionNumber === articleNumber)
+          || titleText.includes(`artikel ${articleNumber}`)
+          || titleText.includes(`art ${articleNumber}`)
+        );
+        if (!hasArticleNumber) {
+          return false;
+        }
+      }
+      if (!residualTokens.length) {
+        return true;
+      }
+      const searchable = normalizeSearchValue(
+        `${doc.title} ${(doc.tags || []).join(" ")} ${version.label} ${version.id} ${section.title} ${section.text || ""}`,
+      );
+      return residualTokens.every((token) => searchable.includes(token));
     };
 
     libraryCategories.forEach((category) => {
@@ -926,6 +1081,7 @@ export function renderSagsbehandling(elements, state) {
       const employerName2 = String(facts.employerName2 || "").trim();
       const employerCountMode = String(facts.employerCountMode || "one").trim() || "one";
       const employerCountry = String(facts.employerCountry || "").trim();
+      const incomeDboArticle = String(facts.incomeDboArticle || "").trim();
       const selectedWorkCountryModes = Array.isArray(facts.workCountryModes)
         ? facts.workCountryModes.map((value) => String(value || "").trim()).filter((value) => value)
         : String(facts.workCountryMode || "").trim()
@@ -1117,6 +1273,20 @@ export function renderSagsbehandling(elements, state) {
       employerCountryInput.disabled = isFactsLocked;
       elements.sagsFactsBeskatningsretCountryBlock.appendChild(employerCountryInput);
 
+      const incomeDboArticleLabel = document.createElement("div");
+      incomeDboArticleLabel.className = "sags-facts-factor-detail-label";
+      incomeDboArticleLabel.textContent = "Hvilken artikel i DBO'en er indkomsten omfattet af";
+      elements.sagsFactsBeskatningsretCountryBlock.appendChild(incomeDboArticleLabel);
+
+      const incomeDboArticleInput = document.createElement("input");
+      incomeDboArticleInput.type = "text";
+      incomeDboArticleInput.className = "input sags-facts-input";
+      incomeDboArticleInput.placeholder = "Fx artikel 15";
+      incomeDboArticleInput.dataset.sagsIncomeDboArticle = "true";
+      incomeDboArticleInput.value = incomeDboArticle;
+      incomeDboArticleInput.disabled = isFactsLocked;
+      elements.sagsFactsBeskatningsretCountryBlock.appendChild(incomeDboArticleInput);
+
       const workCountryTitle = document.createElement("div");
       workCountryTitle.className = "sags-facts-factor-detail-label";
       workCountryTitle.textContent = "Lande, hvor der er udført arbejde";
@@ -1277,6 +1447,21 @@ export function renderSagsbehandling(elements, state) {
         table.appendChild(tbody);
         tableWrap.appendChild(table);
         elements.sagsFactsBeskatningsretCountryBlock.appendChild(tableWrap);
+      }
+
+      const bindingPreview = buildBeskatningsretBindingPreviewText(facts, contextList);
+      if (bindingPreview) {
+        const bindingLabel = document.createElement("div");
+        bindingLabel.className = "sags-facts-factor-detail-label";
+        bindingLabel.textContent = "Oversigt over valgte oplysninger";
+        elements.sagsFactsBeskatningsretCountryBlock.appendChild(bindingLabel);
+
+        const bindingPreviewNode = document.createElement("textarea");
+        bindingPreviewNode.className = "input sags-facts-factor-detail-input";
+        bindingPreviewNode.rows = 5;
+        bindingPreviewNode.readOnly = true;
+        bindingPreviewNode.value = bindingPreview;
+        elements.sagsFactsBeskatningsretCountryBlock.appendChild(bindingPreviewNode);
       }
     } else {
       elements.sagsFactsBeskatningsretCountryBlock.innerHTML = "";

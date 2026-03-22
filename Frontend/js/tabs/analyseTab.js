@@ -137,6 +137,52 @@ export function renderAnalyse(elements, state) {
       elements.analyseLogContent.appendChild(p);
     }
   }
+
+  if (elements.analyseLegalContextPanel && elements.analyseLegalContextList) {
+    const legalContexts = Array.isArray(state?.analyse?.legalContexts)
+      ? state.analyse.legalContexts
+      : [];
+    elements.analyseLegalContextPanel.classList.toggle("hidden", legalContexts.length === 0);
+    elements.analyseLegalContextList.innerHTML = "";
+    if (!legalContexts.length) {
+      const empty = document.createElement("p");
+      empty.className = "analyse-log-empty";
+      empty.textContent = "Ingen retskildekontekst valgt endnu.";
+      elements.analyseLegalContextList.appendChild(empty);
+    } else {
+      legalContexts.forEach((context) => {
+        const item = document.createElement("div");
+        item.className = "analyse-context-item";
+        const title = document.createElement("p");
+        title.className = "analyse-context-item-title";
+        title.textContent = context.title || "Retskilde";
+        const preview = document.createElement("p");
+        preview.className = "analyse-context-item-preview";
+        preview.textContent = context.previewText || "";
+        const removeBtn = document.createElement("button");
+        removeBtn.type = "button";
+        removeBtn.className = "button-secondary sags-facts-mini";
+        removeBtn.dataset.action = "remove-analyse-legal-context";
+        removeBtn.dataset.contextId = context.id || "";
+        removeBtn.textContent = "Fjern";
+        item.appendChild(title);
+        item.appendChild(preview);
+        item.appendChild(removeBtn);
+        elements.analyseLegalContextList.appendChild(item);
+      });
+    }
+  }
+
+  if (elements.analyseUseSemanticWithLegalContext) {
+    elements.analyseUseSemanticWithLegalContext.checked = Boolean(
+      state?.analyse?.useSemanticWithLegalContext,
+    );
+  }
+
+  if (elements.analyseExtraBtn) {
+    const isOpen = Boolean(state?.analyse?.legalLibraryPanelOpen);
+    elements.analyseExtraBtn.textContent = isOpen ? "Skjul retskilde" : "Tilføj retskilde";
+  }
 }
 
 export function getInitialAnalyseState() {
@@ -153,5 +199,17 @@ export function getInitialAnalyseState() {
     savedLogs: [],
     selectedLogId: null,
     selectedLogContent: null,
+    legalLibraryPanelOpen: false,
+    legalLibrarySearchQuery: "",
+    legalLibraryActiveCategory: "",
+    legalLibraryActiveDocument: "",
+    legalLibraryActiveVersion: "",
+    legalLibraryPreviewSection: "",
+    legalLibraryPreviewLoadingSourceId: "",
+    legalLibrarySectionTextBySourceId: {},
+    legalLibraryPreviewPageBySourceId: {},
+    legalLibraryPreviewTotalPagesBySourceId: {},
+    legalContexts: [],
+    useSemanticWithLegalContext: false,
   };
 }
