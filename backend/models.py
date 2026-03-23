@@ -40,8 +40,11 @@ class DecisionFact(BaseModel):
 class DecisionFordelingsmetode(BaseModel):
     method_id: str = ""
     description: str = ""
-    basis: str = ""
+    basis: Any = ""
     period: str = ""
+    begrundelse: str = ""
+    begrænsninger: list[str] = Field(default_factory=list)
+    calculation: dict[str, Any] = Field(default_factory=dict)
     assumptions: list[str] = Field(default_factory=list)
 
 
@@ -52,8 +55,26 @@ class DecisionTaxRightShare(BaseModel):
     currency: str = "DKK"
     share_ratio: float | None = None
     basis: str = ""
+    juridisk_hjemmel: str = ""
+    forudsætninger: list[str] = Field(default_factory=list)
+    kilde_trin: list[str] = Field(default_factory=list)
     status: Literal["aktiv", "konfliktende", "uafklaret"] = "uafklaret"
     note: str = ""
+
+
+class DecisionAssessmentStep(BaseModel):
+    trin_id: str = ""
+    juridisk_spoergsmaal: str = ""
+    faktagrundlag: list[str] = Field(default_factory=list)
+    resultat: Any = None
+    status: Literal["afklaret", "uafklaret", "konfliktende"] = "uafklaret"
+    tekstlinje: str = ""
+
+
+class DecisionQaBlock(BaseModel):
+    mangler: list[Any] = Field(default_factory=list)
+    konflikter: list[Any] = Field(default_factory=list)
+    risici: list[Any] = Field(default_factory=list)
 
 
 class DecisionInputQuality(BaseModel):
@@ -65,13 +86,16 @@ class SagsDecisionPackage(BaseModel):
     sagskontekst: DecisionSagskontekst = Field(default_factory=DecisionSagskontekst)
     regelprofil: DecisionRuleProfile = Field(default_factory=DecisionRuleProfile)
     konstaterede_fakta: list[DecisionFact] = Field(default_factory=list)
-    afledte_praemisser: list[str] = Field(default_factory=list)
+    afledte_praemisser: list[Any] = Field(default_factory=list)
     relevante_retskilder: list[dict[str, Any]] = Field(default_factory=list)
-    uafklarede_sporgsmaal: list[str] = Field(default_factory=list)
+    uafklarede_sporgsmaal: list[Any] = Field(default_factory=list)
     fordelingsmetode: DecisionFordelingsmetode = Field(default_factory=DecisionFordelingsmetode)
     foreloebig_beskatningsret: list[DecisionTaxRightShare] = Field(default_factory=list)
-    konflikter: list[str] = Field(default_factory=list)
-    advarsler: list[str] = Field(default_factory=list)
+    vurderingstrin: list[DecisionAssessmentStep] = Field(default_factory=list)
+    samlet_konklusion: dict[str, Any] = Field(default_factory=dict)
+    konflikter: list[Any] = Field(default_factory=list)
+    advarsler: list[Any] = Field(default_factory=list)
+    qa: DecisionQaBlock = Field(default_factory=DecisionQaBlock)
     input_kvalitet: DecisionInputQuality = Field(default_factory=DecisionInputQuality)
 
 

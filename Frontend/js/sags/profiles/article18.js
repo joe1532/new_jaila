@@ -8,15 +8,26 @@ export function createArticle18Profile() {
       { label: "SSL § 4", reason: "Globalindkomstprincip ved fuld skattepligt" },
       { label: "DBO artikel 18", reason: "Valgt artikel for pension/tilsvarende ydelser" },
     ],
-    apply({ pkg, context }) {
-      pkg.afledte_praemisser.push(
-        "Artikel 18-profil: vurderingen fokuserer på pension/tilsvarende ydelser fremfor arbejdsdagsfordeling.",
-      );
+    apply({ context }) {
+      const praemisser = [
+        "Det lægges til grund, at vurderingen sker efter DBO artikel 18.",
+      ];
+      const advarsler = [];
       if (Array.isArray(context.workdays) && context.workdays.length > 0) {
-        pkg.advarsler.push(
+        advarsler.push(
           "Arbejdsdage er oplyst, men artikel 18-profil bruger normalt ikke dagsbaseret allokering.",
         );
       }
+      return {
+        praemisser,
+        advarsler,
+        vurderingstrin: [],
+        uafklarede_sporgsmaal: [],
+        conclusion: {
+          text: "Foreløbig vurdering efter artikel 18 forudsætter yderligere afklaring af indkomsttype og kildedata.",
+          status: "foreløbig",
+        },
+      };
     },
   };
 }

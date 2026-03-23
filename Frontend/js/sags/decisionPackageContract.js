@@ -133,6 +133,77 @@ function createFact({ factKey, value, source = "ui", origin = "oplyst", certaint
   };
 }
 
+function createDecisionSignal({ key, type, status = "uafklaret", data = {} }) {
+  return {
+    key: clean(key),
+    type: clean(type),
+    status: clean(status),
+    data: data && typeof data === "object" ? data : {},
+  };
+}
+
+function appendDecisionItems(target, items) {
+  if (!Array.isArray(target) || !Array.isArray(items)) return;
+  items.forEach((item) => {
+    if (item && typeof item === "object") {
+      target.push(item);
+      return;
+    }
+    const text = clean(item);
+    if (text) {
+      target.push(text);
+    }
+  });
+}
+
+function createEmptyProfileResult() {
+  return {
+    praemisser: [],
+    vurderingstrin: [],
+    uafklarede_sporgsmaal: [],
+    advarsler: [],
+    konflikter: [],
+    foreloebig_beskatningsret: [],
+    conclusion: null,
+  };
+}
+
+function mergeProfileResult(pkg, result) {
+  const safe = result && typeof result === "object" ? result : createEmptyProfileResult();
+  if (Array.isArray(safe.praemisser)) {
+    appendDecisionItems(pkg.afledte_praemisser, safe.praemisser);
+  }
+  if (Array.isArray(safe.vurderingstrin)) {
+    safe.vurderingstrin.forEach((step) => {
+      if (step && typeof step === "object") {
+        pkg.vurderingstrin.push(step);
+      }
+    });
+  }
+  if (Array.isArray(safe.uafklarede_sporgsmaal)) {
+    appendDecisionItems(pkg.uafklarede_sporgsmaal, safe.uafklarede_sporgsmaal);
+  }
+  if (Array.isArray(safe.advarsler)) {
+    appendDecisionItems(pkg.advarsler, safe.advarsler);
+  }
+  if (Array.isArray(safe.konflikter)) {
+    appendDecisionItems(pkg.konflikter, safe.konflikter);
+  }
+  if (Array.isArray(safe.foreloebig_beskatningsret)) {
+    safe.foreloebig_beskatningsret.forEach((item) => {
+      if (item && typeof item === "object") {
+        pkg.foreloebig_beskatningsret.push(item);
+      }
+    });
+  }
+  if (safe.conclusion && typeof safe.conclusion === "object") {
+    pkg.samlet_konklusion = {
+      text: clean(safe.conclusion.text),
+      status: clean(safe.conclusion.status || "foreløbig") || "foreløbig",
+    };
+  }
+}
+
 function buildWorkdayRows(facts, period) {
   const modes = Array.isArray(facts.workCountryModes)
     ? facts.workCountryModes.map((value) => clean(value)).filter((value) => value)
@@ -204,11 +275,24 @@ export function createEmptyDecisionPackage() {
       description: "",
       basis: "",
       period: "",
+      begrundelse: "",
+      begrænsninger: [],
+      calculation: {},
       assumptions: [],
     },
     foreloebig_beskatningsret: [],
+    vurderingstrin: [],
+    samlet_konklusion: {
+      text: "",
+      status: "foreløbig",
+    },
     konflikter: [],
     advarsler: [],
+    qa: {
+      mangler: [],
+      konflikter: [],
+      risici: [],
+    },
     input_kvalitet: {
       niveau: "middel",
       begrundelse: [],
@@ -254,7 +338,10 @@ export function buildDecisionPackageFromSagsInput({ activeSubtab, factsBySubtab 
     const grossIncome = resolveGrossIncome(opgoerelseFacts);
     const employerCountry = clean(facts.employerCountry || "");
     const residenceCountry = clean(facts.residenceCountryMode || "");
+    const residenceAvailableInWorkCountry = Boolean(facts.residenceAvailableInWorkCountry);
+    const taxResidenceDenmarkFact = clean(facts.taxResidenceDenmarkFact || "");
     const contractNote = clean(facts.foreignAssetsLiabilities || "");
+    const employmentContractReceived = clean(facts.employmentContractReceived || "").toLowerCase();
     const hasArticle15Allocation = Boolean(profile.requires_day_allocation);
 
     pkg.konstaterede_fakta.push(
@@ -297,6 +384,30 @@ export function buildDecisionPackageFromSagsInput({ activeSubtab, factsBySubtab 
         status: contractNote ? "aktiv" : "uafklaret",
       }),
       createFact({
+        factKey: "employment_contract_received",
+        value: employmentContractReceived || null,
+        source: "ui",
+        origin: "oplyst",
+        certainty: employmentContractReceived ? "høj" : "lav",
+        status: employmentContractReceived ? "aktiv" : "uafklaret",
+      }),
+      createFact({
+        factKey: "residence_available_in_work_country",
+        value: residenceAvailableInWorkCountry,
+        source: "ui",
+        origin: "oplyst",
+        certainty: "middel",
+        status: "aktiv",
+      }),
+      createFact({
+        factKey: "tax_residence_denmark_fact",
+        value: taxResidenceDenmarkFact,
+        source: "ui",
+        origin: "oplyst",
+        certainty: taxResidenceDenmarkFact ? "middel" : "lav",
+        status: taxResidenceDenmarkFact ? "aktiv" : "uafklaret",
+      }),
+      createFact({
         factKey: "workdays_by_country",
         value: workdays,
         source: "ui",
@@ -322,8 +433,18 @@ export function buildDecisionPackageFromSagsInput({ activeSubtab, factsBySubtab 
       pkg.fordelingsmetode = {
         method_id: "pro_rata_workdays",
         description: "Foreløbig pro rata-fordeling efter arbejdsdage pr. land.",
-        basis: "arbejdsdage_pr_land",
+        basis: ["workdays_by_country", "gross_income_total"],
         period,
+        begrundelse: "Mere præcis fordelingsnøgle foreligger ikke i input.",
+        begrænsninger: [
+          "Ferie, rejsetid og standby er ikke særskilt oplyst.",
+        ],
+        calculation: {
+          total_days: null,
+          country_days: {},
+          ratio_by_country: {},
+          allocated_amount_by_country: {},
+        },
         assumptions: [
           "Mere præcis fordelingsnøgle foreligger ikke i input.",
         ],
@@ -331,13 +452,33 @@ export function buildDecisionPackageFromSagsInput({ activeSubtab, factsBySubtab 
     }
 
     pkg.afledte_praemisser.push(
-      "Det lægges i denne vurdering til grund, at den valgte DBO-artikel er et foreløbigt arbejdspunkt.",
-      hasArticle15Allocation
-        ? "Ved den foreløbige vurdering anvendes arbejdsdage som fordelingsnøgle."
-        : "Der er ikke valgt en artikelprofil, der udløser arbejdsdagsfordeling.",
+      createDecisionSignal({
+        key: "selected_article_is_working_hypothesis",
+        type: "assumption",
+        status: "aktiv",
+        data: {
+          article: parsedArticle.article,
+          section: parsedArticle.section,
+        },
+      }),
+      createDecisionSignal({
+        key: "allocation_method_selection",
+        type: "assumption",
+        status: hasArticle15Allocation ? "aktiv" : "uafklaret",
+        data: {
+          method_id: hasArticle15Allocation ? "pro_rata_workdays" : "",
+        },
+      }),
     );
     if (residenceCountry === "danmark") {
-      pkg.afledte_praemisser.push("Systemet behandler foreløbigt Danmark som hjemstatskandidat.");
+      pkg.afledte_praemisser.push(createDecisionSignal({
+        key: "denmark_home_state_candidate",
+        type: "assumption",
+        status: "aktiv",
+        data: {
+          residence_country: residenceCountry,
+        },
+      }));
     }
 
     profile.legal_sources.forEach((source) => {
@@ -345,8 +486,7 @@ export function buildDecisionPackageFromSagsInput({ activeSubtab, factsBySubtab 
     });
 
     if (typeof profile.apply === "function") {
-      profile.apply({
-        pkg,
+      const profileResult = profile.apply({
         context: {
           facts,
           parsedArticle,
@@ -354,35 +494,139 @@ export function buildDecisionPackageFromSagsInput({ activeSubtab, factsBySubtab 
           employerType: clean(facts.employerResidenceMode || ""),
           employerCountry,
           residenceCountry,
+          residenceAvailableInWorkCountry,
+          taxResidenceDenmarkFact,
+          employmentContractReceived,
           grossIncome,
           period,
         },
       });
+      mergeProfileResult(pkg, profileResult);
     }
 
     if (!workdays.length && hasArticle15Allocation) {
-      pkg.uafklarede_sporgsmaal.push("Arbejdsdage pr. land mangler.");
-      pkg.advarsler.push("Fordelingsmetode kan ikke anvendes uden arbejdsdage.");
+      pkg.uafklarede_sporgsmaal.push(createDecisionSignal({
+        key: "workdays_missing",
+        type: "missing_data",
+        status: "uafklaret",
+        data: {
+          field: "workdays_by_country",
+        },
+      }));
+      pkg.advarsler.push(createDecisionSignal({
+        key: "allocation_blocked_without_workdays",
+        type: "risk",
+        status: "uafklaret",
+        data: {
+          method_id: "pro_rata_workdays",
+        },
+      }));
     }
     if (!parsedArticle.article) {
-      pkg.uafklarede_sporgsmaal.push("DBO-artikel er ikke entydigt valgt.");
+      pkg.uafklarede_sporgsmaal.push(createDecisionSignal({
+        key: "article_not_selected_unambiguously",
+        type: "missing_data",
+        status: "uafklaret",
+        data: {
+          raw_input: clean(facts.incomeDboArticle || ""),
+        },
+      }));
       if (parsedArticle.candidates.length > 1) {
-        pkg.konflikter.push("Flere mulige artikelkandidater fundet i input; præcis artikelvalg er konfliktende.");
+        pkg.konflikter.push(createDecisionSignal({
+          key: "multiple_article_candidates",
+          type: "conflict",
+          status: "konfliktende",
+          data: {
+            candidates: parsedArticle.candidates,
+          },
+        }));
       }
     }
     if (!clean(facts.employerCountry || "")) {
-      pkg.uafklarede_sporgsmaal.push("Arbejdsgiverland er ikke oplyst.");
+      pkg.uafklarede_sporgsmaal.push(createDecisionSignal({
+        key: "employer_country_missing",
+        type: "missing_data",
+        status: "uafklaret",
+        data: {
+          field: "employer_residence_country",
+        },
+      }));
     }
     if (!Number.isFinite(grossIncome.amount) && hasArticle15Allocation) {
-      pkg.uafklarede_sporgsmaal.push("Samlet bruttoindkomst er ikke oplyst i struktureret felt.");
-      pkg.advarsler.push("Foreløbig fordeling kan ikke beregnes uden bruttoindkomst_total.");
+      pkg.uafklarede_sporgsmaal.push(createDecisionSignal({
+        key: "gross_income_missing",
+        type: "missing_data",
+        status: "uafklaret",
+        data: {
+          field: "gross_income_total",
+        },
+      }));
+      pkg.advarsler.push(createDecisionSignal({
+        key: "allocation_blocked_without_gross_income",
+        type: "risk",
+        status: "uafklaret",
+        data: {
+          method_id: "pro_rata_workdays",
+        },
+      }));
     }
 
     if (residenceCountry === "danmark" && employerCountry && normalizeCountryKey(employerCountry) === "danmark") {
-      pkg.konflikter.push("Bopælsland og arbejdsgiverland er begge Danmark, men arbejdsgivertype kan være udenlandsk.");
+      pkg.konflikter.push(createDecisionSignal({
+        key: "residence_and_employer_country_both_denmark",
+        type: "conflict",
+        status: "konfliktende",
+        data: {
+          residence_country: residenceCountry,
+          employer_country: employerCountry,
+          employer_type: clean(facts.employerResidenceMode || ""),
+        },
+      }));
     }
     if (contractNote && !clean(facts.employmentContractReceived || "")) {
-      pkg.konflikter.push("Der er kontraktnote, men svar på modtaget ansættelseskontrakt (Ja/Nej) mangler.");
+      pkg.konflikter.push(createDecisionSignal({
+        key: "contract_note_without_contract_received_status",
+        type: "conflict",
+        status: "konfliktende",
+        data: {
+          has_contract_note: true,
+        },
+      }));
+    }
+    if (!employmentContractReceived) {
+      pkg.uafklarede_sporgsmaal.push(createDecisionSignal({
+        key: "employment_contract_received_missing",
+        type: "missing_data",
+        status: "uafklaret",
+        data: {
+          field: "employment_contract_received",
+        },
+      }));
+    }
+    const contractEvidenceLevel = employmentContractReceived === "ja"
+      ? (contractNote ? "høj" : "middel")
+      : employmentContractReceived === "nej"
+        ? "lav"
+        : "lav";
+    pkg.advarsler.push(createDecisionSignal({
+      key: "employment_contract_evidence_level",
+      type: "risk",
+      status: contractEvidenceLevel === "høj" ? "aktiv" : "uafklaret",
+      data: {
+        evidence_level: contractEvidenceLevel,
+        contract_received: employmentContractReceived || null,
+        has_contract_note: Boolean(contractNote),
+      },
+    }));
+    if (residenceCountry === "danmark" && !taxResidenceDenmarkFact) {
+      pkg.advarsler.push(createDecisionSignal({
+        key: "tax_residence_denmark_fact_missing",
+        type: "risk",
+        status: "uafklaret",
+        data: {
+          field: "tax_residence_denmark_fact",
+        },
+      }));
     }
 
     if (hasArticle15Allocation && Number.isFinite(grossIncome.amount) && workdays.length > 0) {
@@ -390,11 +634,17 @@ export function buildDecisionPackageFromSagsInput({ activeSubtab, factsBySubtab 
       const dkKey = normalizeCountryKey("danmark");
       const employerKey = normalizeCountryKey(employerCountry);
       if (totalDays > 0) {
+        const countryDays = {};
+        const ratioByCountry = {};
+        const allocatedAmountByCountry = {};
         workdays.forEach((row) => {
           const share = Number(row.days) / totalDays;
           const allocated = Number(grossIncome.amount) * share;
           const countryKey = normalizeCountryKey(row.country);
           const isOtherCountry = countryKey !== dkKey && countryKey !== employerKey;
+          countryDays[row.country] = Number(row.days);
+          ratioByCountry[row.country] = Math.round(share * 100000) / 100000;
+          allocatedAmountByCountry[row.country] = Math.round(allocated * 100) / 100;
           pkg.foreloebig_beskatningsret.push({
             label: `Foreløbig andel for ${row.country}`,
             country: isOtherCountry ? "danmark" : row.country,
@@ -402,15 +652,48 @@ export function buildDecisionPackageFromSagsInput({ activeSubtab, factsBySubtab 
             currency: "DKK",
             share_ratio: Math.round(share * 100000) / 100000,
             basis: "pro_rata_workdays",
+            juridisk_hjemmel: parsedArticle.section
+              ? `DBO artikel 15, stk. ${parsedArticle.section}`
+              : "DBO artikel 15",
+            forudsætninger: [
+              "Arbejdsdage anvendes som foreløbig fordelingsnøgle.",
+              "Mere præcis fordelingsnøgle foreligger ikke i input.",
+            ],
+            kilde_trin: [
+              "art15_arbejdsland",
+              parsedArticle.section === 2 ? "art15_s2_arbejdsgiver" : "art15_arbejdsland",
+              "allokering_af_indkomst",
+            ],
             status: "aktiv",
             note: isOtherCountry
               ? "Arbejdsland er hverken Danmark eller arbejdsgiverland; andel allokeres foreløbigt til Danmark."
               : "",
           });
         });
+        if (pkg.fordelingsmetode && typeof pkg.fordelingsmetode === "object") {
+          pkg.fordelingsmetode.calculation = {
+            total_days: totalDays,
+            country_days: countryDays,
+            ratio_by_country: ratioByCountry,
+            allocated_amount_by_country: allocatedAmountByCountry,
+          };
+        }
       }
     }
   }
+
+  if (!clean(pkg.samlet_konklusion.text) && pkg.foreloebig_beskatningsret.length > 0) {
+    pkg.samlet_konklusion = {
+      text: "Foreløbig konklusion: Beskatningsretten fordeles efter de beregnede andele i beslutningspakken.",
+      status: "foreløbig",
+    };
+  }
+
+  pkg.qa = {
+    mangler: [...pkg.uafklarede_sporgsmaal],
+    konflikter: [...pkg.konflikter],
+    risici: [...pkg.advarsler],
+  };
 
   pkg.input_kvalitet.niveau = pkg.uafklarede_sporgsmaal.length >= 3
     ? "lav"

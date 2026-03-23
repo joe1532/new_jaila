@@ -533,7 +533,7 @@ def format_sags_decision_package_for_llm(decision_package: object | None) -> str
     if isinstance(premises, list) and premises:
         lines.append("Afledte præmisser:")
         for premise in premises[:12]:
-            text = normalize_fact_value(premise)
+            text = _format_structured_decision_item(premise)
             if text:
                 lines.append(f"- {text}")
 
@@ -557,7 +557,7 @@ def format_sags_decision_package_for_llm(decision_package: object | None) -> str
     if isinstance(unresolved, list) and unresolved:
         lines.append("Uafklarede spørgsmål:")
         for item in unresolved[:12]:
-            text = normalize_fact_value(item)
+            text = _format_structured_decision_item(item)
             if text:
                 lines.append(f"- {text}")
 
@@ -565,12 +565,15 @@ def format_sags_decision_package_for_llm(decision_package: object | None) -> str
     if isinstance(allocation, dict):
         method_id = normalize_fact_value(allocation.get("method_id"))
         description = normalize_fact_value(allocation.get("description"))
+        calculation = allocation.get("calculation")
         if method_id or description:
             lines.append("Fordelingsmetode:")
             if method_id:
                 lines.append(f"- Metode: {method_id}")
             if description:
                 lines.append(f"- Beskrivelse: {description}")
+            if isinstance(calculation, dict) and calculation:
+                lines.append("- Beregning: " + normalize_fact_value(json.dumps(calculation, ensure_ascii=False)))
 
     preliminary_tax_right = package.get("foreloebig_beskatningsret") or []
     if isinstance(preliminary_tax_right, list) and preliminary_tax_right:
@@ -585,11 +588,65 @@ def format_sags_decision_package_for_llm(decision_package: object | None) -> str
                 parts = [part for part in [country, label, basis] if part]
                 lines.append(f"- {' | '.join(parts)}")
 
+    assessment_steps = package.get("vurderingstrin") or []
+    if isinstance(assessment_steps, list) and assessment_steps:
+        lines.append("Vurderingstrin:")
+        step_priority = {
+            "art15_scope_gate": 5,
+            "art15_hjemsted_vurdering": 8,
+            "art15_arbejdsland": 10,
+            "art15_s2_dage": 20,
+            "art15_s2_arbejdsgiver": 30,
+            "art15_s2_fast_driftssted": 40,
+            "allokering_af_indkomst": 90,
+        }
+        normalized_steps = [step for step in assessment_steps if isinstance(step, dict)]
+        ordered_steps = sorted(
+            normalized_steps,
+            key=lambda step: (
+                step_priority.get(normalize_fact_value(step.get("trin_id")), 999),
+                normalize_fact_value(step.get("trin_id")),
+            ),
+        )
+        for step in ordered_steps[:20]:
+            if not isinstance(step, dict):
+                continue
+            trin_id = normalize_fact_value(step.get("trin_id"))
+            juridisk_spoergsmaal = normalize_fact_value(step.get("juridisk_spoergsmaal"))
+            status = normalize_fact_value(step.get("status"))
+            tekstlinje = normalize_fact_value(step.get("tekstlinje"))
+            faktagrundlag = step.get("faktagrundlag") or []
+            result_payload = step.get("resultat")
+            if isinstance(faktagrundlag, list):
+                clean_faktagrundlag = [normalize_fact_value(value) for value in faktagrundlag if normalize_fact_value(value)]
+            else:
+                clean_faktagrundlag = []
+            if trin_id or juridisk_spoergsmaal or tekstlinje:
+                header_parts = [part for part in [trin_id, juridisk_spoergsmaal, status] if part]
+                if header_parts:
+                    lines.append("- " + " | ".join(header_parts))
+                if tekstlinje:
+                    lines.append(f"  Tekstlinje: {tekstlinje}")
+                if clean_faktagrundlag:
+                    lines.append("  Faktagrundlag: " + ", ".join(clean_faktagrundlag))
+                if isinstance(result_payload, bool):
+                    lines.append("  Resultat: " + ("opfyldt" if result_payload else "ikke opfyldt"))
+                elif result_payload is None:
+                    lines.append("  Resultat: uafklaret")
+                elif isinstance(result_payload, dict):
+                    result_json = normalize_fact_value(json.dumps(result_payload, ensure_ascii=False))
+                    if result_json:
+                        lines.append(f"  Resultatdata: {result_json}")
+                else:
+                    payload_text = normalize_fact_value(result_payload)
+                    if payload_text:
+                        lines.append(f"  Resultat: {payload_text}")
+
     conflicts = package.get("konflikter") or []
     if isinstance(conflicts, list) and conflicts:
         lines.append("Konflikter:")
         for item in conflicts[:12]:
-            text = normalize_fact_value(item)
+            text = _format_structured_decision_item(item)
             if text:
                 lines.append(f"- {text}")
 
@@ -597,15 +654,357 @@ def format_sags_decision_package_for_llm(decision_package: object | None) -> str
     if isinstance(warnings, list) and warnings:
         lines.append("Advarsler:")
         for item in warnings[:12]:
-            text = normalize_fact_value(item)
+            text = _format_structured_decision_item(item)
             if text:
                 lines.append(f"- {text}")
+
+    qa = package.get("qa") or {}
+    if isinstance(qa, dict) and qa:
+        qa_lines: list[str] = []
+        for key in ("mangler", "konflikter", "risici"):
+            values = qa.get(key) or []
+            if not isinstance(values, list):
+                continue
+            formatted_values = [_format_structured_decision_item(value) for value in values if _format_structured_decision_item(value)]
+            if not formatted_values:
+                continue
+            qa_lines.append(f"- {key}: " + "; ".join(formatted_values))
+        if qa_lines:
+            lines.append("QA:")
+            lines.extend(qa_lines)
+
+    conclusion = package.get("samlet_konklusion") or {}
+    if isinstance(conclusion, dict):
+        conclusion_text = normalize_fact_value(conclusion.get("text"))
+        if conclusion_text:
+            lines.append("Samlet foreløbig konklusion:")
+            lines.append(f"- {conclusion_text}")
 
     if len(lines) <= 1:
         return ""
     block = "\n".join(lines)
     block, _ = truncate_text(block, MAX_SAGS_CONTEXT_CHARS)
     return block
+
+
+def _decision_package_to_dict(decision_package: object | None) -> dict[str, object]:
+    if not decision_package:
+        return {}
+    if hasattr(decision_package, "model_dump"):
+        try:
+            payload = decision_package.model_dump()
+            return payload if isinstance(payload, dict) else {}
+        except Exception:
+            return {}
+    if isinstance(decision_package, dict):
+        return decision_package
+    return {}
+
+
+def _extract_decision_fact_value(package: dict[str, object], fact_key: str) -> object:
+    facts = package.get("konstaterede_fakta")
+    if not isinstance(facts, list):
+        return None
+    for fact in facts:
+        if not isinstance(fact, dict):
+            continue
+        if normalize_fact_value(fact.get("fact_key")) != normalize_fact_value(fact_key):
+            continue
+        return fact.get("value")
+    return None
+
+
+def _format_structured_decision_item(value: object) -> str:
+    """Formatér strukturerede signaler/objekter til læsbar, deterministisk tekst."""
+    if isinstance(value, dict):
+        key = normalize_fact_value(value.get("key"))
+        item_type = normalize_fact_value(value.get("type"))
+        status = normalize_fact_value(value.get("status"))
+        data = value.get("data")
+        data_text = ""
+        if isinstance(data, dict) and data:
+            data_text = normalize_fact_value(json.dumps(data, ensure_ascii=False))
+        parts = [part for part in [key, item_type, status] if part]
+        if data_text:
+            parts.append(f"data={data_text}")
+        if parts:
+            return " | ".join(parts)
+        return normalize_fact_value(json.dumps(value, ensure_ascii=False))
+    return normalize_fact_value(value)
+
+
+def generate_letter_from_decision_package(
+    subtab: str,
+    decision_package: object | None,
+    case_facts: dict[str, object] | None,
+) -> str:
+    """Generér afgørelsestekst deterministisk fra beslutningspakke (v1: art. 15)."""
+    if str(subtab or "").strip().lower() != "beskatningsret_indkomst":
+        return ""
+    package = _decision_package_to_dict(decision_package)
+    if not package:
+        return ""
+
+    profile = package.get("regelprofil") or {}
+    if not isinstance(profile, dict):
+        return ""
+    profile_id = normalize_fact_value(profile.get("profile_id"))
+    if profile_id != "employment_article_15_s1_s2":
+        return ""
+
+    sagskontekst = package.get("sagskontekst") or {}
+    facts_list = package.get("konstaterede_fakta") or []
+    premisser = package.get("afledte_praemisser") or []
+    legal_sources = package.get("relevante_retskilder") or []
+    steps = package.get("vurderingstrin") or []
+    tax_right = package.get("foreloebig_beskatningsret") or []
+    qa = package.get("qa") or {}
+
+    selected_article = {}
+    if isinstance(sagskontekst, dict):
+        selected_article = sagskontekst.get("valgt_artikel") or {}
+    article_label = "DBO artikel 15"
+    if isinstance(selected_article, dict):
+        article = selected_article.get("article")
+        section = selected_article.get("section")
+        if article:
+            article_label = f"DBO artikel {article}"
+            if section:
+                article_label += f", stk. {section}"
+
+    factual_lines: list[str] = []
+    if isinstance(facts_list, list):
+        for fact in facts_list:
+            if not isinstance(fact, dict):
+                continue
+            key = normalize_fact_value(fact.get("fact_key"))
+            value = fact.get("value")
+            if key == "gross_income_total" and isinstance(value, dict):
+                amount = value.get("amount")
+                period = normalize_fact_value(value.get("period"))
+                amount_label = ""
+                try:
+                    if amount is not None:
+                        amount_label = f"{float(amount):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+                except Exception:
+                    amount_label = normalize_fact_value(amount)
+                if amount_label:
+                    if period:
+                        factual_lines.append(f"- Samlet bruttoindkomst ({period}): {amount_label} DKK.")
+                    else:
+                        factual_lines.append(f"- Samlet bruttoindkomst: {amount_label} DKK.")
+                continue
+            if key == "workdays_by_country" and isinstance(value, list):
+                rows = []
+                for row in value:
+                    if not isinstance(row, dict):
+                        continue
+                    country = normalize_fact_value(row.get("country"))
+                    days = row.get("days")
+                    if country and days is not None:
+                        rows.append(f"{country}: {days} dage")
+                if rows:
+                    factual_lines.append("- Arbejdsdage pr. land: " + "; ".join(rows) + ".")
+                continue
+            if key == "employment_contract_note":
+                text = normalize_fact_value(value)
+                if text:
+                    factual_lines.append(f"- Oplysninger fra ansættelseskontrakt: {text}.")
+                continue
+            if key == "employment_contract_received":
+                text = normalize_fact_value(value).lower()
+                if text == "ja":
+                    factual_lines.append("- Ansættelseskontrakt modtaget: Ja.")
+                elif text == "nej":
+                    factual_lines.append("- Ansættelseskontrakt modtaget: Nej.")
+                elif text:
+                    factual_lines.append(f"- Ansættelseskontrakt modtaget: {text}.")
+                continue
+            if key == "residence_available_in_work_country":
+                available = bool(value)
+                factual_lines.append(
+                    "- Bopæl til rådighed i arbejdsland: " + ("Ja." if available else "Nej.")
+                )
+                continue
+            if key == "tax_residence_denmark_fact":
+                text = normalize_fact_value(value)
+                if text:
+                    factual_lines.append(f"- Skattemæssigt hjemsted/Danmark (oplyst): {text}.")
+                continue
+            if key == "residence_country":
+                text = normalize_fact_value(value)
+                if text:
+                    factual_lines.append(f"- Oplyst bopælsland: {text}.")
+                continue
+            if key == "employer_residence_country":
+                text = normalize_fact_value(value)
+                if text:
+                    factual_lines.append(f"- Oplyst arbejdsgiverland: {text}.")
+
+    user_note_lines: list[str] = []
+    if isinstance(case_facts, dict):
+        contract_note = normalize_fact_value(case_facts.get("foreign_assets_liabilities"))
+        user_note = normalize_fact_value(case_facts.get("notes"))
+        if contract_note:
+            user_note_lines.append(f"- Kontraktbemærkninger: {contract_note}.")
+        if user_note:
+            user_note_lines.append(f"- Supplerende bemærkninger: {user_note}.")
+
+    assessment_lines: list[str] = []
+    if isinstance(premisser, list):
+        for item in premisser:
+            text = _format_structured_decision_item(item)
+            if text:
+                assessment_lines.append(f"- Præmis: {text}")
+    if isinstance(steps, list):
+        step_priority = {
+            "art15_scope_gate": 5,
+            "art15_hjemsted_vurdering": 8,
+            "art15_arbejdsland": 10,
+            "art15_s2_dage": 20,
+            "art15_s2_arbejdsgiver": 30,
+            "art15_s2_fast_driftssted": 40,
+            "allokering_af_indkomst": 90,
+        }
+        normalized_steps: list[dict[str, object]] = [step for step in steps if isinstance(step, dict)]
+        ordered_steps = sorted(
+            normalized_steps,
+            key=lambda step: (
+                step_priority.get(normalize_fact_value(step.get("trin_id")), 999),
+                normalize_fact_value(step.get("trin_id")),
+            ),
+        )
+        for step in ordered_steps:
+            if not isinstance(step, dict):
+                continue
+            trin_id = normalize_fact_value(step.get("trin_id"))
+            juridisk_spoergsmaal = normalize_fact_value(step.get("juridisk_spoergsmaal"))
+            status = normalize_fact_value(step.get("status"))
+            tekstlinje = normalize_fact_value(step.get("tekstlinje"))
+            faktagrundlag = step.get("faktagrundlag") or []
+            result_payload = step.get("resultat")
+            if isinstance(faktagrundlag, list):
+                clean_faktagrundlag = [normalize_fact_value(value) for value in faktagrundlag if normalize_fact_value(value)]
+            else:
+                clean_faktagrundlag = []
+
+            if trin_id or juridisk_spoergsmaal or status:
+                header_parts = [part for part in [trin_id, juridisk_spoergsmaal, status] if part]
+                if header_parts:
+                    assessment_lines.append("- " + " | ".join(header_parts))
+            if tekstlinje:
+                assessment_lines.append(f"  Tekstlinje: {tekstlinje}")
+            if clean_faktagrundlag:
+                assessment_lines.append("  Faktagrundlag: " + ", ".join(clean_faktagrundlag))
+            if isinstance(result_payload, bool):
+                assessment_lines.append("  Resultat: " + ("opfyldt" if result_payload else "ikke opfyldt"))
+            elif result_payload is None:
+                assessment_lines.append("  Resultat: uafklaret")
+            elif isinstance(result_payload, dict):
+                result_json = normalize_fact_value(json.dumps(result_payload, ensure_ascii=False))
+                if result_json:
+                    assessment_lines.append(f"  Resultatdata: {result_json}")
+            else:
+                payload_text = normalize_fact_value(result_payload)
+                if payload_text:
+                    assessment_lines.append(f"  Resultat: {payload_text}")
+    allocation_method = package.get("fordelingsmetode") or {}
+    if isinstance(allocation_method, dict):
+        calculation = allocation_method.get("calculation") or {}
+        if isinstance(calculation, dict) and calculation:
+            calc_text = normalize_fact_value(json.dumps(calculation, ensure_ascii=False))
+            if calc_text:
+                assessment_lines.append("- Fordelingsberegning (maskinmodel): " + calc_text)
+    if isinstance(tax_right, list) and tax_right:
+        assessment_lines.append("- Foreløbig beskatningsret pr. andel:")
+        for item in tax_right:
+            if not isinstance(item, dict):
+                continue
+            country = normalize_fact_value(item.get("country"))
+            amount = item.get("amount")
+            ratio = item.get("share_ratio")
+            basis = normalize_fact_value(item.get("basis"))
+            hjemmel = normalize_fact_value(item.get("juridisk_hjemmel"))
+            assumptions = item.get("forudsætninger") or []
+            source_steps = item.get("kilde_trin") or []
+            note = normalize_fact_value(item.get("note"))
+            ratio_pct = ""
+            try:
+                if ratio is not None:
+                    ratio_pct = f"{float(ratio) * 100:.2f}%".replace(".", ",")
+            except Exception:
+                ratio_pct = normalize_fact_value(ratio)
+            amount_label = ""
+            try:
+                if amount is not None:
+                    amount_label = f"{float(amount):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+            except Exception:
+                amount_label = normalize_fact_value(amount)
+            parts = [part for part in [country, amount_label + " DKK" if amount_label else "", ratio_pct, basis, hjemmel] if part]
+            if parts:
+                assessment_lines.append("  - " + " | ".join(parts))
+            if isinstance(assumptions, list) and assumptions:
+                clean_assumptions = [normalize_fact_value(value) for value in assumptions if normalize_fact_value(value)]
+                if clean_assumptions:
+                    assessment_lines.append("    Forudsætninger: " + "; ".join(clean_assumptions))
+            if isinstance(source_steps, list) and source_steps:
+                clean_steps = [normalize_fact_value(value) for value in source_steps if normalize_fact_value(value)]
+                if clean_steps:
+                    assessment_lines.append("    Kilde-trin: " + ", ".join(clean_steps))
+            if note:
+                assessment_lines.append(f"    Note: {note}")
+    if not assessment_lines:
+        assessment_lines.append("- Vurderingen kan ikke færdiggøres, da beslutningspakken mangler anvendelige vurderingstrin.")
+
+    source_lines: list[str] = []
+    if isinstance(legal_sources, list):
+        for source in legal_sources:
+            if isinstance(source, dict):
+                label = normalize_fact_value(source.get("label") or source.get("title"))
+                reason = normalize_fact_value(source.get("reason"))
+                if label and reason:
+                    source_lines.append(f"- {label} ({reason})")
+                elif label:
+                    source_lines.append(f"- {label}")
+    if not source_lines:
+        source_lines = [f"- {article_label}"]
+
+    qa_mangler = []
+    qa_konflikter = []
+    qa_risici = []
+    if isinstance(qa, dict):
+        qa_mangler = [_format_structured_decision_item(v) for v in (qa.get("mangler") or []) if _format_structured_decision_item(v)]
+        qa_konflikter = [_format_structured_decision_item(v) for v in (qa.get("konflikter") or []) if _format_structured_decision_item(v)]
+        qa_risici = [_format_structured_decision_item(v) for v in (qa.get("risici") or []) if _format_structured_decision_item(v)]
+
+    conclusion = package.get("samlet_konklusion") or {}
+    conclusion_text = ""
+    if isinstance(conclusion, dict):
+        conclusion_text = normalize_fact_value(conclusion.get("text"))
+
+    sections = [
+        "Faktiske oplysninger",
+        *(factual_lines or ["- Ingen faktiske oplysninger er overført i beslutningspakken."]),
+        "",
+        "Dine bemærkninger",
+        *(user_note_lines or ["- Ingen supplerende bemærkninger er angivet."]),
+        "",
+        "Vores bemærkninger",
+        *assessment_lines,
+        *(["- Samlet foreløbig konklusion: " + conclusion_text] if conclusion_text else []),
+        "",
+        "Retskilder",
+        *source_lines,
+        "",
+        "QA",
+        "Mangler:",
+        *(["- " + item for item in qa_mangler] if qa_mangler else ["- Ingen registrerede mangler."]),
+        "Konflikter:",
+        *(["- " + item for item in qa_konflikter] if qa_konflikter else ["- Ingen registrerede konflikter."]),
+        "Risici:",
+        *(["- " + item for item in qa_risici] if qa_risici else ["- Ingen registrerede risici."]),
+    ]
+    return "\n".join(sections).strip()
 
 
 def parse_income_years(value: object) -> list[int]:
@@ -1456,6 +1855,59 @@ def analyze(
             log_pdf_filename=log_filename,
             log_pdf_url=f"/api/logs/{log_filename}",
         )
+
+    if source_tab == "sagsbehandling" and subtab == "beskatningsret_indkomst":
+        deterministic_answer = generate_letter_from_decision_package(
+            subtab=subtab,
+            decision_package=payload.sags_decision_package,
+            case_facts=payload.case_facts or {},
+        )
+        if deterministic_answer:
+            parsed = {
+                "output_text": deterministic_answer,
+                "citations": [],
+                "retrieved_chunks": [],
+                "used_vector_store_ids": [],
+            }
+            used_model = "regelmotor-beskatningsret-art15-v1"
+            response_id = f"rule_{uuid4().hex}"
+            log_question = (
+                "Regelmotor input (beskatningsret)\n"
+                f"- source_tab: {source_tab}\n"
+                f"- subtab: {subtab}\n"
+                f"- case_facts: {json.dumps(payload.case_facts or {}, ensure_ascii=False)}\n"
+                f"- sags_decision_package: {json.dumps(_decision_package_to_dict(payload.sags_decision_package), ensure_ascii=False)}"
+            )
+            log_path = save_pdf_log(log_question, parsed, used_model)
+            if (
+                case_entry
+                and case_id
+                and case_user
+            ):
+                case_store.update_case(
+                    username=case_user,
+                    case_id=case_id,
+                    patch={
+                        "active_subtab": subtab,
+                        "subtab_outputs": {
+                            subtab: {
+                                "answer": deterministic_answer,
+                                "used_model": used_model,
+                                "response_id": response_id,
+                            }
+                        },
+                    },
+                )
+            log_filename = log_path.name
+            return AnalyzeResponse(
+                answer=deterministic_answer,
+                used_model=used_model,
+                response_id=response_id,
+                citations=[],
+                retrieval_results=[],
+                log_pdf_filename=log_filename,
+                log_pdf_url=f"/api/logs/{log_filename}",
+            )
 
     if not os.getenv("OPENAI_API_KEY"):
         raise HTTPException(status_code=500, detail="OPENAI_API_KEY mangler på server")

@@ -15,7 +15,17 @@ export function createGenericProfile(article, section) {
       { label: articleLabel, reason },
     ],
     apply() {
-      // Bevidst tom: generic-profil tilføjer kun basisreetskilder.
+      return {
+        praemisser: [],
+        vurderingstrin: [],
+        uafklarede_sporgsmaal: [],
+        advarsler: [],
+        konflikter: [],
+        conclusion: {
+          text: "Der er ikke valgt en specialiseret artikelprofil; vurderingen er foreløbig.",
+          status: "foreløbig",
+        },
+      };
     },
   };
 }

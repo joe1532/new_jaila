@@ -8,16 +8,28 @@ export function createArticle19Profile() {
       { label: "SSL § 4", reason: "Globalindkomstprincip ved fuld skattepligt" },
       { label: "DBO artikel 19", reason: "Valgt artikel for offentligt hverv/ydelse" },
     ],
-    apply({ pkg, context }) {
-      pkg.afledte_praemisser.push(
-        "Artikel 19-profil: arbejdsgivers offentlige/private karakter er central for subsumptionen.",
-      );
+    apply({ context }) {
+      const praemisser = [
+        "Det lægges til grund, at vurderingen sker efter DBO artikel 19.",
+        "Arbejdsgivers offentlige/private karakter anses for central i vurderingen.",
+      ];
+      const uafklarede_sporgsmaal = [];
       const employerType = String(context.employerType || "").trim();
       if (!employerType || employerType === "private_foreign") {
-        pkg.uafklarede_sporgsmaal.push(
+        uafklarede_sporgsmaal.push(
           "For artikel 19 bør det afklares, om arbejdsgiver er offentlig myndighed/offentligt organ.",
         );
       }
+      return {
+        praemisser,
+        uafklarede_sporgsmaal,
+        vurderingstrin: [],
+        advarsler: [],
+        conclusion: {
+          text: "Foreløbig vurdering efter artikel 19 kræver afklaring af arbejdsgivers offentlige status.",
+          status: "foreløbig",
+        },
+      };
     },
   };
 }
