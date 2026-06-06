@@ -84,6 +84,22 @@ const state = {
     retrievalResults: [],
     usedRetrievalResults: [],
   },
+  testChat: {
+    messages: [],
+    inputText: "",
+    usedModel: null,
+    previousResponseId: null,
+    contextFiles: [],
+    useVectorSearch: true,
+    usedVectorStoreIds: [],
+    vectorSearchEnabledLastResponse: false,
+    citations: [],
+    retrievalResults: [],
+    usedRetrievalResults: [],
+    savedLogs: [],
+    selectedLogId: null,
+    selectedLogContent: null,
+  },
 };
 
 function mergeObject(target, patch) {

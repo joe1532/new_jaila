@@ -36,6 +36,7 @@
         <nav class="tabs" aria-label="Hovedfaner">
           <button id="tabAnalyse" type="button" class="tab-button hidden" data-tab="analyse" aria-hidden="true">Analyse</button>
           <button id="tabChat" type="button" class="tab-button tab-button-active" data-tab="chat">Chat</button>
+          <button id="tabTest" type="button" class="tab-button" data-tab="test">Test</button>
           <button id="tabSagsbehandling" type="button" class="tab-button" data-tab="sagsbehandling">Sagsbehandling</button>
         </nav>
 
@@ -413,6 +414,53 @@
               <div class="actions">
                 <button id="chatSendBtn" type="button">Send</button>
                 <button id="chatAbortBtn" type="button" class="button-secondary" disabled>Afbryd</button>
+              </div>
+            </section>
+          </div>
+        </section>
+
+        <section id="tabPaneTest" class="tab-pane hidden">
+          <div class="chat-layout">
+            <aside class="chat-context-panel">
+              <h2>Upload kontekst til test-chat</h2>
+              <label class="label" for="testChatContextFile">Vælg fil (billede, docx, pdf, excel, md/txt)</label>
+              <input id="testChatContextFile" class="input" type="file" accept=".md,.txt,.png,.jpg,.jpeg,.webp,.docx,.pdf,.xlsx,.xls,text/markdown,text/plain,image/png,image/jpeg,image/webp,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" />
+              <div class="actions">
+                <button id="testChatContextUploadBtn" type="button" class="button-secondary">Upload</button>
+              </div>
+              <label class="chat-vector-toggle" for="testChatUseVectorSearch">
+                <input id="testChatUseVectorSearch" type="checkbox" checked />
+                Brug analyse-lignende vector search
+              </label>
+              <div class="chat-context-actions">
+                <button id="testChatResetBtn" type="button" class="button-secondary">Ny test-chat</button>
+                <button id="testChatSavePdfBtn" type="button" class="button-secondary">Gem test-chat (PDF)</button>
+              </div>
+              <div class="side-status-block">
+                <div class="status status-compact" data-connection-status>Forbindelse til database</div>
+              </div>
+              <ul id="testChatContextList" class="context-file-list">
+                <li class="context-file-item-empty">Ingen filer uploadet endnu.</li>
+              </ul>
+              <div class="analyse-divider" aria-hidden="true"></div>
+              <div class="analyse-side-log">
+                <h2>Test-chat historik</h2>
+                <div id="testChatLogContent" class="analyse-log-content"></div>
+              </div>
+            </aside>
+            <section class="result chat-main-panel">
+              <h2>Test</h2>
+              <div id="testChatConversation" class="conversation"></div>
+              <label class="label" for="testChatInput">Besked</label>
+              <textarea
+                id="testChatInput"
+                class="input"
+                rows="4"
+                placeholder="Skriv din besked til test-chat..."
+              ></textarea>
+              <div class="actions">
+                <button id="testChatSendBtn" type="button">Send</button>
+                <button id="testChatAbortBtn" type="button" class="button-secondary" disabled>Afbryd</button>
               </div>
             </section>
           </div>
