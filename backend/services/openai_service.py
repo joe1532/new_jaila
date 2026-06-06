@@ -511,6 +511,35 @@ def enforce_strict_sourcing(parsed: dict[str, Any]) -> dict[str, Any]:
     return parsed
 
 
+def extract_used_retrieval_results(parsed: dict[str, Any]) -> list[dict[str, Any]]:
+    retrieval = parsed.get("retrieved_chunks", []) or []
+    if not isinstance(retrieval, list):
+        return []
+    strict_audit = parsed.get("strict_sourcing_audit", {}) or {}
+    if not isinstance(strict_audit, dict):
+        return retrieval
+    mapping = strict_audit.get("citation_hit_mapping", []) or []
+    if not isinstance(mapping, list):
+        return retrieval
+    indices: list[int] = []
+    seen: set[int] = set()
+    for item in mapping:
+        if not isinstance(item, dict):
+            continue
+        for hit_idx in item.get("retrieval_hit_indices", []) or []:
+            if not isinstance(hit_idx, int):
+                continue
+            if hit_idx < 1 or hit_idx > len(retrieval):
+                continue
+            if hit_idx in seen:
+                continue
+            seen.add(hit_idx)
+            indices.append(hit_idx)
+    if not indices:
+        return retrieval
+    return [retrieval[idx - 1] for idx in indices if 0 < idx <= len(retrieval)]
+
+
 def analyze_question(
     client: OpenAI,
     question: str,
@@ -574,6 +603,7 @@ def analyze_question(
             else:
                 parsed = ensure_sources_section(parsed)
             parsed["used_vector_store_ids"] = selected_vector_store_ids if use_file_search else []
+            parsed["used_retrieval_results"] = extract_used_retrieval_results(parsed)
             response_id = str(get_value(resp, "id", ""))
             return parsed, model, response_id
         except Exception as exc:
@@ -659,6 +689,7 @@ def analyze_question_stream(
                     else:
                         parsed = ensure_sources_section(parsed)
                     parsed["used_vector_store_ids"] = selected_vector_store_ids if use_file_search else []
+                    parsed["used_retrieval_results"] = extract_used_retrieval_results(parsed)
                     response_id = str(get_value(resp, "id", ""))
                     log_path = save_pdf_log(log_question or question, parsed, model)
                     yield {
@@ -668,6 +699,7 @@ def analyze_question_stream(
                         "response_id": response_id,
                         "citations": parsed.get("citations", []),
                         "retrieval_results": parsed.get("retrieved_chunks", []),
+                        "used_retrieval_results": parsed.get("used_retrieval_results", []),
                         "used_vector_store_ids": selected_vector_store_ids if use_file_search else [],
                         "log_pdf_filename": log_path.name,
                         "log_pdf_url": f"/api/logs/{log_path.name}",

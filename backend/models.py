@@ -161,6 +161,14 @@ class ChatRequest(BaseModel):
         default=None,
         description="Response ID fra forrige chatkald for fortsat samtale",
     )
+    use_vector_search: bool = Field(
+        default=True,
+        description="Hvis true bruges file_search mod vector stores i chat",
+    )
+    vector_store_ids: list[str] | None = Field(
+        default=None,
+        description="Valgfri override af vector stores i chat",
+    )
 
 
 class Citation(BaseModel):
@@ -189,6 +197,11 @@ class ChatResponse(BaseModel):
     answer: str
     used_model: str
     response_id: str
+    used_vector_store_ids: list[str] = Field(default_factory=list)
+    vector_search_enabled: bool = False
+    citations: list[Citation] = Field(default_factory=list)
+    retrieval_results: list[RetrievalResult] = Field(default_factory=list)
+    used_retrieval_results: list[RetrievalResult] = Field(default_factory=list)
 
 
 class ChatMessage(BaseModel):
@@ -201,6 +214,10 @@ class ChatExportRequest(BaseModel):
         default_factory=list,
         description="Hele chatforløbet der skal eksporteres til PDF",
     )
+    citations: list[dict] = Field(default_factory=list)
+    retrieval_results: list[dict] = Field(default_factory=list)
+    used_retrieval_results: list[dict] = Field(default_factory=list)
+    used_vector_store_ids: list[str] = Field(default_factory=list)
 
 
 class ChatExportResponse(BaseModel):
@@ -220,6 +237,10 @@ class ChatLogSaveRequest(BaseModel):
         default=None,
         description="Seneste response_id for chatforløbet",
     )
+    citations: list[dict] = Field(default_factory=list)
+    retrieval_results: list[dict] = Field(default_factory=list)
+    used_retrieval_results: list[dict] = Field(default_factory=list)
+    used_vector_store_ids: list[str] = Field(default_factory=list)
 
 
 class ChatLogSaveResponse(BaseModel):
@@ -253,6 +274,10 @@ class ChatLogGetResponse(BaseModel):
     used_model: str
     last_response_id: str | None = None
     messages: list[ChatMessage] = Field(default_factory=list)
+    citations: list[dict] = Field(default_factory=list)
+    retrieval_results: list[dict] = Field(default_factory=list)
+    used_retrieval_results: list[dict] = Field(default_factory=list)
+    used_vector_store_ids: list[str] = Field(default_factory=list)
 
 
 class ChatContextFileResponse(BaseModel):

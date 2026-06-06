@@ -77,6 +77,12 @@ const state = {
     usedModel: null,
     previousResponseId: null,
     contextFiles: [],
+    useVectorSearch: true,
+    usedVectorStoreIds: [],
+    vectorSearchEnabledLastResponse: false,
+    citations: [],
+    retrievalResults: [],
+    usedRetrievalResults: [],
   },
 };
 

@@ -68,6 +68,10 @@ def save_chat_log(
     messages: list[dict],
     used_model: str,
     last_response_id: str | None = None,
+    citations: list[dict] | None = None,
+    retrieval_results: list[dict] | None = None,
+    used_retrieval_results: list[dict] | None = None,
+    used_vector_store_ids: list[str] | None = None,
 ) -> dict:
     """
     Upsert chat-log for en session.
@@ -100,6 +104,10 @@ def save_chat_log(
     ]
     if not normalized_messages:
         raise ValueError("messages er tom")
+    normalized_citations = citations or []
+    normalized_retrieval_results = retrieval_results or []
+    normalized_used_retrieval_results = used_retrieval_results or []
+    normalized_used_vector_store_ids = used_vector_store_ids or []
 
     existing_idx = next(
         (idx for idx, entry in enumerate(entries) if str(entry.get("session_id", "")).strip() == clean_session_id),
@@ -116,6 +124,10 @@ def save_chat_log(
             "messages": normalized_messages,
             "used_model": str(used_model or "").strip(),
             "last_response_id": str(last_response_id or "").strip() or None,
+            "citations": normalized_citations,
+            "retrieval_results": normalized_retrieval_results,
+            "used_retrieval_results": normalized_used_retrieval_results,
+            "used_vector_store_ids": normalized_used_vector_store_ids,
         }
         entries.insert(0, entry)
     else:
@@ -124,6 +136,10 @@ def save_chat_log(
         existing["messages"] = normalized_messages
         existing["used_model"] = str(used_model or existing.get("used_model", "")).strip()
         existing["last_response_id"] = str(last_response_id or "").strip() or existing.get("last_response_id")
+        existing["citations"] = normalized_citations
+        existing["retrieval_results"] = normalized_retrieval_results
+        existing["used_retrieval_results"] = normalized_used_retrieval_results
+        existing["used_vector_store_ids"] = normalized_used_vector_store_ids
         entry = existing
         entries.insert(0, entry)
 

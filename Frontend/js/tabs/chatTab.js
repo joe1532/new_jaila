@@ -23,6 +23,10 @@ function formatChatLogEntryAsText(entry) {
 }
 
 export function renderChat(elements, state) {
+  if (elements.chatUseVectorSearch) {
+    elements.chatUseVectorSearch.checked = state.chat.useVectorSearch !== false;
+  }
+
   if (elements.chatContextList) {
     elements.chatContextList.innerHTML = "";
     const files = state.chat.contextFiles || [];
@@ -168,6 +172,12 @@ export function getInitialChatState() {
     usedModel: null,
     previousResponseId: null,
     contextFiles: [],
+    useVectorSearch: true,
+    usedVectorStoreIds: [],
+    vectorSearchEnabledLastResponse: false,
+    citations: [],
+    retrievalResults: [],
+    usedRetrievalResults: [],
     savedLogs: [],
     selectedLogId: null,
     selectedLogContent: null,

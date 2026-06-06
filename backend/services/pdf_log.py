@@ -62,6 +62,20 @@ def save_pdf_log(question: str, parsed: dict[str, Any], used_model: str) -> Path
     heading_style.spaceBefore = 8
     heading_style.spaceAfter = 4
     mono_style = ParagraphStyle(
+        "ChatMonoLike",
+        parent=body_style,
+        fontName="Courier",
+        fontSize=9,
+        leading=11,
+    )
+    mono_style = ParagraphStyle(
+        "ChatMonoLike",
+        parent=body_style,
+        fontName="Courier",
+        fontSize=9,
+        leading=11,
+    )
+    mono_style = ParagraphStyle(
         "MonoLike",
         parent=body_style,
         fontName="Courier",
@@ -229,7 +243,14 @@ def save_pdf_log(question: str, parsed: dict[str, Any], used_model: str) -> Path
     return output_path
 
 
-def save_chat_pdf_log(messages: list[dict[str, str]], used_model: str) -> Path:
+def save_chat_pdf_log(
+    messages: list[dict[str, str]],
+    used_model: str,
+    citations: list[dict[str, str]] | None = None,
+    retrieval_results: list[dict[str, str]] | None = None,
+    used_retrieval_results: list[dict[str, str]] | None = None,
+    used_vector_store_ids: list[str] | None = None,
+) -> Path:
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     filename = f"chat_log_{timestamp}_{uuid4().hex[:8]}.pdf"
@@ -251,6 +272,13 @@ def save_chat_pdf_log(messages: list[dict[str, str]], used_model: str) -> Path:
     heading_style = styles["Heading2"]
     heading_style.spaceBefore = 8
     heading_style.spaceAfter = 4
+    mono_style = ParagraphStyle(
+        "ChatMonoLike",
+        parent=body_style,
+        fontName="Courier",
+        fontSize=9,
+        leading=11,
+    )
 
     story: list[Any] = []
     story.append(Paragraph("Chatlog", styles["Title"]))
@@ -261,6 +289,8 @@ def save_chat_pdf_log(messages: list[dict[str, str]], used_model: str) -> Path:
         )
     )
     story.append(Paragraph(f"Model brugt: {escape(used_model)}", body_style))
+    if used_vector_store_ids:
+        story.append(Paragraph(f"Vector stores: {escape(', '.join(used_vector_store_ids))}", body_style))
     story.append(Spacer(1, 8))
 
     story.append(Paragraph("Samtale", heading_style))
@@ -280,6 +310,64 @@ def save_chat_pdf_log(messages: list[dict[str, str]], used_model: str) -> Path:
             story.append(Paragraph(f"{idx}. {escape(role_label)}", heading_style))
             story.append(Paragraph(escape(text).replace("\n", "<br/>"), body_style))
             story.append(Spacer(1, 4))
+
+    story.append(Spacer(1, 6))
+    story.append(Paragraph("Anvendte kilder/chunks", heading_style))
+    citations_list = citations or []
+    used_chunks = used_retrieval_results or []
+    if citations_list:
+        for idx, citation in enumerate(citations_list, start=1):
+            filename_text = normalize_mojibake_text(citation.get("filename", "(ukendt filnavn)"))
+            file_id_text = str(citation.get("file_id", "(ukendt file_id)"))
+            story.append(
+                Paragraph(
+                    f"{idx}. {escape(filename_text)} - file_id: {escape(file_id_text)}",
+                    body_style,
+                )
+            )
+    else:
+        story.append(Paragraph("Ingen citations registreret for chatforløbet.", body_style))
+
+    story.append(Spacer(1, 4))
+    if used_chunks:
+        story.append(Paragraph("Anvendte retrieval-chunks (sporbarhed)", body_style))
+        for idx, chunk in enumerate(used_chunks, start=1):
+            chunk_file = normalize_mojibake_text(str(chunk.get("filename", "(ukendt fil)")))
+            chunk_file_id = str(chunk.get("file_id", ""))
+            chunk_score = str(chunk.get("score", ""))
+            chunk_text = normalize_mojibake_text(str(chunk.get("text", "") or "").strip())
+            story.append(
+                Paragraph(
+                    f"{idx}. {escape(chunk_file)} - file_id: {escape(chunk_file_id)} - score: {escape(chunk_score)}",
+                    body_style,
+                )
+            )
+            if chunk_text:
+                story.append(Paragraph(escape(chunk_text[:1800]).replace("\n", "<br/>"), mono_style))
+            else:
+                story.append(Paragraph("Intet chunk-uddrag registreret.", body_style))
+            story.append(Spacer(1, 3))
+    else:
+        story.append(
+            Paragraph(
+                "Ingen anvendte retrieval-chunks registreret (svar kan være uden vector search).",
+                body_style,
+            )
+        )
+
+    if retrieval_results:
+        story.append(Spacer(1, 6))
+        story.append(Paragraph("Øvrige retrieval-træf (debug)", heading_style))
+        for idx, chunk in enumerate(retrieval_results, start=1):
+            chunk_file = normalize_mojibake_text(str(chunk.get("filename", "(ukendt fil)")))
+            chunk_file_id = str(chunk.get("file_id", ""))
+            chunk_score = str(chunk.get("score", ""))
+            story.append(
+                Paragraph(
+                    f"{idx}. {escape(chunk_file)} - file_id: {escape(chunk_file_id)} - score: {escape(chunk_score)}",
+                    body_style,
+                )
+            )
 
     doc.build(story)
     return output_path

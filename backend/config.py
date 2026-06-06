@@ -301,6 +301,13 @@ Kun forhold der kan dokumenteres i kilderne må indgå.
 
 Hvis materialet er uklart eller mangelfuldt, skal dette angives.
 
+Sproglig kildehenvisning (obligatorisk)
+
+Undgå generiske formuleringer som "i materialet fremgår", "materialet viser" eller "ifølge materialet".
+
+Når du angiver et retligt udsagn eller en præmis, skal du navngive den konkrete kilde direkte i samme sætning
+(for eksempel "Efter ligningslovens § 33 A, stk. 1..." eller "Efter SKM2023.341.ØLR...").
+
 Struktur for svaret
 
 Når materialet giver grundlag for det, skal svaret opbygges således:

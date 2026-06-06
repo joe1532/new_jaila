@@ -101,6 +101,7 @@ const SAGS_SUBTAB_LABELS = {
   lempelse: "Lempelse",
   andet: "Andet",
 };
+const ENABLE_ANALYSE_TAB = false;
 
 const elements = {
   loginSection: document.getElementById("loginSection"),
@@ -138,6 +139,7 @@ const elements = {
   analyseLegalNextPageBtn: document.getElementById("analyseLegalNextPageBtn"),
   analyseLegalPreviewPageInfo: document.getElementById("analyseLegalPreviewPageInfo"),
   tabButtons: Array.from(document.querySelectorAll(".tab-button")),
+  tabAnalyse: document.getElementById("tabAnalyse"),
   tabPaneAnalyse: document.getElementById("tabPaneAnalyse"),
   tabPaneSagsbehandling: document.getElementById("tabPaneSagsbehandling"),
   tabPaneChat: document.getElementById("tabPaneChat"),
@@ -204,9 +206,34 @@ const elements = {
   chatSavePdfBtn: document.getElementById("chatSavePdfBtn"),
   chatContextFile: document.getElementById("chatContextFile"),
   chatContextUploadBtn: document.getElementById("chatContextUploadBtn"),
+  chatUseVectorSearch: document.getElementById("chatUseVectorSearch"),
   chatContextList: document.getElementById("chatContextList"),
   chatLogContent: document.getElementById("chatLogContent"),
 };
+
+function normalizeTabId(tabId) {
+  const normalized = String(tabId || "").trim();
+  if (normalized === "analyse" && !ENABLE_ANALYSE_TAB) {
+    return "chat";
+  }
+  if (normalized === "analyse" || normalized === "sagsbehandling" || normalized === "chat") {
+    return normalized;
+  }
+  return "chat";
+}
+
+function applyTabAvailability() {
+  if (!ENABLE_ANALYSE_TAB) {
+    if (elements.tabAnalyse) {
+      elements.tabAnalyse.classList.add("hidden");
+      elements.tabAnalyse.setAttribute("aria-hidden", "true");
+    }
+    if (elements.tabPaneAnalyse) {
+      elements.tabPaneAnalyse.classList.add("hidden");
+      elements.tabPaneAnalyse.setAttribute("aria-hidden", "true");
+    }
+  }
+}
 
 function renderStatus() {
   if (!elements.statusTargets || !elements.statusTargets.length) {
@@ -330,12 +357,13 @@ function renderAllTabs() {
 }
 
 function switchTab(tabId) {
+  const safeTabId = normalizeTabId(tabId);
   setState({
     ui: {
-      activeTab: tabId,
+      activeTab: safeTabId,
     },
   });
-  setActiveTab(tabId);
+  setActiveTab(safeTabId);
 
   const state = getState();
   const paneMap = {
@@ -348,6 +376,10 @@ function switchTab(tabId) {
     if (!pane) {
       return;
     }
+    if (key === "analyse" && !ENABLE_ANALYSE_TAB) {
+      pane.classList.add("hidden");
+      return;
+    }
     pane.classList.toggle("hidden", key !== state.ui.activeTab);
   });
 
@@ -356,11 +388,11 @@ function switchTab(tabId) {
     btn.classList.toggle("tab-button-active", isActive);
   });
 
-  if (tabId === "analyse") {
+  if (safeTabId === "analyse") {
     loadAnalyseSavedLogs();
-  } else if (tabId === "chat") {
+  } else if (safeTabId === "chat") {
     loadChatSavedLogs();
-  } else if (tabId === "sagsbehandling") {
+  } else if (safeTabId === "sagsbehandling") {
     refreshSagsCases();
   }
 }
@@ -401,7 +433,7 @@ function showApp(user) {
   refreshSagsCases();
   loadLegalBasisForSubtab(getState().sagsbehandling.activeSubtab || "skattepligt_ligningsfrist");
   renderStatus();
-  setStatus("Klar til analyse.", "ok");
+  setStatus("Klar.", "ok");
   if (user === "allan") {
     setTimeout(showWelcomeModalForAllan, 50);
   }
@@ -620,6 +652,10 @@ function loadChatFromLogEntry(entry) {
       messages,
       previousResponseId: entry?.last_response_id || null,
       usedModel: entry?.used_model || null,
+      citations: Array.isArray(entry?.citations) ? entry.citations : [],
+      retrievalResults: Array.isArray(entry?.retrieval_results) ? entry.retrieval_results : [],
+      usedRetrievalResults: Array.isArray(entry?.used_retrieval_results) ? entry.used_retrieval_results : [],
+      usedVectorStoreIds: Array.isArray(entry?.used_vector_store_ids) ? entry.used_vector_store_ids : [],
       selectedLogId: null,
       selectedLogContent: null,
       inputText: "",
@@ -864,6 +900,7 @@ function resetChat() {
   const initialChat = getInitialChatState();
   initialChat.contextFiles = currentContextFiles;
   initialChat.savedLogs = prev.savedLogs || [];
+  initialChat.useVectorSearch = prev.useVectorSearch !== false;
   setState({ chat: initialChat });
   renderChat(elements, getState());
 }
@@ -2525,8 +2562,14 @@ async function runChat() {
   const useStream = true;
   try {
     const previousResponseId = getState().chat.previousResponseId;
+    const useVectorSearch = getState().chat.useVectorSearch !== false;
     const sessionId = getOrCreateChatSessionId();
-    const opts = { signal: chatAbortController.signal };
+    const opts = {
+      signal: chatAbortController.signal,
+      context: {
+        useVectorSearch,
+      },
+    };
     if (useStream) {
       addChatMessage("assistant", "");
       renderChat(elements, getState());
@@ -2541,11 +2584,19 @@ async function runChat() {
             chat: {
               previousResponseId: evt.response_id || null,
               usedModel: evt.used_model || null,
+              usedVectorStoreIds: Array.isArray(evt.used_vector_store_ids) ? evt.used_vector_store_ids : [],
+              vectorSearchEnabledLastResponse: Boolean(evt.vector_search_enabled),
+              citations: Array.isArray(evt.citations) ? evt.citations : [],
+              retrievalResults: Array.isArray(evt.retrieval_results) ? evt.retrieval_results : [],
+              usedRetrievalResults: Array.isArray(evt.used_retrieval_results)
+                ? evt.used_retrieval_results
+                : (Array.isArray(evt.retrieval_results) ? evt.retrieval_results : []),
             },
           });
           updateLastChatMessageText(evt.answer || accumulated || "Intet svar returneret.");
           renderChat(elements, getState());
-          setStatus("Chat svar modtaget. Model: " + (evt.used_model || "ukendt"), "ok");
+          const modeLabel = evt.vector_search_enabled ? "vector search: aktiv" : "vector search: inaktiv";
+          setStatus("Chat svar modtaget. Model: " + (evt.used_model || "ukendt") + " (" + modeLabel + ")", "ok");
           const user = getActiveUser();
           if (user) {
             const snapshotMessages = getState().chat.messages || [];
@@ -2555,6 +2606,14 @@ async function runChat() {
               snapshotMessages,
               evt.used_model || "",
               evt.response_id || null,
+              {
+                citations: Array.isArray(evt.citations) ? evt.citations : [],
+                retrievalResults: Array.isArray(evt.retrieval_results) ? evt.retrieval_results : [],
+                usedRetrievalResults: Array.isArray(evt.used_retrieval_results)
+                  ? evt.used_retrieval_results
+                  : (Array.isArray(evt.retrieval_results) ? evt.retrieval_results : []),
+                usedVectorStoreIds: Array.isArray(evt.used_vector_store_ids) ? evt.used_vector_store_ids : [],
+              },
             )
               .then((saved) => {
                 const prev = getState().chat || {};
@@ -2579,10 +2638,18 @@ async function runChat() {
         chat: {
           previousResponseId: data.response_id || null,
           usedModel: data.used_model || null,
+          usedVectorStoreIds: Array.isArray(data.used_vector_store_ids) ? data.used_vector_store_ids : [],
+          vectorSearchEnabledLastResponse: Boolean(data.vector_search_enabled),
+          citations: Array.isArray(data.citations) ? data.citations : [],
+          retrievalResults: Array.isArray(data.retrieval_results) ? data.retrieval_results : [],
+          usedRetrievalResults: Array.isArray(data.used_retrieval_results)
+            ? data.used_retrieval_results
+            : (Array.isArray(data.retrieval_results) ? data.retrieval_results : []),
         },
       });
       addChatMessage("assistant", data.answer || "Intet svar returneret.");
-      setStatus("Chat svar modtaget. Model: " + (data.used_model || "ukendt"), "ok");
+      const modeLabel = data.vector_search_enabled ? "vector search: aktiv" : "vector search: inaktiv";
+      setStatus("Chat svar modtaget. Model: " + (data.used_model || "ukendt") + " (" + modeLabel + ")", "ok");
       const user = getActiveUser();
       if (user) {
         const snapshotMessages = getState().chat.messages || [];
@@ -2592,6 +2659,14 @@ async function runChat() {
           snapshotMessages,
           data.used_model || "",
           data.response_id || null,
+          {
+            citations: Array.isArray(data.citations) ? data.citations : [],
+            retrievalResults: Array.isArray(data.retrieval_results) ? data.retrieval_results : [],
+            usedRetrievalResults: Array.isArray(data.used_retrieval_results)
+              ? data.used_retrieval_results
+              : (Array.isArray(data.retrieval_results) ? data.retrieval_results : []),
+            usedVectorStoreIds: Array.isArray(data.used_vector_store_ids) ? data.used_vector_store_ids : [],
+          },
         )
           .then((saved) => {
             const prev = getState().chat || {};
@@ -2721,7 +2796,13 @@ async function saveChatToPdf() {
   setStatus("Genererer chat-PDF...", "ok");
   try {
     const sessionId = getOrCreateChatSessionId();
-    const data = await exportChatPdf(messages, sessionId);
+    const chatState = getState().chat || {};
+    const data = await exportChatPdf(messages, sessionId, {
+      citations: chatState.citations || [],
+      retrievalResults: chatState.retrievalResults || [],
+      usedRetrievalResults: chatState.usedRetrievalResults || [],
+      usedVectorStoreIds: chatState.usedVectorStoreIds || [],
+    });
     const link = document.createElement("a");
     link.href = data.log_pdf_url || "#";
     link.download = data.log_pdf_filename || "chat_log.pdf";
@@ -2795,7 +2876,7 @@ function bindEvents() {
 
   elements.tabButtons.forEach((btn) => {
     btn.addEventListener("click", () => {
-      switchTab(btn.dataset.tab || "analyse");
+      switchTab(btn.dataset.tab || "chat");
     });
   });
 
@@ -3418,6 +3499,24 @@ function bindEvents() {
 
       event.preventDefault();
       uploadContextFile(candidateFiles[0], "paste");
+    });
+  }
+
+  if (elements.chatUseVectorSearch) {
+    elements.chatUseVectorSearch.addEventListener("change", () => {
+      const enabled = Boolean(elements.chatUseVectorSearch.checked);
+      setState({
+        chat: {
+          useVectorSearch: enabled,
+        },
+      });
+      renderChat(elements, getState());
+      setStatus(
+        enabled
+          ? "Chat vector search er aktiveret."
+          : "Chat vector search er deaktiveret.",
+        "ok",
+      );
     });
   }
 
@@ -4459,9 +4558,10 @@ function bindEvents() {
 }
 
 function init() {
+  applyTabAvailability();
   setState({
     ui: {
-      activeTab: getActiveTab("chat"),
+      activeTab: normalizeTabId(getActiveTab("chat")),
     },
   });
   bindEvents();

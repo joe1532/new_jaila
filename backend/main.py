@@ -20,8 +20,10 @@ from openai import OpenAI
 from pypdf import PdfReader
 
 from backend.config import (
+    ANSWER_INSTRUCTIONS,
     BASE_DIR,
     CHAT_INSTRUCTIONS,
+    FALLBACK_MODEL,
     LOG_DIR,
     PRIMARY_MODEL,
     PROMPT_CACHE_KEY_CHAT,
@@ -32,6 +34,7 @@ from backend.config import (
     SAGSBEHANDLING_MODELS,
     SAGSBEHANDLING_PROMPTS,
     SAGSBEHANDLING_VECTOR_STORES,
+    VECTOR_STORE_IDS,
     get_allowed_origins,
 )
 from backend.models import (
@@ -68,7 +71,11 @@ from backend.services.analyse_logs import (
 )
 from backend.services.chat_logs import delete_chat_log, get_chat_log, list_chat_logs, save_chat_log
 from backend.services.case_store import get_case_store
-from backend.services.openai_service import analyze_question, analyze_question_stream
+from backend.services.openai_service import (
+    analyze_question,
+    analyze_question_stream,
+    select_vector_store_ids_for_query,
+)
 from backend.services.pdf_log import save_chat_pdf_log, save_pdf_log
 
 
@@ -1373,6 +1380,10 @@ def default_seed_marker_path(session_dir: Path) -> Path:
     return session_dir / ".default_seeded"
 
 
+def chat_last_sources_path(session_dir: Path) -> Path:
+    return session_dir / ".last_sources.json"
+
+
 def list_chat_context_ids(session_id: str) -> list[str]:
     session_dir = get_session_dir(session_id)
     if not session_dir.exists():
@@ -1470,7 +1481,61 @@ def build_chat_context_list_response(session_id: str) -> ChatContextListResponse
     return ChatContextListResponse(files=files)
 
 
-def load_chat_context_text(session_id: str) -> str:
+def is_default_skriveguide_meta(meta: dict) -> bool:
+    filename = str(meta.get("filename", "")).strip().lower()
+    extraction_note = str(meta.get("extraction_note", "")).strip().lower()
+    return filename == "skriveguide.md" and "default skriveguide" in extraction_note
+
+
+def save_chat_last_sources(
+    session_id: str,
+    *,
+    citations: list[dict] | None = None,
+    retrieval_results: list[dict] | None = None,
+    used_retrieval_results: list[dict] | None = None,
+    used_vector_store_ids: list[str] | None = None,
+) -> None:
+    session_dir = get_session_dir(session_id)
+    session_dir.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "citations": citations or [],
+        "retrieval_results": retrieval_results or [],
+        "used_retrieval_results": used_retrieval_results or [],
+        "used_vector_store_ids": used_vector_store_ids or [],
+    }
+    try:
+        chat_last_sources_path(session_dir).write_text(
+            json.dumps(payload, ensure_ascii=False),
+            encoding="utf-8",
+        )
+    except Exception:
+        pass
+
+
+def load_chat_last_sources(session_id: str) -> dict[str, list]:
+    session_dir = get_session_dir(session_id)
+    path = chat_last_sources_path(session_dir)
+    empty = {
+        "citations": [],
+        "retrieval_results": [],
+        "used_retrieval_results": [],
+        "used_vector_store_ids": [],
+    }
+    if not path.exists():
+        return empty
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return empty
+    return {
+        "citations": data.get("citations", []) or [],
+        "retrieval_results": data.get("retrieval_results", []) or [],
+        "used_retrieval_results": data.get("used_retrieval_results", []) or [],
+        "used_vector_store_ids": data.get("used_vector_store_ids", []) or [],
+    }
+
+
+def load_chat_context_text(session_id: str, include_default_skriveguide: bool = True) -> str:
     ensure_default_guide_context_for_session(session_id)
     session_dir = get_session_dir(session_id)
     context_ids = list_chat_context_ids(session_id)
@@ -1480,6 +1545,8 @@ def load_chat_context_text(session_id: str) -> str:
     total_chars = 0
     for context_id in context_ids:
         meta = load_context_meta(session_dir, context_id)
+        if not include_default_skriveguide and is_default_skriveguide_meta(meta):
+            continue
         filename = str(meta.get("filename", "ukendt_fil"))
         file_type = str(meta.get("file_type", "ukendt"))
         try:
@@ -2367,8 +2434,87 @@ def chat(
 
     try:
         client = OpenAI()
-        context_text = load_chat_context_text(session_id)
         chat_instructions = CHAT_INSTRUCTIONS
+        requested_vector_store_ids = payload.vector_store_ids or list(VECTOR_STORE_IDS)
+        cleaned_vector_store_ids: list[str] = []
+        for store_id in requested_vector_store_ids:
+            clean_store_id = str(store_id or "").strip()
+            if not clean_store_id or clean_store_id in cleaned_vector_store_ids:
+                continue
+            cleaned_vector_store_ids.append(clean_store_id)
+        selected_vector_store_ids: list[str] = []
+        vector_search_enabled = bool(payload.use_vector_search)
+        if vector_search_enabled:
+            if not cleaned_vector_store_ids:
+                vector_search_enabled = False
+            else:
+                selected_vector_store_ids = select_vector_store_ids_for_query(
+                    client=client,
+                    question=message,
+                    vector_store_ids=cleaned_vector_store_ids,
+                )
+                if not selected_vector_store_ids:
+                    vector_search_enabled = False
+        context_text = load_chat_context_text(
+            session_id,
+            include_default_skriveguide=not vector_search_enabled,
+        )
+        vector_question = message
+        chat_citations: list[dict[str, str]] = []
+        chat_retrieval_results: list[dict[str, str]] = []
+        chat_used_retrieval_results: list[dict[str, str]] = []
+
+        def _extract_used_retrieval_results(parsed: dict[str, object]) -> list[dict[str, str]]:
+            retrieval = parsed.get("retrieved_chunks", []) if isinstance(parsed, dict) else []
+            if not isinstance(retrieval, list):
+                return []
+            strict_audit = parsed.get("strict_sourcing_audit", {}) if isinstance(parsed, dict) else {}
+            if not isinstance(strict_audit, dict):
+                return retrieval  # type: ignore[return-value]
+            mapping = strict_audit.get("citation_hit_mapping", [])
+            if not isinstance(mapping, list):
+                return retrieval  # type: ignore[return-value]
+            indices: list[int] = []
+            seen: set[int] = set()
+            for item in mapping:
+                if not isinstance(item, dict):
+                    continue
+                for hit_idx in item.get("retrieval_hit_indices", []) or []:
+                    if not isinstance(hit_idx, int):
+                        continue
+                    if hit_idx < 1 or hit_idx > len(retrieval):
+                        continue
+                    if hit_idx in seen:
+                        continue
+                    seen.add(hit_idx)
+                    indices.append(hit_idx)
+            if not indices:
+                return retrieval  # type: ignore[return-value]
+            return [retrieval[idx - 1] for idx in indices if 0 < idx <= len(retrieval)]  # type: ignore[return-value]
+        vector_chat_format_instructions = (
+            ANSWER_INSTRUCTIONS
+            + "\n\n"
+            + "Outputformat i chat (gælder kun præsentation):\n"
+            + "- Svar i et naturligt chat-format med en kort, direkte konklusion først.\n"
+            + "- Undgå faste afsnitsoverskrifter som 'Faktiske forhold', 'Retsgrundlag', 'Vurdering' og 'Resultat'.\n"
+            + "- Hold svaret kompakt og let at læse i chat: korte afsnit eller punktform, kun når det hjælper.\n"
+            + "- Når der mangler kildedækning, sig det tydeligt og konkret.\n"
+            + "- Bevar stadig absolut kildekrav, præcision og dokumenterbarhed som ovenfor.\n"
+        )
+        if vector_search_enabled and context_text:
+            vector_question = (
+                message
+                + "\n\n---\n"
+                + "[Uploadet lokal kontekst fra bruger]\n"
+                + context_text
+                + "\n[/Uploadet lokal kontekst]\n"
+                + "---\n"
+                + "Behandl den uploadede kontekst som sagens faktiske oplysninger (A). "
+                + "Identificér dernæst relevante retskilder fra file_search (B), "
+                + "og foretag derefter subsumption, hvor B anvendes på A for at nå en konklusion (C). "
+                + "Hvis kilderne ikke giver grundlag for at vurdere et faktum eller en delkonklusion, "
+                + "skal du tydeligt angive dette."
+            )
         if context_text:
             chat_instructions = (
                 CHAT_INSTRUCTIONS
@@ -2379,44 +2525,112 @@ def chat(
         if stream:
             def chat_gen():
                 try:
-                    req = {
-                        "model": PRIMARY_MODEL,
-                        "instructions": chat_instructions,
-                        "input": message,
-                        "reasoning": {"effort": REASONING_EFFORT_CHAT},
-                        "prompt_cache_key": PROMPT_CACHE_KEY_CHAT,
-                        "prompt_cache_retention": PROMPT_CACHE_RETENTION,
-                        "stream": True,
-                    }
-                    if payload.previous_response_id:
-                        req["previous_response_id"] = payload.previous_response_id
-                    t0 = time.perf_counter()
-                    stream_resp = client.responses.create(**req)
-                    for event in stream_resp:
-                        ev_type = getattr(event, "type", None) or (event.get("type") if isinstance(event, dict) else None)
-                        if ev_type == "response.output_text.delta":
-                            delta = getattr(event, "delta", None) or (event.get("delta", "") if isinstance(event, dict) else "")
-                            if delta:
-                                yield _sse_line({"type": "delta", "text": delta})
-                        elif ev_type == "response.completed":
-                            resp_obj = getattr(event, "response", None) or (event.get("response") if isinstance(event, dict) else None)
-                            duration_ms = (time.perf_counter() - t0) * 1000
-                            answer = str(getattr(resp_obj, "output_text", "") or "") if resp_obj else ""
-                            response_id = str(getattr(resp_obj, "id", "") or "") if resp_obj else ""
-                            usage = getattr(resp_obj, "usage", None) if resp_obj else None
-                            inp_tok = getattr(usage, "input_tokens", 0) if usage else 0
-                            out_tok = getattr(usage, "output_tokens", 0) if usage else 0
-                            req_id = getattr(resp_obj, "_request_id", None) if resp_obj else None
-                            _log.info(
-                                "perf flow=chat model=%s duration_ms=%.0f x_request_id=%s input_tokens=%s output_tokens=%s",
-                                PRIMARY_MODEL, duration_ms, req_id or "?", inp_tok, out_tok,
-                            )
-                            yield _sse_line({
-                                "type": "done",
-                                "answer": answer.strip(),
-                                "used_model": PRIMARY_MODEL,
-                                "response_id": response_id,
-                            })
+                    def stream_without_vector(notice_prefix: str = ""):
+                        req = {
+                            "model": PRIMARY_MODEL,
+                            "instructions": chat_instructions,
+                            "input": message,
+                            "reasoning": {"effort": REASONING_EFFORT_CHAT},
+                            "prompt_cache_key": PROMPT_CACHE_KEY_CHAT,
+                            "prompt_cache_retention": PROMPT_CACHE_RETENTION,
+                            "stream": True,
+                        }
+                        if payload.previous_response_id:
+                            req["previous_response_id"] = payload.previous_response_id
+                        t0 = time.perf_counter()
+                        stream_resp = client.responses.create(**req)
+                        accumulated = notice_prefix or ""
+                        if notice_prefix:
+                            yield _sse_line({"type": "delta", "text": notice_prefix})
+                        for event in stream_resp:
+                            ev_type = getattr(event, "type", None) or (event.get("type") if isinstance(event, dict) else None)
+                            if ev_type == "response.output_text.delta":
+                                delta = getattr(event, "delta", None) or (event.get("delta", "") if isinstance(event, dict) else "")
+                                if delta:
+                                    accumulated += delta
+                                    yield _sse_line({"type": "delta", "text": delta})
+                            elif ev_type == "response.completed":
+                                resp_obj = getattr(event, "response", None) or (event.get("response") if isinstance(event, dict) else None)
+                                duration_ms = (time.perf_counter() - t0) * 1000
+                                answer = str(getattr(resp_obj, "output_text", "") or "") if resp_obj else ""
+                                response_id = str(getattr(resp_obj, "id", "") or "") if resp_obj else ""
+                                usage = getattr(resp_obj, "usage", None) if resp_obj else None
+                                inp_tok = getattr(usage, "input_tokens", 0) if usage else 0
+                                out_tok = getattr(usage, "output_tokens", 0) if usage else 0
+                                req_id = getattr(resp_obj, "_request_id", None) if resp_obj else None
+                                _log.info(
+                                    "perf flow=chat model=%s duration_ms=%.0f x_request_id=%s input_tokens=%s output_tokens=%s vector_search_enabled=%s vector_store_count=%s",
+                                    PRIMARY_MODEL, duration_ms, req_id or "?", inp_tok, out_tok, False, 0,
+                                )
+                                final_answer = (notice_prefix + answer).strip() if notice_prefix else answer.strip()
+                                save_chat_last_sources(
+                                    session_id,
+                                    citations=[],
+                                    retrieval_results=[],
+                                    used_retrieval_results=[],
+                                    used_vector_store_ids=[],
+                                )
+                                yield _sse_line({
+                                    "type": "done",
+                                    "answer": final_answer,
+                                    "used_model": PRIMARY_MODEL,
+                                    "response_id": response_id,
+                                    "used_vector_store_ids": [],
+                                    "vector_search_enabled": False,
+                                })
+                                return
+
+                    if vector_search_enabled:
+                        # Når vector search er aktiv i chat, bruges samme retrieval/sourcing-regler
+                        # som i analyse (parse/strict-sourcing m.m.) med analyse-prompt 1:1.
+                        for evt in analyze_question_stream(
+                            client=client,
+                            question=vector_question,
+                            log_question=vector_question,
+                            previous_response_id=payload.previous_response_id,
+                            vector_store_ids=selected_vector_store_ids,
+                            instructions=vector_chat_format_instructions,
+                            models_to_try=[PRIMARY_MODEL, FALLBACK_MODEL],
+                            reasoning_effort=REASONING_EFFORT_CHAT,
+                            prompt_cache_key=PROMPT_CACHE_KEY_CHAT,
+                            use_file_search=True,
+                        ):
+                            if evt.get("type") == "delta":
+                                yield _sse_line({"type": "delta", "text": evt.get("text", "")})
+                                continue
+                            if evt.get("type") == "done":
+                                chat_citations[:] = evt.get("citations", []) or []
+                                chat_retrieval_results[:] = evt.get("retrieval_results", []) or []
+                                chat_used_retrieval_results[:] = (
+                                    evt.get("used_retrieval_results", []) or chat_retrieval_results
+                                )
+                                save_chat_last_sources(
+                                    session_id,
+                                    citations=chat_citations,
+                                    retrieval_results=chat_retrieval_results,
+                                    used_retrieval_results=chat_used_retrieval_results,
+                                    used_vector_store_ids=evt.get("used_vector_store_ids", []),
+                                )
+                                yield _sse_line(
+                                    {
+                                        "type": "done",
+                                        "answer": str(evt.get("answer", "") or "").strip(),
+                                        "used_model": evt.get("used_model", PRIMARY_MODEL),
+                                        "response_id": evt.get("response_id", ""),
+                                        "used_vector_store_ids": evt.get("used_vector_store_ids", []),
+                                        "vector_search_enabled": True,
+                                        "citations": chat_citations,
+                                        "retrieval_results": chat_retrieval_results,
+                                        "used_retrieval_results": chat_used_retrieval_results,
+                                    }
+                                )
+                                return
+                            if evt.get("type") == "error":
+                                yield _sse_line({"type": "error", "detail": str(evt.get("detail", "Ukendt fejl"))})
+                                return
+                    else:
+                        for fallback_evt in stream_without_vector():
+                            yield fallback_evt
                 except Exception as exc:
                     yield _sse_line({"type": "error", "detail": str(exc)})
 
@@ -2426,41 +2640,73 @@ def chat(
                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
             )
 
-        request_payload: dict[str, object] = {
-            "model": PRIMARY_MODEL,
-            "instructions": chat_instructions,
-            "input": message,
-            "reasoning": {"effort": REASONING_EFFORT_CHAT},
-            "prompt_cache_key": PROMPT_CACHE_KEY_CHAT,
-            "prompt_cache_retention": PROMPT_CACHE_RETENTION,
-        }
-        if payload.previous_response_id:
-            request_payload["previous_response_id"] = payload.previous_response_id
-        t0 = time.perf_counter()
-        resp = client.responses.create(**request_payload)
-        duration_ms = (time.perf_counter() - t0) * 1000
-        answer = str(getattr(resp, "output_text", "") or "").strip()
-        response_id = str(getattr(resp, "id", "") or "")
-        usage = getattr(resp, "usage", None)
-        input_tokens = getattr(usage, "input_tokens", 0) if usage else 0
-        output_tokens = getattr(usage, "output_tokens", 0) if usage else 0
-        req_id = getattr(resp, "_request_id", None)
-        _log.info(
-            "perf flow=chat model=%s duration_ms=%.0f x_request_id=%s input_tokens=%s output_tokens=%s reasoning_effort=%s",
-            PRIMARY_MODEL,
-            duration_ms,
-            req_id or "?",
-            input_tokens,
-            output_tokens,
-            REASONING_EFFORT_CHAT,
+        if vector_search_enabled:
+            parsed, used_model, response_id = analyze_question(
+                client=client,
+                question=vector_question,
+                previous_response_id=payload.previous_response_id,
+                vector_store_ids=selected_vector_store_ids,
+                instructions=vector_chat_format_instructions,
+                models_to_try=[PRIMARY_MODEL, FALLBACK_MODEL],
+                reasoning_effort=REASONING_EFFORT_CHAT,
+                prompt_cache_key=PROMPT_CACHE_KEY_CHAT,
+                use_file_search=True,
+            )
+            answer = str(parsed.get("output_text", "") or "").strip()
+            chat_citations = parsed.get("citations", []) or []
+            chat_retrieval_results = parsed.get("retrieved_chunks", []) or []
+            chat_used_retrieval_results = _extract_used_retrieval_results(parsed)
+        else:
+            request_payload: dict[str, object] = {
+                "model": PRIMARY_MODEL,
+                "instructions": chat_instructions,
+                "input": message,
+                "reasoning": {"effort": REASONING_EFFORT_CHAT},
+                "prompt_cache_key": PROMPT_CACHE_KEY_CHAT,
+                "prompt_cache_retention": PROMPT_CACHE_RETENTION,
+            }
+            if payload.previous_response_id:
+                request_payload["previous_response_id"] = payload.previous_response_id
+            t0 = time.perf_counter()
+            resp = client.responses.create(**request_payload)
+            duration_ms = (time.perf_counter() - t0) * 1000
+            answer = str(getattr(resp, "output_text", "") or "").strip()
+            response_id = str(getattr(resp, "id", "") or "")
+            usage = getattr(resp, "usage", None)
+            input_tokens = getattr(usage, "input_tokens", 0) if usage else 0
+            output_tokens = getattr(usage, "output_tokens", 0) if usage else 0
+            req_id = getattr(resp, "_request_id", None)
+            _log.info(
+                "perf flow=chat model=%s duration_ms=%.0f x_request_id=%s input_tokens=%s output_tokens=%s reasoning_effort=%s vector_search_enabled=%s vector_store_count=%s",
+                PRIMARY_MODEL,
+                duration_ms,
+                req_id or "?",
+                input_tokens,
+                output_tokens,
+                REASONING_EFFORT_CHAT,
+                False,
+                0,
+            )
+            used_model = PRIMARY_MODEL
+        save_chat_last_sources(
+            session_id,
+            citations=chat_citations,
+            retrieval_results=chat_retrieval_results,
+            used_retrieval_results=chat_used_retrieval_results,
+            used_vector_store_ids=selected_vector_store_ids if vector_search_enabled else [],
         )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Chat fejlede: {exc}") from exc
 
     return ChatResponse(
         answer=answer or "Intet svar returneret.",
-        used_model=PRIMARY_MODEL,
+        used_model=used_model,
         response_id=response_id,
+        used_vector_store_ids=selected_vector_store_ids if vector_search_enabled else [],
+        vector_search_enabled=vector_search_enabled,
+        citations=chat_citations,
+        retrieval_results=chat_retrieval_results,
+        used_retrieval_results=chat_used_retrieval_results,
     )
 
 
@@ -2469,7 +2715,7 @@ def export_chat_pdf(
     payload: ChatExportRequest,
     x_chat_session_id: str | None = Header(default=None, alias="X-Chat-Session-Id"),
 ) -> ChatExportResponse:
-    get_session_id(x_chat_session_id)
+    session_id = get_session_id(x_chat_session_id)
     messages = [
         {"role": msg.role.strip(), "text": msg.text.strip()}
         for msg in payload.messages
@@ -2478,8 +2724,21 @@ def export_chat_pdf(
     if not messages:
         raise HTTPException(status_code=400, detail="Der er ingen chatbeskeder at gemme")
 
+    fallback_sources = load_chat_last_sources(session_id)
+    citations = payload.citations or fallback_sources.get("citations", [])
+    retrieval_results = payload.retrieval_results or fallback_sources.get("retrieval_results", [])
+    used_retrieval_results = payload.used_retrieval_results or fallback_sources.get("used_retrieval_results", [])
+    used_vector_store_ids = payload.used_vector_store_ids or fallback_sources.get("used_vector_store_ids", [])
+
     try:
-        log_path = save_chat_pdf_log(messages, PRIMARY_MODEL)
+        log_path = save_chat_pdf_log(
+            messages=messages,
+            used_model=PRIMARY_MODEL,
+            citations=citations,
+            retrieval_results=retrieval_results,
+            used_retrieval_results=used_retrieval_results,
+            used_vector_store_ids=used_vector_store_ids,
+        )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Kunne ikke gemme chat-PDF: {exc}") from exc
 
@@ -2575,6 +2834,10 @@ def save_chat_log_endpoint(payload: ChatLogSaveRequest) -> ChatLogSaveResponse:
             messages=[{"role": msg.role, "text": msg.text} for msg in payload.messages],
             used_model=payload.used_model,
             last_response_id=payload.last_response_id,
+            citations=payload.citations,
+            retrieval_results=payload.retrieval_results,
+            used_retrieval_results=payload.used_retrieval_results,
+            used_vector_store_ids=payload.used_vector_store_ids,
         )
         return ChatLogSaveResponse(**result)
     except Exception as exc:
@@ -2610,6 +2873,10 @@ def get_chat_log_endpoint(
             for msg in (entry.get("messages") or [])
             if str(msg.get("text", "")).strip()
         ],
+        citations=entry.get("citations", []),
+        retrieval_results=entry.get("retrieval_results", []),
+        used_retrieval_results=entry.get("used_retrieval_results", []),
+        used_vector_store_ids=entry.get("used_vector_store_ids", []),
     )
 
 

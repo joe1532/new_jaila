@@ -34,12 +34,12 @@
         </div>
 
         <nav class="tabs" aria-label="Hovedfaner">
-          <button id="tabAnalyse" type="button" class="tab-button tab-button-active" data-tab="analyse">Analyse</button>
+          <button id="tabAnalyse" type="button" class="tab-button hidden" data-tab="analyse" aria-hidden="true">Analyse</button>
+          <button id="tabChat" type="button" class="tab-button tab-button-active" data-tab="chat">Chat</button>
           <button id="tabSagsbehandling" type="button" class="tab-button" data-tab="sagsbehandling">Sagsbehandling</button>
-          <button id="tabChat" type="button" class="tab-button" data-tab="chat">Chat</button>
         </nav>
 
-        <section id="tabPaneAnalyse" class="tab-pane">
+        <section id="tabPaneAnalyse" class="tab-pane hidden" aria-hidden="true">
           <div class="analyse-layout">
             <aside class="analyse-side-panel">
               <div class="analyse-side-top">
@@ -380,6 +380,10 @@
               <div class="actions">
                 <button id="chatContextUploadBtn" type="button" class="button-secondary">Upload</button>
               </div>
+              <label class="chat-vector-toggle" for="chatUseVectorSearch">
+                <input id="chatUseVectorSearch" type="checkbox" checked />
+                Brug analyse-lignende vector search
+              </label>
               <div class="chat-context-actions">
                 <button id="chatResetBtn" type="button" class="button-secondary">Ny chat</button>
                 <button id="chatSavePdfBtn" type="button" class="button-secondary">Gem chat (PDF)</button>
@@ -417,6 +421,6 @@
     </section>
   </main>
 
-  <script type="module" src="/clean-start/js/app.js?v=20260311e"></script>
+  <script type="module" src="/clean-start/js/app.js?v=20260606b"></script>
 </body>
 </html>
