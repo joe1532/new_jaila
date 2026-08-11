@@ -5,3 +5,4 @@ logs/
 .venv/
 data/
 chat_context/
+spikes/.cache/

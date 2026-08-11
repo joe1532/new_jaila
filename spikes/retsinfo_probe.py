@@ -14,6 +14,7 @@ inspektion er det ikke nødvendigt.
 from __future__ import annotations
 
 import json
+import pathlib
 import re
 import ssl
 import sys
@@ -720,6 +721,226 @@ def step_chain(sag_id: str) -> int:
     return 0
 
 
+CACHE_DIRECTORY = pathlib.Path(__file__).with_name(".cache")
+
+CONSTRUCTIONS: list[tuple[str, str]] = [
+    # "affattes som bilag 1 til denne lov" er samme operation som "affattes således".
+    ("affattes", r"affattes\s+(således|som)\b"),
+    ("ophaeves", r"\bophæves\b"),
+    ("indsaettes_som", r"indsættes\s+som\b"),
+    # To ordstillinger for samme operation: "I § X indsættes efter »Y«:" og "Efter § X indsættes:".
+    ("indsaettes_efter", r"indsættes\s+efter\b|\befter\s+§[^.]{0,60}?\bindsættes\b"),
+    ("indsaettes_foer", r"indsættes\s+(før|forud for)\b|\bfør\s+§[^.]{0,60}?\bindsættes\b"),
+    # "ændres »X« til: »Y«". Der kan staa et indskud imellem, fx "ændres to steder »X«".
+    # Vi kan ikke soege frem til "til:", fordi den citerede tekst selv kan indeholde
+    # punktummer og kolonner (»6.000 kr.«); vi noejes med at ramme citatets start.
+    ("aendres_til", r"\bændres\b[^»:]{0,40}[»:]"),
+    ("omnummerering", r"\bbliver\s+(herefter\s+)?(til\s+)?(§|stk\.|nr\.|litra)"),
+    ("udgaar", r"\budgår\b"),
+]
+
+# Angiver hvor mange forekomster en tekstudskiftning rammer. Uden denne oplysning
+# kan en "ændres ... til"-operation ikke anvendes deterministisk.
+OCCURRENCE_QUALIFIER = re.compile(
+    r"\b(to|tre|fire|fem|seks|syv|otte|ni|ti|begge|alle|samtlige)\s+steder\b"
+)
+
+
+def classify_instruction(text: str) -> list[str]:
+    """Hvilke konstruktioner optraeder i én ændringsinstruks? Der kan vaere flere."""
+    found = [name for name, pattern in CONSTRUCTIONS if re.search(pattern, text, re.IGNORECASE)]
+    return found or ["uklassificeret"]
+
+
+def fetch_xml_cached(path: str) -> tuple[bytes, str]:
+    """Hent dokument-XML med diskcache, saa gentagne analysekoersler ikke belaster kilden."""
+    CACHE_DIRECTORY.mkdir(exist_ok=True)
+    cache_file = CACHE_DIRECTORY / (re.sub(r"[^A-Za-z0-9]+", "_", path).strip("_") + ".xml")
+    if cache_file.exists():
+        return cache_file.read_bytes(), ""
+
+    time.sleep(DELAY_SECONDS)
+    status, content_type, body, error = fetch(f"https://retsinformation.dk/{path}/dan/xml")
+    if error:
+        return b"", error
+    if status != 200 or not body:
+        return b"", f"HTTP {status}"
+    cache_file.write_bytes(body)
+    return body, ""
+
+
+def step_mine(eli: str, max_acts: int = 40) -> int:
+    """Udvind testmaengden: alle aendringsinstrukser mod en lov, grupperet efter type.
+
+    Lex Dania markerer hvert punkt som <AendringsNummer> og selve maalbestemmelsen
+    med signiChar='AendringURN'. Vi maaler derfor to ting: fordelingen af
+    konstruktionstyper, og hvor ofte maalet faktisk er opmaerket.
+    """
+    import xml.etree.ElementTree as ElementTree
+
+    summary = rdfa_summary(eli)
+    if not summary:
+        print(f"Kunne ikke hente metadata for {eli}")
+        return 1
+
+    consolidates = summary["consolidates"]
+    changed_by = summary["changed_by"]
+    assert isinstance(consolidates, list) and isinstance(changed_by, list)
+    acts = list(dict.fromkeys(consolidates + changed_by))[:max_acts]
+
+    law_name = "ligningslov"
+    print(f"=== {summary['title_short']}: undersoeger {len(acts)} aendringslove")
+    print(f"=== leder efter aendringsparagraffer der naevner {law_name!r}\n")
+
+    type_counts: dict[str, int] = {}
+    total_items = 0
+    with_target = 0
+    multi_target = 0
+    italic_fallback = 0
+    qualified = 0
+    unclassified: list[str] = []
+    without_target: list[str] = []
+    acts_with_hits = 0
+    failed: list[str] = []
+
+    def text_of(element: ElementTree.Element) -> str:
+        return re.sub(r"\s+", " ", "".join(element.itertext())).strip()
+
+    for uri in acts:
+        path = str(uri).split("retsinformation.dk/", 1)[-1]
+        body, error = fetch_xml_cached(path)
+        if error:
+            failed.append(f"{uri}: {error}")
+            continue
+        try:
+            root = ElementTree.fromstring(body)
+        except ElementTree.ParseError as parse_error:
+            failed.append(f"{uri}: XML-fejl {parse_error}")
+            continue
+
+        act_items = 0
+        for block in root.iter("AendringCentreretParagraf"):
+            chapeau = ""
+            for child in block:
+                if child.tag == "Exitus":
+                    chapeau = text_of(child)
+                    break
+            if law_name not in chapeau.lower():
+                continue
+
+            for item in block.iter("AendringsNummer"):
+                total_items += 1
+                act_items += 1
+                instruction = text_of(item)
+                targets = [
+                    element.text or ""
+                    for element in item.iter("Char")
+                    if element.get("signiChar") == "AendringURN"
+                ]
+                if targets:
+                    with_target += 1
+                else:
+                    italic = [
+                        re.sub(r"\s+", " ", element.text or "").strip()
+                        for element in item.iter("Char")
+                        if element.get("formaChar") == "Italic"
+                    ]
+                    if italic:
+                        italic_fallback += 1
+                    if len(without_target) < 8:
+                        without_target.append(f"{path}: kursiv={italic} | {instruction[:110]}")
+                if len(targets) > 1:
+                    multi_target += 1
+                if OCCURRENCE_QUALIFIER.search(instruction):
+                    qualified += 1
+
+                for name in classify_instruction(instruction):
+                    type_counts[name] = type_counts.get(name, 0) + 1
+                    if name == "uklassificeret" and len(unclassified) < 6:
+                        unclassified.append(f"{path}: {instruction[:180]}")
+
+        if act_items:
+            acts_with_hits += 1
+
+    print(f"--- {acts_with_hits} af {len(acts)} love indeholder aendringer til ligningsloven")
+    print(f"--- {total_items} nummererede aendringspunkter i alt")
+    print(f"--- {with_target} af dem har et opmaerket maal (signiChar='AendringURN')")
+    print(f"--- {italic_fallback} af de oevrige har maalet kursiveret uden signiChar")
+    print(f"--- {multi_target} punkter rammer mere end ét maal")
+    print(f"--- {qualified} punkter har en forekomst-kvalifikator (fx »to steder«)")
+    print()
+    print("--- konstruktionstyper (et punkt kan taelle i flere):")
+    for name, count in sorted(type_counts.items(), key=lambda item: -item[1]):
+        share = 100.0 * count / total_items if total_items else 0.0
+        print(f"    {count:5d}  {share:5.1f}%  {name}")
+
+    if unclassified:
+        print()
+        print("--- eksempler paa uklassificerede punkter:")
+        for example in unclassified:
+            print(f"    {example}")
+
+    if without_target:
+        print()
+        print("--- eksempler paa punkter uden opmaerket maal:")
+        for example in without_target:
+            print(f"    {example}")
+
+    if failed:
+        print()
+        print(f"--- {len(failed)} love kunne ikke behandles:")
+        for failure in failed[:5]:
+            print(f"    {failure}")
+    return 0
+
+
+def step_structure(eli: str) -> int:
+    """Vis en aendringslovs XML-struktur: hvordan er de nummererede punkter maerket op?"""
+    import xml.etree.ElementTree as ElementTree
+
+    url = f"https://retsinformation.dk/{eli.lstrip('/')}/dan/xml"
+    status, content_type, body, error = fetch(url)
+    print(f"=== {url} ({len(body)} bytes)")
+    if error:
+        print(f"    FEJL: {error}")
+        return 1
+
+    try:
+        root = ElementTree.fromstring(body)
+    except ElementTree.ParseError as parse_error:
+        print(f"Kunne ikke parse XML: {parse_error}")
+        return 1
+
+    def text_of(element: ElementTree.Element) -> str:
+        return re.sub(r"\s+", " ", "".join(element.itertext())).strip()
+
+    def walk(element: ElementTree.Element, depth: int = 0, limit: int = 60) -> int:
+        if limit <= 0:
+            return 0
+        indent = "  " * depth
+        attrs = " ".join(f"{k}={v!r}" for k, v in element.attrib.items())
+        snippet = text_of(element)[:80]
+        print(f"{indent}<{element.tag}> {attrs}")
+        if not list(element):
+            print(f"{indent}   {snippet}")
+        used = 1
+        for child in element:
+            used += walk(child, depth + 1, limit - used)
+            if used >= limit:
+                break
+        return used
+
+    for paragraf in root.iter("Paragraf"):
+        if "ligningslov" in text_of(paragraf).lower():
+            print("--- Foerste Paragraf der naevner ligningsloven:")
+            walk(paragraf, 0, 70)
+            return 0
+
+    print("--- Ingen Paragraf naevnte ligningsloven. Dokumentets struktur:")
+    walk(root, 0, 80)
+    return 0
+
+
 def step_try(paths: list[str]) -> int:
     """Afproev flere kandidatstier og rapporter hvilke der giver JSON."""
     for path in paths:
@@ -956,6 +1177,15 @@ if __name__ == "__main__":
     elif step == "get":
         limit = int(sys.argv[3]) if len(sys.argv) > 3 else 4000
         sys.exit(step_get(sys.argv[2], limit))
+    elif step == "mine":
+        sys.exit(
+            step_mine(
+                sys.argv[2] if len(sys.argv) > 2 else "eli/lta/2025/1500",
+                int(sys.argv[3]) if len(sys.argv) > 3 else 40,
+            )
+        )
+    elif step == "struct":
+        sys.exit(step_structure(sys.argv[2]))
     elif step == "chain":
         sys.exit(step_chain(sys.argv[2]))
     elif step == "touches":

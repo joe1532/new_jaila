@@ -157,6 +157,80 @@ numre og datoer, aldrig via tekstsammenligning af titler.
 "unable to get local issuer certificate". Brug pakken `truststore`, der validerer mod
 OS'ets eget trust store. På en Linux-server uden inspektion er det ikke nødvendigt.
 
+## Instrukserne er opmærkede, ikke fritekst
+
+Antagelsen om, at ændringsinstrukser skal udtrækkes med regex fra løbende tekst, holder
+ikke. Lex Dania opmærker dem strukturelt:
+
+```xml
+<AendringCentreretParagraf localId="1">
+  <Explicatus>§ 1</Explicatus>
+  <Exitus>I ligningsloven, jf. lovbekendtgørelse nr. 1500 …, foretages følgende ændringer:</Exitus>
+  <AendringsNummer>
+    <Explicatus>2.</Explicatus>
+    <Aendring>
+      <AendringDefinition>
+        I <Char signiChar="AendringURN">§ 9 C, stk. 3,</Char> indsættes som <Char>5. pkt.:</Char>
+      </AendringDefinition>
+      <AendringAktion><AendringNyTekst>For indkomståret 2026 …</AendringNyTekst></AendringAktion>
+    </Aendring>
+  </AendringsNummer>
+</AendringCentreretParagraf>
+```
+
+Målloven står i `<Exitus>` på ændringsparagraffen, punktnummeret i `<Explicatus>`,
+målbestemmelsen i et `<Char signiChar="AendringURN">`, og den nye tekst i
+`<AendringNyTekst>` adskilt fra instruksen. Parseren skal derfor kun udlede ét felt fra
+fritekst: selve verbet.
+
+## Udvundet testmængde
+
+Alle 40 ændringslove i ligningslovens `consolidates` og `changed_by` er hentet og
+gennemgået. 39 af dem indeholder en ændringsparagraf mod ligningsloven, med i alt **151
+nummererede ændringspunkter**. Otte verbalmønstre dækker alle 151:
+
+| Konstruktion | Punkter | Andel |
+| --- | --- | --- |
+| `ændres … til:` | 62 | 41 % |
+| `indsættes efter` | 33 | 22 % |
+| `indsættes som` | 23 | 15 % |
+| omnummerering (`… bliver …`) | 21 | 14 % |
+| `ophæves` | 15 | 10 % |
+| `affattes således` / `affattes som` | 12 | 8 % |
+| `udgår` | 9 | 6 % |
+| `indsættes før` | 0 | 0 % |
+
+Summen overstiger 151, fordi ét punkt kan indeholde flere operationer. Tallene er
+optællinger på et enkelt lovområde og skal ikke læses som en generel fordeling.
+
+Fire ting fra optællingen har direkte konsekvenser for modellen:
+
+**Et punkt er ikke én operation.** 21 af 151 punkter (14 %) rammer mere end ét mål —
+fx "I § 9 C, stk. 3, 1. pkt., ændres »4. pkt.« til: »4. og 5. pkt.«, og i 2. pkt.
+indsættes efter »kilometertakst«: …". `operation`-tabellen skal kunne rumme flere rækker
+med samme `amendment_path` ("§ 1, nr. 1"), og `amendment_path` kan altså ikke være unik.
+
+**Tekstudskiftning har en multiplicitet.** To punkter siger "ændres to steder »X« til".
+En `replace_text`-operation kan derfor ikke bare erstatte første forekomst; den skal bære
+et eksplicit antal forekomster, og replay skal fejle hårdt, hvis det faktiske antal i
+teksten afviger.
+
+**Målopmærkningen er næsten, men ikke helt, komplet.** 142 punkter har målet i
+`signiChar="AendringURN"`, 8 har det kun kursiveret uden `signiChar`. Parseren skal
+acceptere begge. Det ene resterende punkt er "Efter § 2 A indsættes: § 2 B. …", hvor en
+helt ny paragraf indsættes og ankeret står i almindelig tekst. Det er 150 af 151 (99 %)
+med strukturelt mål og ét, der kræver tekstparsing.
+
+**Klassifikation er ikke anvendelse.** At alle 151 punkter kan henføres til et verbum
+betyder kun, at vi ved, *hvilken slags* operation der er tale om. Det siger intet om, at
+operationen kan anvendes deterministisk på teksten — kun replay mod den næste
+lovbekendtgørelse kan afgøre det. Forventningen er, at anvendelsesgraden bliver mærkbart
+lavere end 100 %, især for `affattes` (12 punkter), hvor den nye tekst kan spænde over
+flere stykker med egen intern struktur.
+
+Analysen kan gentages med `python spikes/retsinfo_probe.py mine eli/lta/2025/1500`.
+Dokumenterne caches i `spikes/.cache/`, så gentagne kørsler ikke belaster kilden.
+
 ## Tabeller
 
 Rådokumenter ligger på disk. Databasen gemmer sti og hash, ikke blobs — så forbliver
@@ -237,8 +311,14 @@ operation (
                                           -- | insert_provision
   target_ref_raw          TEXT NOT NULL,  -- som skrevet i ændringsloven
   target_provision_id     INTEGER REFERENCES provision(id),
+  target_markup           TEXT NOT NULL,  -- signi_char | italic | text_parsed
+                                          -- måler hvor meget vi læner os på fritekst
   payload_before          TEXT,
   payload_after           TEXT,
+  occurrence_count        INTEGER,        -- kun replace_text: antal forekomster der
+                                          -- skal rammes ("ændres to steder"). NULL
+                                          -- betyder én. Replay skal fejle, hvis det
+                                          -- faktiske antal i teksten afviger.
   effective_date          TEXT,
   effective_date_source   TEXT,           -- ikrafttraedelsesbestemmelse
                                           -- | publicering | ukendt
@@ -329,7 +409,11 @@ Disse skal håndhæves i kode, ikke kun i hovedet:
    `normalization_version`.
 6. Punktumnummerering lagres ikke som identitet. Den beregnes.
 7. `llm_interpretation` er afledt data. Den må ikke læses af replay-motoren.
-8. Koblingen til et lovforslag laves aldrig på `lovnummer` alene. Lovnumre genbruges
+8. En `replace_text` anvendes kun, hvis antallet af forekomster i teksten er præcis det
+   forventede — én, eller `occurrence_count`, hvis instruksen angiver et andet antal.
+   Findes søgeteksten flere gange end forventet, er operationen tvetydig og skal fejle
+   frem for at gætte på den første forekomst.
+9. Koblingen til et lovforslag laves aldrig på `lovnummer` alene. Lovnumre genbruges
    hvert år — et opslag på "1772" rammer både en lov fra 2023 og en fra 2025. Uden
    datoen ville forarbejder fra en helt anden lov blive knyttet til bestemmelsen, og
    fejlen ville være svær at opdage bagefter.
