@@ -256,6 +256,26 @@ Kursivering duer ikke alene som målangivelse. Den bruges også om den nye beteg
 ("indsættes som *stk. 2:*"), så antallet af kursiverede tekststykker siger intet om
 antallet af mål. Kun `signiChar="AendringURN"` kan tælles.
 
+## Numre er et selvstændigt niveau
+
+Opremsninger ligger som `<Indentatio formaInd="Nummer">` inde i `<Stk>`, med eget
+`<Explicatus>` ("1)") og egne `<Linea>`. Det afgørende er, at **punktumnummereringen
+starter forfra inden for hvert nummer**. I § 7 P, stk. 7, nr. 3 henviser tredje punktum
+til "1. pkt.", og det betyder nummerets første punktum — ikke stykkets.
+
+Den atomare enhed er derfor (paragraf, stykke, nummer), hvor nummer kan være tomt.
+Stykkets egen indledning ("Skattefriheden efter stk. 1 er betinget af følgende:") er en
+enhed for sig, adskilt fra numrene. For ligningsloven vokser antallet af enheder fra 553
+til 800, når numrene tælles med.
+
+Behandler man et stykke som én tekst, slår "nr. 1, 1. pkt." fejl, fordi den peger på
+stykkets indledning i stedet for nummerets første punktum. Fejlen er tavs: der findes
+et punktum på pladsen, det er bare det forkerte.
+
+Peger en instruks kun på et stykke, som har numre, er målet tvetydigt, og afspilningen
+skal fejle frem for at gætte. Teksten kan stå i flere numre, og et punktumnummer betyder
+noget forskelligt i hvert af dem.
+
 ## Testintervallet
 
 Afspilningen prøves af på et lukket interval, hvor facit er kendt:
@@ -289,6 +309,47 @@ Konsekvensen er, at afspilningen ikke kan nøjes med at anvende alle operationer
 lov. Hver operation skal bære sin egen ikrafttrædelsesdato, og rækkefølgen skal følge
 datoerne, ikke lovnumrene. Det er også derfor, en operation, hvis virkning allerede står
 i teksten, ikke uden videre må regnes for en fejl.
+
+## Første afspilning
+
+Kørt med `python lovhistorik/probe.py replay eli/lta/2023/42 eli/lta/2025/1500`. Alle
+151 ændringspunkter forsøges udført på LBK 42's tekst, og resultatet sammenlignes ordret
+med LBK 1500.
+
+| Mål | Resultat |
+| --- | --- |
+| Operationer udført | 82 af 151 (54 %) |
+| Berørte enheder der rammer ordret | 24 af 58 (41 %) |
+
+**Det andet tal er det ærlige.** At 637 af 800 enheder er identiske med facit lyder
+godt, men de fleste af dem er aldrig blevet rørt — de var ens i forvejen. Kun de
+enheder, en operation faktisk har ændret, siger noget om, hvor god motoren er.
+
+De 69 operationer, der ikke kunne udføres, fordeler sig sådan:
+
+| Årsag | Antal | Vurdering |
+| --- | --- | --- |
+| Flere mål i samme punkt | 21 | Kendt begrænsning; kræver at hvert verbum knyttes til sit eget mål |
+| Nyt stykke indsat, med omnummerering | 12 | Kræver at efterfølgende stykker kan flyttes |
+| Ophævelse, med og uden omnummerering | 14 | Samme |
+| Nyt nummer eller stykke indsat | 6 | Samme |
+| Målet kunne ikke læses | 4 | Målangivelser uden paragrafnummer |
+| Teksten kunne ikke findes | 4 | De alvorlige — se nedenfor |
+| Forkert antal forekomster | 4 | Do. |
+
+Skellet mellem de to grupper er vigtigt. De 53 første er funktioner, der ikke er bygget
+endnu, og de fejler højlydt med en begrundelse. De sidste 8 er tilfælde, hvor vi mener
+at have forstået instruksen, men ikke kan finde teksten — og det er dér, en stille fejl
+kunne opstå. De skal undersøges enkeltvis, ikke afhjælpes med en løsere søgning.
+
+Omnummerering går igen i 32 af de 69 fejl. Det er det største enkeltstående stykke
+arbejde, og det bekræfter modellens valg om at behandle etiketter som tidsversionerede
+attributter frem for identitet.
+
+**Rækkefølgen er kun tilnærmet.** Lovene anvendes sorteret efter underskriftsdato, ikke
+efter ikrafttrædelsesbestemmelse. Det er forkert for delvis ikrafttræden, hvor dele af en
+lov virker på forskellige tidspunkter, og en del af afvigelserne skyldes formentlig det.
+Ikrafttrædelsesbestemmelserne skal læses, før tallene kan tages for pålydende.
 
 ## Tabeller
 

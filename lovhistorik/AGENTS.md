@@ -29,6 +29,12 @@ Disse punkter er målt og har kostet tid at finde ud af. De må ikke gættes om 
   eneste, så punktummer skal segmenteres med `split_sentences`. "pkt." må ikke behandles
   som en forkortelse, der forhindrer opdeling — "jf. dog 4. pkt. For befordring …" er den
   hyppigste sætningsafslutning i loven.
+- **Numre har deres egen punktumnummerering.** Opremsninger ligger som
+  `<Indentatio formaInd="Nummer">` inde i `<Stk>`. I § 7 P, stk. 7, nr. 3 betyder
+  "1. pkt." nummerets første punktum, ikke stykkets. Den atomare enhed er derfor
+  (paragraf, stykke, nummer). Slår man numrene sammen med stykket, rammer "nr. 1, 1. pkt."
+  stykkets indledning i stedet — og fejlen er tavs, fordi der findes et punktum på
+  pladsen. For ligningsloven er der 800 enheder mod 553, når numrene tælles med.
 - **Kursivering er ikke en pålidelig målangivelse.** Den bruges også om den nye
   betegnelse ("indsættes som *stk. 2:*"), så antallet af kursiverede tekststykker siger
   intet om antallet af mål. Kun `signiChar`-mål kan tælles.
@@ -92,6 +98,20 @@ Forventet: 0 stykker med færre punktummer end de selv henviser til, og 20 af 20
 punkthenvisninger fra ændringslovene. To punkter fra LOV 749 fremstår som fejl under
 "indsættes som N. pkt.", men er det ikke: deres virkning er allerede konsolideret ind i
 LBK 1500.
+
+Afspilningen måles med:
+
+```bash
+python lovhistorik/probe.py replay eli/lta/2023/42 eli/lta/2025/1500
+```
+
+Forventet: 82 af 151 operationer udført, og 24 af 58 berørte enheder rammer LBK 1500
+ordret. Det andet tal er det, der tæller — det første kan hæves ved at udføre flere
+operationer forkert. At 637 af 800 enheder er identiske siger intet, da de fleste aldrig
+er blevet rørt.
+
+Falder træfsikkerheden, mens antallet af udførte operationer stiger, er en ny operation
+begyndt at ødelægge tekst. Det er den vigtigste regression at holde øje med.
 
 ## Om TLS
 

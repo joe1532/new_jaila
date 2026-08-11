@@ -171,6 +171,23 @@ def fetch_metadata(eli_uri: str) -> dict[str, object]:
     return summary
 
 
+def document_date(xml_bytes: bytes) -> str:
+    """Lovens underskriftsdato (`DiesSigni`) som ISO-dato, eller tom streng.
+
+    Bemærk at underskriftsdato ikke er ikrafttrædelsesdato. Den rigtige rækkefølge
+    følger ikrafttrædelsesbestemmelserne, som vi endnu ikke læser. Datoen her er en
+    tilnærmelse, der er god nok til at sortere love, men ikke til at afgøre, hvilken
+    tekst der var gældende en bestemt dag.
+    """
+    root = ElementTree.fromstring(xml_bytes)
+    for tag in ("DiesSigni", "DiesEdicti"):
+        for element in root.iter(tag):
+            value = element_text(element)
+            if value:
+                return value
+    return ""
+
+
 def document_path_of(uri: str) -> str:
     """'https://www.retsinformation.dk/eli/lta/2025/1500' -> 'eli/lta/2025/1500'."""
     return str(uri).split("retsinformation.dk/", 1)[-1].strip("/")
@@ -195,8 +212,31 @@ def occurrence_count(text: str) -> int | None:
     return OCCURRENCE_WORDS.get(match.group(1).lower(), 0)
 
 
+# Typografiske tegn uden betydning for ordlyden. Retsinformation sætter blød
+# orddeling og zero-width-tegn ind midt i ord — "personskat\u00adte\u200dlovens" er ét
+# ord i loven, men fem tegn længere end det ser ud. Uden denne rensning kan en
+# citeret frase fra en ændringslov ikke findes i lovteksten.
+INVISIBLE_CHARACTERS = str.maketrans(
+    {
+        "\u00ad": "",  # blød bindestreg
+        "\u200b": "",  # zero width space
+        "\u200c": "",  # zero width non-joiner
+        "\u200d": "",  # zero width joiner
+        "\ufeff": "",  # byte order mark
+        "\u00a0": " ",  # hårdt mellemrum
+        "\u2011": "-",  # hård bindestreg
+    }
+)
+
+
 def element_text(element: ElementTree.Element) -> str:
-    return re.sub(r"\s+", " ", "".join(element.itertext())).strip()
+    """Tekstindholdet af et element, renset for usynlige tegn og gentaget whitespace.
+
+    Rensningen svarer til `normalization_version = 1` i DATAMODEL.md. Ordlyden røres
+    ikke; kun tegn, der er typografi og ikke sprog, fjernes.
+    """
+    text = "".join(element.itertext()).translate(INVISIBLE_CHARACTERS)
+    return re.sub(r"\s+", " ", text).strip()
 
 
 @dataclass
@@ -311,15 +351,17 @@ class Provision:
     paragraph_id: str  # Paragraf/@localId, fx '9C'
     paragraph_label: str  # som trykt, fx '§ 9 C'
     stk_number: int  # 1 for stykker uden egen Explicatus
+    nr_number: int | None = None  # nummer i en opremsning, None for selve stykket
     lineas: list[str] = field(default_factory=list)  # rå <Linea>-blokke
 
     @property
-    def key(self) -> tuple[str, int]:
-        return (self.paragraph_id, self.stk_number)
+    def key(self) -> tuple[str, int, int | None]:
+        return (self.paragraph_id, self.stk_number, self.nr_number)
 
     @property
     def label(self) -> str:
-        return f"{self.paragraph_label}, stk. {self.stk_number}"
+        base = f"{self.paragraph_label}, stk. {self.stk_number}"
+        return f"{base}, nr. {self.nr_number}" if self.nr_number else base
 
     @property
     def text(self) -> str:
@@ -366,15 +408,47 @@ def extract_provisions(xml_bytes: bytes) -> list[Provision]:
             match = STK_NUMBER.search(label)
             stk_number = int(match.group(1)) if match else index
 
-            lineas = [element_text(linea) for linea in stk.iter("Linea")]
+            # Opremsninger ligger som <Indentatio> med egen <Explicatus>"1)" og egne
+            # <Linea>. Hvert nummer er en selvstændig enhed med sin egen
+            # punktumnummerering, så dets tekst må ikke blandes ind i stykkets.
+            numbered = [
+                item for item in stk.iter("Indentatio") if item.get("formaInd") == "Nummer"
+            ]
+            inside_numbers = {id(linea) for item in numbered for linea in item.iter("Linea")}
+
+            chapeau = [
+                element_text(linea)
+                for linea in stk.iter("Linea")
+                if id(linea) not in inside_numbers
+            ]
             provisions.append(
                 Provision(
                     paragraph_id=paragraph_id,
                     paragraph_label=paragraph_label,
                     stk_number=stk_number,
-                    lineas=[value for value in lineas if value],
+                    lineas=[value for value in chapeau if value],
                 )
             )
+
+            for item in numbered:
+                number_label = ""
+                for child in item:
+                    if child.tag == "Explicatus":
+                        number_label = element_text(child)
+                        break
+                digits = re.search(r"(\d+)", number_label)
+                if not digits:
+                    continue
+                lineas = [element_text(linea) for linea in item.iter("Linea")]
+                provisions.append(
+                    Provision(
+                        paragraph_id=paragraph_id,
+                        paragraph_label=paragraph_label,
+                        stk_number=stk_number,
+                        nr_number=int(digits.group(1)),
+                        lineas=[value for value in lineas if value],
+                    )
+                )
 
     return provisions
 
@@ -478,8 +552,8 @@ class Target:
         return bool(self.paragraph_id)
 
     @property
-    def key(self) -> tuple[str, int]:
-        return (self.paragraph_id, self.stk_number or 1)
+    def key(self) -> tuple[str, int, int | None]:
+        return (self.paragraph_id, self.stk_number or 1, self.nr_number)
 
     @property
     def label(self) -> str:

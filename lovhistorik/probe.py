@@ -803,6 +803,107 @@ def step_mine(eli: str, max_acts: int = 40) -> int:
     return 0
 
 
+def step_replay(from_eli: str, to_eli: str, law_name: str = "ligningslov") -> int:
+    """Afspil aendringslovene fra én lovbekendtgoerelse til den naeste og maal traefsikkerheden.
+
+    Det er motorens egentlige proeve. Kan vi ikke genskabe teksten, kan vi heller ikke
+    sige med sikkerhed, hvilken aendringslov et tekststykke stammer fra.
+    """
+    import lex_dania
+    import replay as replay_module
+
+    start = from_eli.strip("/")
+    facit = to_eli.strip("/")
+
+    try:
+        base_xml = lex_dania.fetch_document_xml(start)
+        base = lex_dania.extract_provisions(base_xml)
+        target_xml = lex_dania.fetch_document_xml(facit)
+        expected = lex_dania.extract_provisions(target_xml)
+        documents = lex_dania.amending_documents(facit)
+    except (lex_dania.FetchError, ElementTree.ParseError) as error:
+        print(f"Kunne ikke forberede afspilningen: {error}")
+        return 1
+
+    # Udgangspunktet selv skal ikke afspilles oven paa sig selv.
+    documents = [path for path in documents if path != start]
+
+    dated: list[tuple[str, str]] = []
+    for path in documents:
+        try:
+            dated.append((lex_dania.document_date(lex_dania.fetch_document_xml(path)), path))
+        except (lex_dania.FetchError, ElementTree.ParseError):
+            dated.append(("", path))
+    dated.sort()
+    ordered = [path for _, path in dated]
+
+    print(f"=== afspiller {len(ordered)} love fra {start} til {facit}")
+    print(f"--- udgangspunkt: {len(base)} stykker, facit: {len(expected)} stykker")
+    print(f"--- foerste lov: {dated[0][0]} {dated[0][1]}")
+    print(f"--- sidste lov:  {dated[-1][0]} {dated[-1][1]}")
+    print()
+
+    state = replay_module.TextState(base)
+    report = replay_module.replay(state, ordered, law_name)
+
+    applied = report.count("applied")
+    already = report.count("already_applied")
+    failed = report.count("failed")
+    print(f"--- {report.total} operationer i alt")
+    print(f"    {applied} anvendt")
+    print(f"    {already} stod allerede i teksten")
+    print(f"    {failed} kunne ikke anvendes")
+    share = 100.0 * (applied + already) / report.total if report.total else 0.0
+    print(f"    det er {share:.1f}% haandteret")
+    print()
+
+    reasons: dict[str, int] = {}
+    for result in report.results:
+        if result.status == "failed":
+            reason = re.sub(r"'.*?'", "…", result.note)
+            reason = re.sub(r"\d+", "N", reason)
+            reasons[reason] = reasons.get(reason, 0) + 1
+    print("--- hvorfor operationer fejler:")
+    for reason, count in sorted(reasons.items(), key=lambda item: -item[1])[:12]:
+        print(f"    {count:4d}  {reason}")
+    print()
+
+    # Fejl i tekstmatchningen er de alvorlige: de betyder, at vi har forstaaet
+    # instruksen, men ikke kan finde teksten. Vis dem enkeltvis.
+    print("--- operationer hvor teksten ikke kunne findes:")
+    for result in report.results:
+        if result.status == "failed" and result.note.startswith(("fandt ikke", "forventede")):
+            print(f"    {result.operation.where}")
+            print(f"        {result.operation.op_type}: {result.note}")
+    print()
+
+    touched = {
+        result.operation.target.key
+        for result in report.results
+        if result.status in ("applied", "already_applied")
+    }
+    same, different, examples = replay_module.compare(state, expected)
+    print(f"--- tekstsammenligning mod {facit}:")
+    print(f"    {same} stykker rammer ordret, {different} afviger")
+    print(f"    {len(touched)} stykker blev roert af mindst én operation")
+
+    changed_and_correct = 0
+    for provision in expected:
+        if provision.key not in touched:
+            continue
+        if state.text_of(provision.key) == replay_module.normalise(provision.text):
+            changed_and_correct += 1
+    if touched:
+        rate = 100.0 * changed_and_correct / len(touched)
+        print(f"    af de roerte rammer {changed_and_correct} ordret ({rate:.1f}%)")
+
+    print()
+    print("--- eksempler paa stykker der afviger:")
+    for label in examples[:10]:
+        print(f"    {label}")
+    return 0
+
+
 def step_instructions(document: str, law_name: str = "ligningslov") -> int:
     """Vis alle aendringsinstrukser i ét dokument, med maal og ny tekst."""
     import lex_dania
@@ -924,6 +1025,54 @@ def step_validate(eli: str, law_name: str = "ligningslov") -> int:
     for problem in insert_bad[:8] + sentence_bad[:8]:
         print(f"    FEJL {problem}")
     return 0
+
+
+def step_tree(eli: str, paragraph_id: str, stk_number: str = "") -> int:
+    """Vis XML-traeet under et stykke, saa nummer- og punktumniveauer kan ses."""
+    import xml.etree.ElementTree as ElementTree
+
+    import lex_dania
+
+    try:
+        body = lex_dania.fetch_document_xml(eli.strip("/"))
+        root = ElementTree.fromstring(body)
+    except (lex_dania.FetchError, ElementTree.ParseError) as error:
+        print(f"Kunne ikke behandle {eli}: {error}")
+        return 1
+
+    wanted = paragraph_id.upper().replace(" ", "").lstrip("§")
+    for paragraf in root.iter("Paragraf"):
+        if (paragraf.get("localId") or "").upper() != wanted:
+            continue
+
+        for index, stk in enumerate(paragraf.iter("Stk"), start=1):
+            label = ""
+            for child in stk:
+                if child.tag == "Explicatus":
+                    label = lex_dania.element_text(child)
+                    break
+            match = lex_dania.STK_NUMBER.search(label)
+            number = int(match.group(1)) if match else index
+            if stk_number and number != int(stk_number):
+                continue
+
+            print(f"=== stk. {number}")
+
+            def walk(element: ElementTree.Element, depth: int) -> None:
+                indent = "    " * depth
+                snippet = lex_dania.element_text(element)[:80]
+                print(f"{indent}<{element.tag}> {element.attrib or ''}")
+                if not list(element):
+                    print(f"{indent}    {snippet}")
+                for sub in element:
+                    walk(sub, depth + 1)
+
+            for child in stk:
+                walk(child, 1)
+        return 0
+
+    print(f"Fandt ikke paragraf {paragraph_id!r}")
+    return 1
 
 
 def step_text(eli: str, paragraph_id: str, stk: str = "") -> int:
@@ -1299,10 +1448,14 @@ if __name__ == "__main__":
                 int(sys.argv[3]) if len(sys.argv) > 3 else 40,
             )
         )
+    elif step == "replay":
+        sys.exit(step_replay(sys.argv[2], sys.argv[3]))
     elif step == "instr":
         sys.exit(step_instructions(sys.argv[2]))
     elif step == "validate":
         sys.exit(step_validate(sys.argv[2]))
+    elif step == "tree":
+        sys.exit(step_tree(sys.argv[2], sys.argv[3], sys.argv[4] if len(sys.argv) > 4 else ""))
     elif step == "text":
         sys.exit(
             step_text(
