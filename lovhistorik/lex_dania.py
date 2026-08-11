@@ -304,6 +304,230 @@ def extract_instructions(
     return instructions
 
 
+@dataclass
+class Provision:
+    """Ét stykke i en lovbekendtgørelse, med dets punktummer som selvstændige strenge."""
+
+    paragraph_id: str  # Paragraf/@localId, fx '9C'
+    paragraph_label: str  # som trykt, fx '§ 9 C'
+    stk_number: int  # 1 for stykker uden egen Explicatus
+    lineas: list[str] = field(default_factory=list)  # rå <Linea>-blokke
+
+    @property
+    def key(self) -> tuple[str, int]:
+        return (self.paragraph_id, self.stk_number)
+
+    @property
+    def label(self) -> str:
+        return f"{self.paragraph_label}, stk. {self.stk_number}"
+
+    @property
+    def text(self) -> str:
+        return " ".join(self.lineas)
+
+    @property
+    def sentences(self) -> list[str]:
+        """Stykkets punktummer.
+
+        En `<Linea>`-grænse er altid en punktumgrænse, men ikke den eneste, så hver
+        blok segmenteres for sig og resultaterne lægges i forlængelse af hinanden.
+        """
+        return [sentence for linea in self.lineas for sentence in split_sentences(linea)]
+
+
+STK_NUMBER = re.compile(r"Stk\.\s*(\d+)")
+
+
+def extract_provisions(xml_bytes: bytes) -> list[Provision]:
+    """Læs en lovbekendtgørelses paragraffer, stykker og punktummer.
+
+    `<Linea>` gemmes råt. Det er målt, at et `<Linea>` kan rumme flere punktummer —
+    i LBK 1500 rummer § 9 C, stk. 3 fire punktummer fordelt på to `<Linea>` — så
+    punktummer beregnes med `split_sentences` i stedet for at læses af opmærkningen.
+    """
+    root = ElementTree.fromstring(xml_bytes)
+    provisions: list[Provision] = []
+
+    for paragraph in root.iter("Paragraf"):
+        paragraph_id = paragraph.get("localId") or ""
+        paragraph_label = ""
+        for child in paragraph:
+            if child.tag == "Explicatus":
+                paragraph_label = element_text(child)
+                break
+
+        for index, stk in enumerate(paragraph.iter("Stk"), start=1):
+            label = ""
+            for child in stk:
+                if child.tag == "Explicatus":
+                    label = element_text(child)
+                    break
+            # Stykke 1 har ingen Explicatus; senere stykker har "Stk. 3.".
+            match = STK_NUMBER.search(label)
+            stk_number = int(match.group(1)) if match else index
+
+            lineas = [element_text(linea) for linea in stk.iter("Linea")]
+            provisions.append(
+                Provision(
+                    paragraph_id=paragraph_id,
+                    paragraph_label=paragraph_label,
+                    stk_number=stk_number,
+                    lineas=[value for value in lineas if value],
+                )
+            )
+
+    return provisions
+
+
+# Et punktum efterfulgt af mellemrum og stort bogstav er en punktumgrænse. Kravet om
+# stort bogstav klarer det meste af arbejdet: "10 pct. af" og "1. pkt. finder" bliver
+# ikke delt, fordi der følger småt bogstav. Listen herunder er derfor kort og rummer
+# kun forkortelser, der jævnligt efterfølges af et stort bogstav uden at afslutte
+# sætningen — typisk fordi det næste ord er et egennavn eller en lovtitel.
+#
+# "pkt." står bevidst ikke på listen: "jf. dog 4. pkt. For befordring herudover …"
+# afslutter faktisk et punktum, og det er den hyppigste sætningsafslutning i loven.
+ABBREVIATIONS = (
+    "jf.",
+    "ca.",
+    "f.eks.",
+    "bl.a.",
+    "litra",
+    "art.",
+    "kap.",
+)
+
+SENTENCE_BOUNDARY = re.compile(r"(?<=\.)\s+(?=[A-ZÆØÅ])")
+
+
+def ends_with_abbreviation(text: str) -> bool:
+    last_word = text.rsplit(" ", 1)[-1].lower()
+    return any(last_word.endswith(abbreviation) for abbreviation in ABBREVIATIONS)
+
+
+def split_sentences(text: str) -> list[str]:
+    """Del en tekstblok i punktummer.
+
+    Nødvendigt, fordi `<Linea>` ikke er en punktumgrænse: ét `<Linea>` kan rumme
+    flere punktummer. Uden denne opdeling kan en instruks som "indsættes som 5. pkt."
+    ikke stedfæstes.
+
+    Metoden er regelbaseret og kan tage fejl. Brug `sentence_reference_conflicts`
+    til at måle, hvor ofte den er i modstrid med lovens egne henvisninger.
+    """
+    parts = SENTENCE_BOUNDARY.split(text)
+    merged: list[str] = []
+    for part in parts:
+        if merged and ends_with_abbreviation(merged[-1]):
+            merged[-1] = f"{merged[-1]} {part}"
+        else:
+            merged.append(part)
+    return [part.strip() for part in merged if part.strip()]
+
+
+# Henvisninger som "4. pkt." eller "3. og 4. pkt." i lovens egen tekst.
+SENTENCE_REFERENCE = re.compile(r"(\d+)\.(?:\s*(?:og|eller|-)\s*(\d+)\.)?\s*pkt\b")
+
+
+# Hvor langt tilbage vi kigger efter en henvisning til et andet stykke eller en anden
+# paragraf. "jf. fondsbeskatningslovens § 4, stk. 2, 2. pkt." handler ikke om vores
+# eget stykkes punktummer og duer derfor ikke som kontrol.
+REFERENCE_CONTEXT = 60
+
+
+def highest_referenced_sentence(text: str) -> int:
+    """Højeste punktumnummer, teksten henviser til i sit eget stykke.
+
+    Henvisninger, der er kvalificeret med "§" eller "stk." kort forinden, springes
+    over, fordi de peger et andet sted hen. Det er en forsigtig regel: den overser
+    hellere en brugbar kontrol end at rejse en falsk alarm.
+    """
+    highest = 0
+    for match in SENTENCE_REFERENCE.finditer(text):
+        context = text[max(0, match.start() - REFERENCE_CONTEXT) : match.start()]
+        if "§" in context or "stk." in context.lower():
+            continue
+        for group in match.groups():
+            if group:
+                highest = max(highest, int(group))
+    return highest
+
+
+PARAGRAPH_REFERENCE = re.compile(r"§\s*(\d+)\s*([A-ZÆØÅ])?")
+STK_REFERENCE = re.compile(r"stk\.\s*(\d+)", re.IGNORECASE)
+NR_REFERENCE = re.compile(r"nr\.\s*(\d+)", re.IGNORECASE)
+
+
+@dataclass
+class Target:
+    """En målangivelse fra en ændringsinstruks, fx "§ 9 C, stk. 3, 1. pkt.".
+
+    `sentence_numbers` er tom, når instruksen rammer hele stykket. `nr_number` er
+    sat, når målet er et nummer i en opremsning, fx "§ 7, nr. 38".
+    """
+
+    raw: str
+    paragraph_id: str = ""
+    stk_number: int | None = None
+    sentence_numbers: list[int] = field(default_factory=list)
+    nr_number: int | None = None
+
+    @property
+    def is_resolvable(self) -> bool:
+        """Kan målet slås op i en bestemt tekst? Kræver som minimum en paragraf."""
+        return bool(self.paragraph_id)
+
+    @property
+    def key(self) -> tuple[str, int]:
+        return (self.paragraph_id, self.stk_number or 1)
+
+    @property
+    def label(self) -> str:
+        parts = [f"§ {self.paragraph_id}"]
+        if self.stk_number:
+            parts.append(f"stk. {self.stk_number}")
+        if self.nr_number:
+            parts.append(f"nr. {self.nr_number}")
+        for number in self.sentence_numbers:
+            parts.append(f"{number}. pkt.")
+        return ", ".join(parts)
+
+
+def parse_target(text: str) -> Target:
+    """Læs en målangivelse som "§ 9 C, stk. 3, 1. pkt." til strukturerede felter.
+
+    Paragrafnummeret sammensættes til samme form som `Paragraf/@localId` i XML'en,
+    så "§ 9 C" bliver til "9C" og kan slås direkte op.
+
+    Bemærk at et stykke uden `stk.` betyder stk. 1, men kun når målet overhovedet
+    peger på en paragraf. Vi udleder det ikke her, fordi forskellen mellem "ikke
+    angivet" og "udtrykkeligt stk. 1" er værd at bevare i data.
+    """
+    target = Target(raw=text.strip())
+
+    paragraph = PARAGRAPH_REFERENCE.search(text)
+    if paragraph:
+        letter = paragraph.group(2) or ""
+        target.paragraph_id = f"{paragraph.group(1)}{letter}"
+
+    stk = STK_REFERENCE.search(text)
+    if stk:
+        target.stk_number = int(stk.group(1))
+
+    nr = NR_REFERENCE.search(text)
+    if nr:
+        target.nr_number = int(nr.group(1))
+
+    numbers: list[int] = []
+    for match in SENTENCE_REFERENCE.finditer(text):
+        for group in match.groups():
+            if group:
+                numbers.append(int(group))
+    target.sentence_numbers = sorted(set(numbers))
+
+    return target
+
+
 def amending_documents(eli_uri: str) -> list[str]:
     """Alle dokumentstier, der har ændret loven: konsoliderede og senere ændringer.
 

@@ -803,6 +803,212 @@ def step_mine(eli: str, max_acts: int = 40) -> int:
     return 0
 
 
+def step_instructions(document: str, law_name: str = "ligningslov") -> int:
+    """Vis alle aendringsinstrukser i ét dokument, med maal og ny tekst."""
+    import lex_dania
+
+    path = document.strip("/")
+    try:
+        xml = lex_dania.fetch_document_xml(path)
+        instructions = lex_dania.extract_instructions(xml, path, law_name)
+    except (lex_dania.FetchError, ElementTree.ParseError) as error:
+        print(f"Kunne ikke behandle {path}: {error}")
+        return 1
+
+    print(f"=== {path}: {len(instructions)} punkter mod {law_name}en\n")
+    for instruction in instructions:
+        target = lex_dania.parse_target(instruction.probable_targets[0]) if instruction.probable_targets else None
+        print(f"--- {instruction.amendment_path}  [{', '.join(instruction.constructions)}]")
+        print(f"    maal: {target.label if target else '(intet)'}")
+        print(f"    {instruction.text[:400]}")
+        if instruction.new_text:
+            print(f"    ny tekst: {instruction.new_text[:400]}")
+        print()
+    return 0
+
+
+def step_validate(eli: str, law_name: str = "ligningslov") -> int:
+    """Slaa aendringsinstruksernes maal op i den lovbekendtgoerelse, de sigter mod.
+
+    Kun love i `changed_by` bruges. De aendrer netop denne lovbekendtgoerelse, saa
+    dens tekst er det rigtige udgangspunkt. Love i `consolidates` sigter mod en
+    tidligere tekst og kan ikke kontrolleres her.
+
+    Det staerkeste enkeltsignal er "indsaettes som N. pkt.": det forudsaetter praecis
+    N-1 punktummer i forvejen, saa det maaler punktumsegmenteringen direkte.
+    """
+    import lex_dania
+
+    path = eli.strip("/")
+    try:
+        metadata = lex_dania.fetch_metadata(path)
+        body = lex_dania.fetch_document_xml(path)
+        provisions = lex_dania.extract_provisions(body)
+    except (lex_dania.FetchError, ElementTree.ParseError) as error:
+        print(f"Kunne ikke behandle {path}: {error}")
+        return 1
+
+    by_key = {provision.key: provision for provision in provisions}
+    changed_by = metadata["changed_by"]
+    assert isinstance(changed_by, list)
+    documents = [lex_dania.document_path_of(str(uri)) for uri in changed_by]
+
+    total = 0
+    no_target = 0
+    unparsed = 0
+    missing_paragraph = 0
+    missing_stk = 0
+    sentence_ok = 0
+    sentence_bad: list[str] = []
+    insert_ok = 0
+    insert_bad: list[str] = []
+
+    for document in documents:
+        try:
+            xml = lex_dania.fetch_document_xml(document)
+            instructions = lex_dania.extract_instructions(xml, document, law_name)
+        except (lex_dania.FetchError, ElementTree.ParseError) as error:
+            print(f"    kunne ikke behandle {document}: {error}")
+            continue
+
+        for instruction in instructions:
+            total += 1
+            if not instruction.probable_targets:
+                no_target += 1
+                continue
+
+            target = lex_dania.parse_target(instruction.probable_targets[0])
+            if not target.is_resolvable:
+                unparsed += 1
+                continue
+
+            provision = by_key.get(target.key)
+            if provision is None:
+                if not any(key[0] == target.paragraph_id for key in by_key):
+                    missing_paragraph += 1
+                else:
+                    missing_stk += 1
+                continue
+
+            count = len(provision.sentences)
+            where = f"{document} {instruction.amendment_path} ({target.label})"
+
+            # "indsættes som N. pkt." forudsætter præcis N-1 punktummer i forvejen.
+            insert_as = re.search(r"indsættes\s+som\s+(\d+)\.\s*pkt", instruction.text)
+            if insert_as:
+                wanted = int(insert_as.group(1))
+                if wanted == count + 1:
+                    insert_ok += 1
+                else:
+                    insert_bad.append(f"{where}: vil indsaette {wanted}. pkt., men vi finder {count}")
+                continue
+
+            # En henvisning til "N. pkt." forudsætter mindst N punktummer.
+            if target.sentence_numbers:
+                highest = max(target.sentence_numbers)
+                if highest <= count:
+                    sentence_ok += 1
+                else:
+                    sentence_bad.append(f"{where}: peger paa {highest}. pkt., men vi finder {count}")
+
+    print(f"=== {path}: {len(documents)} love i changed_by")
+    print(f"--- {total} aendringspunkter")
+    print(f"--- {no_target} uden opmaerket maal, {unparsed} hvor maalet ikke kunne laeses")
+    print(f"--- {missing_paragraph} peger paa en paragraf der ikke findes i teksten")
+    print(f"--- {missing_stk} peger paa et stykke der ikke findes i paragraffen")
+    print()
+    print("--- kontrol af punktumsegmenteringen:")
+    print(f"    {insert_ok} korrekte af {insert_ok + len(insert_bad)} 'indsaettes som N. pkt.'")
+    print(f"    {sentence_ok} korrekte af {sentence_ok + len(sentence_bad)} henvisninger til N. pkt.")
+
+    for problem in insert_bad[:8] + sentence_bad[:8]:
+        print(f"    FEJL {problem}")
+    return 0
+
+
+def step_text(eli: str, paragraph_id: str, stk: str = "") -> int:
+    """Vis den fulde tekst af et stykke, ét <Linea> ad gangen."""
+    import lex_dania
+
+    try:
+        body = lex_dania.fetch_document_xml(eli.strip("/"))
+        provisions = lex_dania.extract_provisions(body)
+    except (lex_dania.FetchError, ElementTree.ParseError) as error:
+        print(f"Kunne ikke behandle {eli}: {error}")
+        return 1
+
+    wanted = paragraph_id.upper().replace(" ", "").lstrip("§")
+    hits = [item for item in provisions if item.paragraph_id.upper() == wanted]
+    if stk:
+        hits = [item for item in hits if item.stk_number == int(stk)]
+
+    if not hits:
+        print(f"Fandt ikke paragraf {paragraph_id!r} i {eli}")
+        return 1
+
+    for provision in hits:
+        print(f"=== {provision.label}  ({len(provision.sentences)} <Linea>)")
+        for number, sentence in enumerate(provision.sentences, start=1):
+            print(f"--- {number}. <Linea>:")
+            print(f"    {sentence}")
+        print()
+    return 0
+
+
+def step_sentences(eli: str) -> int:
+    """Maaler kvaliteten af punktumsegmenteringen mod lovens egne henvisninger.
+
+    Naar loven selv skriver "jf. dog 4. pkt.", skal stykket have mindst fire
+    punktummer. Finder vi faerre, er segmenteringen for grov. Kontrollen er ikke
+    perfekt: en henvisning kan pege paa et andet stykke, saa et hoejt tal er et
+    signal, ikke et bevis.
+    """
+    import lex_dania
+
+    path = eli.strip("/")
+    try:
+        body = lex_dania.fetch_document_xml(path)
+        provisions = lex_dania.extract_provisions(body)
+    except (lex_dania.FetchError, ElementTree.ParseError) as error:
+        print(f"Kunne ikke behandle {path}: {error}")
+        return 1
+
+    total_lineas = sum(len(provision.lineas) for provision in provisions)
+    total_sentences = sum(len(provision.sentences) for provision in provisions)
+    split_lineas = sum(
+        1
+        for provision in provisions
+        for linea in provision.lineas
+        if len(lex_dania.split_sentences(linea)) > 1
+    )
+
+    conflicts: list[tuple[lex_dania.Provision, int, int]] = []
+    checked = 0
+    for provision in provisions:
+        highest = lex_dania.highest_referenced_sentence(provision.text)
+        if not highest:
+            continue
+        checked += 1
+        count = len(provision.sentences)
+        if highest > count:
+            conflicts.append((provision, highest, count))
+
+    print(f"=== {path}")
+    print(f"--- {len(provisions)} stykker, {total_lineas} <Linea>, {total_sentences} punktummer")
+    print(f"--- {split_lineas} <Linea> rummer mere end ét punktum")
+    print(f"--- {checked} stykker henviser til et punktumnummer og kan kontrolleres")
+    print(f"--- {len(conflicts)} af dem har faerre punktummer end de selv henviser til")
+    share = 100.0 * len(conflicts) / checked if checked else 0.0
+    print(f"--- det er {share:.1f}% af de kontrollerbare stykker")
+
+    if conflicts:
+        print()
+        print("--- stykker hvor segmenteringen ser for grov ud:")
+        for provision, highest, count in conflicts[:10]:
+            print(f"    {provision.label}: henviser til {highest}. pkt., men vi finder {count}")
+    return 0
+
+
 def step_structure(eli: str) -> int:
     """Vis en aendringslovs XML-struktur: hvordan er de nummererede punkter maerket op?"""
     import xml.etree.ElementTree as ElementTree
@@ -1093,6 +1299,20 @@ if __name__ == "__main__":
                 int(sys.argv[3]) if len(sys.argv) > 3 else 40,
             )
         )
+    elif step == "instr":
+        sys.exit(step_instructions(sys.argv[2]))
+    elif step == "validate":
+        sys.exit(step_validate(sys.argv[2]))
+    elif step == "text":
+        sys.exit(
+            step_text(
+                sys.argv[2],
+                sys.argv[3],
+                sys.argv[4] if len(sys.argv) > 4 else "",
+            )
+        )
+    elif step == "sentences":
+        sys.exit(step_sentences(sys.argv[2]))
     elif step == "struct":
         sys.exit(step_structure(sys.argv[2]))
     elif step == "chain":

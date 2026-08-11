@@ -42,22 +42,41 @@ testsuite.
 
 ## Punktummer er offsets, ikke entiteter
 
-Ændringsinstrukser peger på "1. pkt.". Oprindeligt antog vi, at vi selv skulle segmentere
-sætninger, hvilket er skrøbeligt på dansk lovtekst ("jf.", "nr.", "stk.", talangivelser).
+Ændringsinstrukser peger på "1. pkt.", så vi skal kunne tælle punktummer i et stykke.
 
-Det viste sig at være unødvendigt for dokumenter i Lex Dania-XML: hvert punktum er
-markeret op som sit eget `<Linea>`-element. Lovgiverens egen optælling ligger altså i
-opmærkningen. Kontrolleret på ligningslovens § 9 A, stk. 5, hvis 3. punktum henviser til
-"2. pkt.", og hvor `<Linea>`-nummereringen rammer rigtigt.
+**En tidligere antagelse her var forkert.** Vi troede, at `<Linea>` markerede ét punktum,
+og at optællingen dermed lå færdig i opmærkningen. Det gør den ikke. I LBK 1500 rummer
+§ 9 C, stk. 3 fire punktummer fordelt på to `<Linea>`, hvor det første alene indeholder
+tre. Målt på hele loven gælder det 58 af 1.639 `<Linea>`. En `<Linea>`-grænse *er* altid
+en punktumgrænse, men den er ikke den eneste, så vi skal segmentere selv.
 
-Atomar enhed er stk./nr., som er utvetydigt afgrænset af `<Stk>`. Offsets er stadig
-nødvendige, fordi ændringer går under sætningsniveau — en instruks kan udskifte en frase
-inde i et punktum. Men sætningsgrænserne er nu givet frem for gættet, og det fjerner en
-hel klasse af fejl for moderne dokumenter.
+Segmenteringen deler ved punktum efterfulgt af mellemrum og stort bogstav. Kravet om
+stort bogstav gør det meste af arbejdet: "10 pct. af" og "1. pkt. finder" bliver ikke
+delt. Kun en kort liste af forkortelser, der jævnligt efterfølges af et stort bogstav
+uden at afslutte sætningen, skal undtages — først og fremmest "jf." foran en lovtitel.
+Bemærk at "pkt." ikke må undtages: "jf. dog 4. pkt. For befordring herudover …" er den
+hyppigste sætningsafslutning i loven.
 
-For dokumenter uden Lex Dania-opmærkning (før 2007) vender problemet tilbage. Punktum-
-nummerering skal derfor stadig være en afledt, versioneret beregning, ikke en del af
-identiteten — så den kan falde tilbage på egen segmentering, hvor opmærkningen mangler.
+Segmenteringen er kontrolleret ad to uafhængige veje:
+
+- **Lovens egne henvisninger.** Skriver et stykke "jf. dog 4. pkt.", skal det have mindst
+  fire punktummer. 115 stykker i LBK 1500 kan kontrolleres sådan, og ingen af dem er i
+  modstrid med segmenteringen. Henvisninger kvalificeret med "§" eller "stk." tæller
+  ikke med, fordi de peger på et andet stykke eller en anden lov.
+- **Ændringslovenes forudsætninger.** "Indsættes som 6. pkt." forudsætter præcis fem
+  punktummer i forvejen. Kontrolleret mod de ni love, der ændrer LBK 1500, uden
+  uoverensstemmelser. To tilsyneladende afvigelser viste sig at være ændringer, der
+  allerede var indarbejdet i lovbekendtgørelsen — se afsnittet om delvis ikrafttræden.
+
+Den første kontrol kan kun afsløre for få punktummer, ikke for mange. Den anden fanger
+begge retninger, men findes kun for de stykker, der faktisk er blevet ændret. Endelig
+sikkerhed får vi først af replay mod den næste lovbekendtgørelse.
+
+Atomar enhed er stk./nr., som er utvetydigt afgrænset af `<Stk>`. Offsets er nødvendige,
+fordi ændringer går under sætningsniveau — en instruks kan udskifte en frase inde i et
+punktum. Punktumnummerering forbliver en afledt, versioneret beregning og aldrig en del
+af identiteten. Det var rigtigt af andre grunde, end vi troede: ikke fordi opmærkningen
+mangler før 2007, men fordi den aldrig har givet os punktummerne.
 
 Offsets regnes på normaliseret tekst. `normalization_version = 1` betyder: sammenfaldende
 whitespace kollapset til ét mellemrum, hårde mellemrum og typografiske citationstegn
@@ -97,8 +116,9 @@ Feltet `Sag.retsinformationsurl` findes, men var tomt på begge undersøgte sage
 kan bruges som bekræftelse, aldrig som primær kobling.
 
 **Dokumentstruktur.** Lex Dania-XML'en har `<Paragraf localId="9A">`, `<Stk id="...">`
-med GUID, og `<Linea>` pr. punktum. Paragraffens `localId` er en maskinlæsbar nøgle, vi
-ikke selv skal udlede af overskriftsteksten. Det er uafklaret, om `<Stk>`-GUID'erne er
+med GUID, og `<Linea>` som tekstblokke. Blokkene er ikke punktummer — se afsnittet om
+punktummer. Paragraffens `localId` er en maskinlæsbar nøgle, vi ikke selv skal udlede af
+overskriftsteksten. Det er uafklaret, om `<Stk>`-GUID'erne er
 stabile på tværs af lovbekendtgørelser — indtil det er målt, må de ikke bruges som
 bestemmelsesidentitet.
 
@@ -235,6 +255,40 @@ Dokumenterne caches i `lovhistorik/.cache/`, så gentagne kørsler ikke belaster
 Kursivering duer ikke alene som målangivelse. Den bruges også om den nye betegnelse
 ("indsættes som *stk. 2:*"), så antallet af kursiverede tekststykker siger intet om
 antallet af mål. Kun `signiChar="AendringURN"` kan tælles.
+
+## Testintervallet
+
+Afspilningen prøves af på et lukket interval, hvor facit er kendt:
+
+```text
+LBK nr 42 af 13/01/2023      udgangspunkt
+  + 32 ændringslove          alle med eli:changed_by på LBK 42
+  = LBK nr 1500 af 24/11/2025   facit, jf. eli:consolidates
+```
+
+LBK 1500 angiver selv, at den konsoliderer præcis LBK 42 plus de 32 love, og LBK 42
+peger tilbage med `eli:consolidated_by`. Mængden er altså ikke vores skøn, men kildens
+egen afgrænsning. Det gør intervallet til et testorakel: afspiller vi de 32 love oven på
+LBK 42 og rammer LBK 1500's ordlyd, er operationerne rigtige.
+
+**Målangivelser kan læses.** En målangivelse som "§ 9 C, stk. 3, 1. pkt." omsættes til
+paragraf, stykke og punktumnumre med simple regler, og paragrafnummeret sammensættes til
+samme form som `Paragraf/@localId`, så det kan slås direkte op. Prøvet på de 38
+ændringspunkter i de ni love, der ændrer LBK 1500: 37 mål kunne læses, og alle 37 pegede
+på en paragraf og et stykke, der faktisk findes. Det ene resterende er punktet uden
+opmærket mål, hvor en helt ny paragraf indsættes.
+
+**Delvis ikrafttræden er ikke et særtilfælde.** LOV 749 af 2025 optræder i både
+`consolidates` og `changed_by`, og dens § 1, nr. 4 vil indsætte et 6. punktum i § 12 B,
+stk. 2 — men det punktum står der allerede i LBK 1500, ordret. Dele af loven er altså
+konsolideret ind, mens andre dele endnu ikke er trådt i kraft. Samme lov affatter i nr. 7
+og nr. 8 det samme stykke to gange med forskellig ordlyd, hvilket kun giver mening med
+hver sin ikrafttrædelsesdato.
+
+Konsekvensen er, at afspilningen ikke kan nøjes med at anvende alle operationer fra en
+lov. Hver operation skal bære sin egen ikrafttrædelsesdato, og rækkefølgen skal følge
+datoerne, ikke lovnumrene. Det er også derfor, en operation, hvis virkning allerede står
+i teksten, ikke uden videre må regnes for en fejl.
 
 ## Tabeller
 

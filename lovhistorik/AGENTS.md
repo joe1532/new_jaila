@@ -24,6 +24,11 @@ Disse punkter er målt og har kostet tid at finde ud af. De må ikke gættes om 
   `<AendringsNummer>`, målbestemmelsen står typisk i `<Char signiChar="AendringURN">`,
   og den nye tekst ligger adskilt i `<AendringNyTekst>`. Skriv ikke en fritekstparser,
   der ignorerer den opmærkning.
+- **`<Linea>` er ikke et punktum.** Ét `<Linea>` kan rumme flere punktummer; i LBK 1500
+  gælder det 58 af 1.639. En `<Linea>`-grænse er altid en punktumgrænse, men ikke den
+  eneste, så punktummer skal segmenteres med `split_sentences`. "pkt." må ikke behandles
+  som en forkortelse, der forhindrer opdeling — "jf. dog 4. pkt. For befordring …" er den
+  hyppigste sætningsafslutning i loven.
 - **Kursivering er ikke en pålidelig målangivelse.** Den bruges også om den nye
   betegnelse ("indsættes som *stk. 2:*"), så antallet af kursiverede tekststykker siger
   intet om antallet af mål. Kun `signiChar`-mål kan tælles.
@@ -75,6 +80,18 @@ Forventet: 151 ændringspunkter fordelt på 39 love, 142 med mål i `signiChar`,
 kursiveret, 1 uden opmærket mål, 21 med flere mål, 2 med forekomstantal, og nul
 uklassificerede. Ændrer tallene sig uventet, er det en regression — undersøg den frem
 for at opdatere det forventede resultat.
+
+Punktumsegmenteringen har to kontroller, som begge skal være rene:
+
+```bash
+python lovhistorik/probe.py sentences eli/lta/2025/1500
+python lovhistorik/probe.py validate eli/lta/2025/1500
+```
+
+Forventet: 0 stykker med færre punktummer end de selv henviser til, og 20 af 20 korrekte
+punkthenvisninger fra ændringslovene. To punkter fra LOV 749 fremstår som fejl under
+"indsættes som N. pkt.", men er det ikke: deres virkning er allerede konsolideret ind i
+LBK 1500.
 
 ## Om TLS
 
