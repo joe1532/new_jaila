@@ -282,6 +282,61 @@ def step_find_api(page_url: str) -> int:
 ODA_BASE = "https://oda.ft.dk/api"
 
 
+def rdfa_summary(eli_uri: str) -> dict[str, object] | None:
+    """Hent .rdfa for en ELI-URI og traek de felter ud, vi bruger igen og igen."""
+    url = eli_uri if eli_uri.startswith("http") else f"https://www.retsinformation.dk/{eli_uri}"
+    status, content_type, raw, error = fetch(f"{url}.rdfa", "application/json")
+    if error or "json" not in content_type.lower():
+        return None
+    try:
+        triples = json.loads(raw.decode("utf-8", errors="replace"))
+    except json.JSONDecodeError:
+        return None
+
+    summary: dict[str, object] = {
+        "uri": url,
+        "title_short": "",
+        "title": "",
+        "type": "",
+        "id_local": "",
+        "in_force": "",
+        "changes": [],
+        "changed_by": [],
+        "consolidates": [],
+        "consolidated_by": [],
+    }
+    for triple in triples:
+        prop = str(triple.get("property", ""))
+        value = str(triple.get("content") or triple.get("resource") or "")
+        if prop == "eli:title_short":
+            summary["title_short"] = value
+        elif prop == "eli:title":
+            summary["title"] = value
+        elif prop == "eli:type_document":
+            summary["type"] = value.rsplit("#", 1)[-1]
+        elif prop == "eli:id_local":
+            summary["id_local"] = value
+        elif prop == "eli:in_force":
+            summary["in_force"] = value.rsplit("-", 1)[-1]
+        elif prop in ("eli:changes", "eli:changed_by", "eli:consolidates", "eli:consolidated_by"):
+            key = prop.split(":", 1)[1]
+            values = summary[key]
+            assert isinstance(values, list)
+            values.append(value)
+    return summary
+
+
+def eli_from_lov(lovnummer: str, lovnummerdato: str) -> str:
+    """LOV nr 1772 af 29/12/2025 -> /eli/lta/2025/1772.
+
+    Antagelse: aarstallet i ELI-URI'en er aaret i lovnummerdato. Verificeret paa
+    LOV nr 1772 af 29/12/2025. Gaelder ikke nodvendigvis for love udstedt taet paa
+    aarsskiftet, hvis Retsinformation bruger publiceringsaaret i stedet.
+    """
+    year = lovnummerdato[:4]
+    return f"eli/lta/{year}/{lovnummer}"
+
+
 def oda_get(path_and_query: str, limit: int = 3000) -> dict | None:
     """Hent fra Folketingets Aabne Data (OData v3). Returnerer parset JSON eller None."""
     url = f"{ODA_BASE}/{path_and_query}"
@@ -340,6 +395,244 @@ def step_oda(mode: str, arg: str = "") -> int:
     else:
         print(f"Ukendt oda-tilstand: {mode}. Brug: ping | sag <ord> | meta")
         return 2
+    return 0
+
+
+def step_find_law(term: str = "ligningsloven", sample: int = 6) -> int:
+    """Find en lovs ELI-URI uden at kende den paa forhaand.
+
+    Fremgangsmaade: find aendringslovforslag i Folketingets data, udled
+    aendringslovens ELI af lovnummer + dato, og foelg dens eli:changes tilbage til
+    selve loven.
+    """
+    from urllib.parse import quote
+
+    odata_filter = quote(
+        f"substringof('{term}',titel) and lovnummer ne null", safe="(),'"
+    )
+    data = oda_get(
+        f"Sag?$filter={odata_filter}&$orderby=lovnummerdato%20desc&$top={sample}&$format=json",
+        0,
+    )
+    if not data:
+        return 1
+
+    sager = data.get("value", [])
+    print(f"--- {len(sager)} vedtagne sager med {term!r} i titlen:")
+    for sag in sager:
+        dato = str(sag.get("lovnummerdato") or "")[:10]
+        print(
+            f"    sag {sag.get('id')}  {str(sag.get('nummer') or ''):8s} "
+            f"LOV {sag.get('lovnummer')} af {dato}"
+        )
+        print(f"        {str(sag.get('titel') or '')[:110]}")
+    print()
+
+    if not sager:
+        return 1
+
+    # Foelg den nyeste aendringslov tilbage til de love, den aendrer.
+    sag = sager[0]
+    eli = eli_from_lov(str(sag.get("lovnummer")), str(sag.get("lovnummerdato") or ""))
+    print(f"--- Udledt ELI for aendringsloven: /{eli}")
+    time.sleep(DELAY_SECONDS)
+    summary = rdfa_summary(eli)
+    if not summary:
+        print("    kunne ikke hente metadata - antagelsen om aarstal holder maaske ikke")
+        return 1
+
+    print(f"    {summary['title_short']}  [{summary['type']}]")
+    changes = summary["changes"]
+    assert isinstance(changes, list)
+    print(f"    aendrer {len(changes)} retsakter:")
+    print()
+
+    for target in changes:
+        time.sleep(DELAY_SECONDS)
+        target_summary = rdfa_summary(str(target))
+        if not target_summary:
+            print(f"    {target}: kunne ikke hente metadata")
+            continue
+        marker = "<<<" if term.lower() in str(target_summary["title"]).lower() else "   "
+        print(f"{marker} {target}")
+        print(
+            f"        {target_summary['title_short']}  [{target_summary['type']}] "
+            f"{target_summary['in_force']}"
+        )
+        print(f"        {str(target_summary['title'])[:100]}")
+    return 0
+
+
+def step_law_scope(eli: str, resolve_titles: int = 0) -> int:
+    """Vis omfanget af en lovs relationer: hvad den konsoliderer, og hvad der har aendret den."""
+    summary = rdfa_summary(eli)
+    if not summary:
+        print(f"Kunne ikke hente metadata for {eli}")
+        return 1
+
+    print(f"=== {summary['title_short']}  [{summary['type']}] {summary['in_force']}")
+    print(f"    {summary['title']}")
+    print(f"    id_local: {summary['id_local']}")
+    print()
+
+    for key in ("consolidates", "changed_by", "changes", "consolidated_by"):
+        values = summary[key]
+        assert isinstance(values, list)
+        print(f"--- {key}: {len(values)}")
+        for value in values:
+            print(f"    {value}")
+        print()
+
+    if resolve_titles:
+        targets = summary["consolidates"]
+        assert isinstance(targets, list)
+        print(f"--- Titler for de foerste {resolve_titles} konsoliderede retsakter:")
+        for target in targets[:resolve_titles]:
+            time.sleep(DELAY_SECONDS)
+            target_summary = rdfa_summary(str(target))
+            if not target_summary:
+                print(f"    {target}: kunne ikke hentes")
+                continue
+            print(f"    {target_summary['title_short']:32s} [{target_summary['type']}]")
+            print(f"        {str(target_summary['title'])[:100]}")
+    return 0
+
+
+def step_xml(eli: str, needle: str = "9 A") -> int:
+    """Hent dokumentets XML og beskriv strukturen. Vi skal kende skemaet foer vi parser."""
+    url = f"https://retsinformation.dk/{eli.lstrip('/')}/dan/xml"
+    status, content_type, body, error = fetch(url)
+    print(f"=== {url}")
+    print(f"    status {status}, type: {content_type}, {len(body)} bytes")
+    if error:
+        print(f"    FEJL: {error}")
+        return 1
+
+    text = body.decode("utf-8", errors="replace")
+    tags: dict[str, int] = {}
+    for tag in re.findall(r"<([A-Za-z0-9_:.-]+)", text):
+        tags[tag] = tags.get(tag, 0) + 1
+    print(f"--- {len(tags)} forskellige elementnavne, de hyppigste:")
+    for tag, count in sorted(tags.items(), key=lambda item: -item[1])[:20]:
+        print(f"    {count:6d}  <{tag}>")
+    print()
+
+    positions = [match.start() for match in re.finditer(re.escape(needle), text)]
+    print(f"--- {len(positions)} forekomster af {needle!r}. Foerste kontekst:")
+    for position in positions[:2]:
+        start = max(0, position - 250)
+        end = min(len(text), position + 450)
+        print("    " + re.sub(r"\s+", " ", text[start:end]))
+        print()
+    return 0
+
+
+def step_paragraf(eli: str, wanted: str = "§ 9 A") -> int:
+    """Traek en enkelt paragraf ud af Lex Dania-XML'en og vis dens struktur.
+
+    Formaal: se om <Stk> og <Linea> giver os stykker og punktummer direkte, saa vi
+    slipper for selv at segmentere saetninger.
+    """
+    import xml.etree.ElementTree as ElementTree
+
+    url = f"https://retsinformation.dk/{eli.lstrip('/')}/dan/xml"
+    status, content_type, body, error = fetch(url)
+    if error:
+        print(f"FEJL: {error}")
+        return 1
+
+    try:
+        root = ElementTree.fromstring(body)
+    except ElementTree.ParseError as parse_error:
+        print(f"Kunne ikke parse XML: {parse_error}")
+        return 1
+
+    def text_of(element: ElementTree.Element) -> str:
+        return re.sub(r"\s+", " ", "".join(element.itertext())).strip()
+
+    target = None
+    for paragraf in root.iter("Paragraf"):
+        head = text_of(paragraf)[:20]
+        if head.startswith(wanted) and not head.startswith(f"{wanted} A"):
+            target = paragraf
+            break
+
+    if target is None:
+        print(f"Fandt ikke {wanted}. Foerste 10 paragraffer i dokumentet:")
+        for index, paragraf in enumerate(root.iter("Paragraf")):
+            if index >= 10:
+                break
+            print(f"    {text_of(paragraf)[:60]}")
+        return 1
+
+    print(f"=== {wanted} fundet. Attributter: {target.attrib}")
+    print(f"--- direkte boernelementer: {[child.tag for child in target]}")
+    print()
+
+    for stk in target.iter("Stk"):
+        label = ""
+        for child in stk:
+            if child.tag == "Explicatus":
+                label = text_of(child)
+                break
+        lineas = list(stk.iter("Linea"))
+        print(f"--- {label or '(stk. 1, uden Explicatus)'}  id={stk.get('id')}")
+        print(f"    {len(lineas)} <Linea>-elementer (punktummer):")
+        for number, linea in enumerate(lineas, start=1):
+            print(f"    {number}. pkt.  {text_of(linea)[:150]}")
+        print()
+    return 0
+
+
+def step_touches(eli: str, wanted: str = "§ 9 A") -> int:
+    """Hvilke af lovens senere aendringslove naevner en bestemt paragraf?
+
+    Groft tekstopslag, ikke en parser. Formaalet er at maale omfanget: hvor mange af
+    aendringslovene skal vi overhovedet analysere for netop denne bestemmelse.
+    """
+    summary = rdfa_summary(eli)
+    if not summary:
+        print(f"Kunne ikke hente metadata for {eli}")
+        return 1
+
+    amendments = summary["changed_by"]
+    assert isinstance(amendments, list)
+    print(f"=== {summary['title_short']}: {len(amendments)} senere aendringslove")
+    print(f"=== soeger efter {wanted!r} i hver\n")
+
+    touching = 0
+    for uri in amendments:
+        time.sleep(DELAY_SECONDS)
+        path = str(uri).split("retsinformation.dk/", 1)[-1]
+        url = f"https://retsinformation.dk/{path}/dan/xml"
+        status, content_type, body, error = fetch(url)
+        if error:
+            print(f"    {uri}: kunne ikke hentes ({error})")
+            continue
+
+        text = re.sub(r"\s+", " ", body.decode("utf-8", errors="replace"))
+        plain = re.sub(r"<[^>]+>", " ", text)
+        plain = re.sub(r"\s+", " ", plain)
+        hits = [match.start() for match in re.finditer(re.escape(wanted), plain)]
+
+        title = ""
+        title_match = re.search(r"<Titel[^>]*>(.*?)</Titel>", text)
+        if title_match:
+            title = re.sub(r"<[^>]+>", "", title_match.group(1))[:70]
+
+        marker = "TRAEF" if hits else "     "
+        print(f"{marker} {uri}  ({len(body)} bytes, {len(hits)} forekomster)")
+        if title:
+            print(f"        {title}")
+        if hits:
+            touching += 1
+            for position in hits[:2]:
+                start = max(0, position - 120)
+                end = min(len(plain), position + 200)
+                print(f"        ...{plain[start:end].strip()}...")
+        print()
+
+    print(f"--- {touching} af {len(amendments)} aendringslove naevner {wanted!r}")
     return 0
 
 
@@ -579,6 +872,26 @@ if __name__ == "__main__":
     elif step == "get":
         limit = int(sys.argv[3]) if len(sys.argv) > 3 else 4000
         sys.exit(step_get(sys.argv[2], limit))
+    elif step == "touches":
+        sys.exit(step_touches(sys.argv[2], sys.argv[3] if len(sys.argv) > 3 else "§ 9 A"))
+    elif step == "para":
+        sys.exit(step_paragraf(sys.argv[2], sys.argv[3] if len(sys.argv) > 3 else "§ 9 A"))
+    elif step == "xml":
+        sys.exit(step_xml(sys.argv[2], sys.argv[3] if len(sys.argv) > 3 else "9 A"))
+    elif step == "scope":
+        sys.exit(
+            step_law_scope(
+                sys.argv[2],
+                int(sys.argv[3]) if len(sys.argv) > 3 else 0,
+            )
+        )
+    elif step == "findlaw":
+        sys.exit(
+            step_find_law(
+                sys.argv[2] if len(sys.argv) > 2 else "ligningsloven",
+                int(sys.argv[3]) if len(sys.argv) > 3 else 6,
+            )
+        )
     elif step == "oda":
         sys.exit(step_oda(sys.argv[2], sys.argv[3] if len(sys.argv) > 3 else ""))
     elif step == "try":

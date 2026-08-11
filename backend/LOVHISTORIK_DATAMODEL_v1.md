@@ -42,14 +42,22 @@ testsuite.
 
 ## Punktummer er offsets, ikke entiteter
 
-Ændringsinstrukser peger på "1. pkt.", men sætningsopdeling af dansk lovtekst er
-skrøbelig ("jf.", "nr.", "stk.", talangivelser), og lovgiverens egen optælling er den
-autoritative — ikke vores.
+Ændringsinstrukser peger på "1. pkt.". Oprindeligt antog vi, at vi selv skulle segmentere
+sætninger, hvilket er skrøbeligt på dansk lovtekst ("jf.", "nr.", "stk.", talangivelser).
 
-Atomar enhed er derfor stk./nr., som er utvetydigt afgrænset i både XML og HTML.
-"2. pkt." er et offset-interval ind i en konkret tekstversion. Punktumnummerering er en
-afledt visning beregnet af en versioneret segmenteringsfunktion. Er vores optælling
-uenig med instruksen, fejler ét opslag i stedet for hele datamodellen.
+Det viste sig at være unødvendigt for dokumenter i Lex Dania-XML: hvert punktum er
+markeret op som sit eget `<Linea>`-element. Lovgiverens egen optælling ligger altså i
+opmærkningen. Kontrolleret på ligningslovens § 9 A, stk. 5, hvis 3. punktum henviser til
+"2. pkt.", og hvor `<Linea>`-nummereringen rammer rigtigt.
+
+Atomar enhed er stk./nr., som er utvetydigt afgrænset af `<Stk>`. Offsets er stadig
+nødvendige, fordi ændringer går under sætningsniveau — en instruks kan udskifte en frase
+inde i et punktum. Men sætningsgrænserne er nu givet frem for gættet, og det fjerner en
+hel klasse af fejl for moderne dokumenter.
+
+For dokumenter uden Lex Dania-opmærkning (før 2007) vender problemet tilbage. Punktum-
+nummerering skal derfor stadig være en afledt, versioneret beregning, ikke en del af
+identiteten — så den kan falde tilbage på egen segmentering, hvor opmærkningen mangler.
 
 Offsets regnes på normaliseret tekst. `normalization_version = 1` betyder: sammenfaldende
 whitespace kollapset til ét mellemrum, hårde mellemrum og typografiske citationstegn
@@ -88,6 +96,35 @@ det fremsatte lovforslag, ændringsforslag, betænkning og vedtagelse ved 3. beh
 
 Feltet `Sag.retsinformationsurl` findes, men var tomt på begge undersøgte sager. Det
 kan bruges som bekræftelse, aldrig som primær kobling.
+
+**Dokumentstruktur.** Lex Dania-XML'en har `<Paragraf localId="9A">`, `<Stk id="...">`
+med GUID, og `<Linea>` pr. punktum. Paragraffens `localId` er en maskinlæsbar nøgle, vi
+ikke selv skal udlede af overskriftsteksten. Det er uafklaret, om `<Stk>`-GUID'erne er
+stabile på tværs af lovbekendtgørelser — indtil det er målt, må de ikke bruges som
+bestemmelsesidentitet.
+
+**Ændringsinstrukser.** Grammatikken er som forventet og går ned på punktumniveau.
+Konkret eksempel fra LOV nr. 616 af 30/06/2026:
+
+```text
+1. I § 9 C, stk. 3, 1. pkt., ændres »4. pkt.« til: »4. og 5. pkt.«, og i 2. pkt.
+   indsættes efter »kilometertakst«: »efter 1. og 5. pkt.«
+2. I § 9 C, stk. 3, indsættes som 5. pkt.: ...
+```
+
+Citationstegnene er danske dobbelte anførselstegn (»…«), ikke ASCII. Ændringslovene
+angiver desuden selv deres udgangspunkt i teksten — "som ændret senest ved lov nr. 1781
+af 29. december 2025" — hvilket giver en gratis kontrol af, at replay-kæden er komplet.
+
+**Omfang for prototypen.** Ligningsloven er `/eli/lta/2025/1500` (LBK nr. 1500 af
+24/11/2025, 700 KB XML, 171 paragraffer). Den konsoliderer 33 ændringslove og er derefter
+ændret af 9. Ingen af de 9 nævner § 9 A — kontrolleret med en positiv kontrol på § 9 C,
+som gav træf i én af dem. Den gældende ordlyd af § 9 A, stk. 3 (tre punktummer) er
+altså identisk med lovbekendtgørelsens, og hele proveniensen ligger før november 2025.
+
+To URI'er optræder både i `consolidates` og `changed_by`. Det tyder på delvis
+ikrafttræden, hvor dele af en ændringslov er konsolideret og andre dele endnu ikke er
+trådt i kraft. Modellen må derfor ikke antage, at de to mængder er disjunkte.
 
 **TLS.** Udviklingsmaskinen har TLS-inspektion, så Pythons certifi-bundle afvises med
 "unable to get local issuer certificate". Brug pakken `truststore`, der validerer mod
@@ -305,13 +342,19 @@ Disse er empiriske og skal afklares med data, ikke med antagelser:
    deterministisk af Folketingets periode og lovforslagsnummer? Hvis ja, har vi en ren
    bro fra sagen til den maskinlæsbare XML-udgave af lovforslaget i stedet for PDF.
    Ikke testet endnu.
-4. Holder antagelsen om, at Lex Dania-XML findes for dokumenter efter 2007-09-24?
-   Oplysningen stammer fra Retsinformations egen beskrivelse og er ikke verificeret.
-5. Ophævelse efterfulgt af genindsættelse af samme paragrafnummer modelleres som ny
+4. Hvor langt tilbage findes Lex Dania-XML? Formatet er bekræftet for dokumenter fra
+   2025 og 2026, men grænsen ved 2007-09-24 stammer fra Retsinformations egen
+   beskrivelse og er ikke målt. Det afgør, hvornår vi mister `<Linea>`-opmærkningen og
+   må segmentere selv.
+5. Er `<Stk id="...">`-GUID'erne stabile på tværs af lovbekendtgørelser? Hvis ja, er de
+   en gratis bestemmelsesidentitet. Hvis nej — og det er det, jeg forventer — skal de
+   ignoreres helt, så de ikke smugler falsk kontinuitet ind i modellen.
+6. Ophævelse efterfulgt af genindsættelse af samme paragrafnummer modelleres som ny
    `provision` med `succeeds_provision_id`, så gamle forarbejder ikke arves utilsigtet.
    Konstruktionen er ikke afprøvet mod et virkeligt eksempel endnu.
-5. Stemmer vores punktumsegmentering overens med lovgiverens optælling? Måles ved, hvor
-   ofte `target_ref_raw` peger på et punktum, vi ikke kan opløse.
+7. Punktumsegmenteringen er bekræftet for XML-dokumenter via `<Linea>`. For ældre
+   dokumenter uden opmærkning er spørgsmålet stadig åbent og måles ved, hvor ofte
+   `target_ref_raw` peger på et punktum, vi ikke kan opløse.
 
 ## Hvad modellen bevidst ikke gør
 
