@@ -636,6 +636,90 @@ def step_touches(eli: str, wanted: str = "§ 9 A") -> int:
     return 0
 
 
+def oda_entity(path: str) -> dict | None:
+    """Hent en enkelt OData-entitet uden at printe hele svaret."""
+    url = f"{ODA_BASE}/{path}"
+    status, content_type, body, error = fetch(url, "application/json")
+    if error or "json" not in content_type.lower():
+        print(f"    FEJL ved {url}: {error or content_type}")
+        return None
+    try:
+        return json.loads(body.decode("utf-8", errors="replace"))
+    except json.JSONDecodeError as decode_error:
+        print(f"    ugyldig JSON fra {url}: {decode_error}")
+        return None
+
+
+def step_chain(sag_id: str) -> int:
+    """Fra Folketingets sag til lovforslagets bemaerkninger paa Retsinformation.
+
+    Tester samtidig, om FT-accessionsnummeret kan udledes af periode og
+    lovforslagsnummer, saa vi kan naa den maskinlaesbare XML frem for PDF.
+    """
+    sag = oda_entity(f"Sag({sag_id})?$format=json")
+    if not sag:
+        return 1
+    nummer = str(sag.get("nummernumerisk") or "")
+    periode_id = sag.get("periodeid")
+    print(f"=== Sag {sag_id}: {sag.get('nummer')}  LOV {sag.get('lovnummer')} "
+          f"af {str(sag.get('lovnummerdato') or '')[:10]}")
+    print(f"    {str(sag.get('titel') or '')[:110]}")
+
+    time.sleep(DELAY_SECONDS)
+    periode = oda_entity(f"Periode({periode_id})?$format=json")
+    if not periode:
+        return 1
+    kode = str(periode.get("kode") or "")
+    print(f"    periode {periode_id}: kode={kode!r} titel={periode.get('titel')!r}")
+    print()
+
+    # Accessionsmoenstre set i sitemap'et: 202112L00195, 202522L00017, 20252XX00061.
+    # Hypotese: {periodekode}{typekode}{nummer:05d}, hvor lovforslag har typekode '2L'.
+    candidates = [
+        f"{kode}2L{int(nummer):05d}",
+        f"{kode}L{int(nummer):05d}",
+        f"{kode}1L{int(nummer):05d}",
+    ] if nummer.isdigit() else []
+
+    found = ""
+    for accn in candidates:
+        time.sleep(DELAY_SECONDS)
+        summary = rdfa_summary(f"eli/ft/{accn}")
+        if summary and summary.get("title"):
+            print(f"TRAEF  /eli/ft/{accn}")
+            print(f"       {summary['title_short']}  [{summary['type']}]")
+            print(f"       {str(summary['title'])[:110]}")
+            found = accn
+            break
+        print(f"       /eli/ft/{accn}: intet")
+
+    if not found:
+        print()
+        print("Accessionsnummeret kunne ikke udledes af periode og nummer.")
+        return 1
+
+    # Hent lovforslagets XML og find de specielle bemaerkninger.
+    print()
+    time.sleep(DELAY_SECONDS)
+    url = f"https://retsinformation.dk/eli/ft/{found}/dan/xml"
+    status, content_type, body, error = fetch(url)
+    print(f"--- {url}")
+    print(f"    status {status}, type {content_type}, {len(body)} bytes")
+    if error:
+        print(f"    FEJL: {error}")
+        return 1
+
+    text = re.sub(r"<[^>]+>", " ", body.decode("utf-8", errors="replace"))
+    text = re.sub(r"\s+", " ", text)
+    for marker in ("Bemærkninger til lovforslagets enkelte bestemmelser", "Til nr. 1", "Til nr. 2"):
+        positions = [match.start() for match in re.finditer(re.escape(marker), text)]
+        print(f"    {len(positions):3d} forekomster af {marker!r}")
+        if positions:
+            start = positions[-1]
+            print(f"        ...{text[start:start + 420].strip()}...")
+    return 0
+
+
 def step_try(paths: list[str]) -> int:
     """Afproev flere kandidatstier og rapporter hvilke der giver JSON."""
     for path in paths:
@@ -872,6 +956,8 @@ if __name__ == "__main__":
     elif step == "get":
         limit = int(sys.argv[3]) if len(sys.argv) > 3 else 4000
         sys.exit(step_get(sys.argv[2], limit))
+    elif step == "chain":
+        sys.exit(step_chain(sys.argv[2]))
     elif step == "touches":
         sys.exit(step_touches(sys.argv[2], sys.argv[3] if len(sys.argv) > 3 else "§ 9 A"))
     elif step == "para":

@@ -126,6 +126,33 @@ To URI'er optræder både i `consolidates` og `changed_by`. Det tyder på delvis
 ikrafttræden, hvor dele af en ændringslov er konsolideret og andre dele endnu ikke er
 trådt i kraft. Modellen må derfor ikke antage, at de to mængder er disjunkte.
 
+**FT-accession kan udledes.** Folketingets `Periode.kode` (fx `20252` for 2025-26,
+2. samling) kombineret med lovforslagets nummer giver Retsinformations accession efter
+mønsteret `{periodekode}2L{nummer:05d}`. Verificeret: sag 105171 (L 4, periode 167)
+giver `202522L00004`, som er `/eli/ft/202522L00004` — "2025/2 LSF 4". Det betyder, at vi
+når lovforslagets XML frem for Folketingets PDF.
+
+**Hele kæden er demonstreret.** For LL § 9 C, stk. 3:
+
+```text
+LL § 9 C, stk. 3                     LBK nr 1500 af 24/11/2025, <Linea> pr. punktum
+  → ændret ved                       LOV nr 616 af 30/06/2026  (eli:changed_by)
+  → § 1, nr. 2                       "I § 9 C, stk. 3, indsættes som 5. pkt.: …"
+  → sag 105171, L 4                  Folketingets Åbne Data (lovnummer + dato)
+  → /eli/ft/202522L00004             udledt accession, XML på 117 KB
+  → "Til § 1" → "Til nr. 2"          "Det foreslås i ligningslovens § 9 C, stk. 3,
+                                      at indsætte som 5. pkt.: »For indkomståret …«"
+```
+
+Ingen LLM indgår i noget af dette. Bemærkningen citerer selv den ændring, instruksen
+foreskriver, hvilket giver en direkte kontrol af, at koblingen er rigtig.
+
+**Titler kan ikke bruges som nøgle.** Sagens titel i Folketingets data er "ændring af
+ligningsloven og lov om en aktiv beskæftigelsesindsats", mens lovforslagets egen titel
+er "ændring af ligningsloven (Forhøjelse af befordringsfradraget for indkomståret
+2026)". Lovforslag ændrer titel undervejs i behandlingen. Koblingen skal derfor gå via
+numre og datoer, aldrig via tekstsammenligning af titler.
+
 **TLS.** Udviklingsmaskinen har TLS-inspektion, så Pythons certifi-bundle afvises med
 "unable to get local issuer certificate". Brug pakken `truststore`, der validerer mod
 OS'ets eget trust store. På en Linux-server uden inspektion er det ikke nødvendigt.
@@ -325,10 +352,36 @@ Replay fra LBK *n* til LBK *n+1* skal reproducere LBK *n+1*'s faktiske ordlyd. D
 giver et objektivt, selvgenererende testorakel på tværs af hele lovsamlingen uden
 manuel annotering. `reconciliation` er tabellen, hvor resultatet lander.
 
-Acceptkriteriet for prototypen bør formuleres herefter: motoren skal bestå på at
-*vide*, hvad den ikke kan spore — ikke på at finde forarbejder fra før 2007. En motor,
-der ærligt melder hul i historikken, er brugbar; en der gætter, er værre end ingenting
-i juridisk sammenhæng.
+## Teststrategi
+
+Prototypen bør ikke bindes op på én bestemmelse. Så længe testtilfælde vælges med
+intuition, risikerer vi at vælge dem, motoren i forvejen kan klare, og så måler testen
+ingenting. Strategien har derfor tre dele med hver sin rolle.
+
+**Ende-til-ende: LL § 9 C, stk. 3.** Ændret ved LOV nr. 616 af 30/06/2026, som i én
+ændringslov indeholder tre forskellige konstruktioner — fraseudskiftning inde i 1. pkt.,
+indsættelse efter et bestemt ord i 2. pkt., og et nyt 5. pkt. Dokumentet er i Lex
+Dania-XML, og forarbejdskæden er kendt: sag 105171, lovforslag L 4. Bruges til at
+demonstrere hele kæden fra bestemmelse til specielle bemærkninger.
+
+**Den egentlige måling: udvunden testmængde.** Hver ændringsinstruks mellem to
+lovbekendtgørelser er et testtilfælde med automatisk facitliste — instruksen siger, hvad
+der skal ske, og den næste lovbekendtgørelse viser resultatet. Testmængden udvindes
+derfor maskinelt og stratificeres efter konstruktionstype (`ændres … til`,
+`affattes således`, `indsættes som nyt punktum`, `ophæves`, `stk. X bliver stk. Y`).
+Dækningsgraden måles pr. type, så vi ser hvor parseren er svag, i stedet for om den
+lige akkurat klarer én paragraf.
+
+**Grænsetest: LL § 9 A, stk. 3.** Ingen af de 9 ændringslove efter LBK nr. 1500 rører
+bestemmelsen, så hele dens proveniens ligger før november 2025 og for de ældste
+punktummer sandsynligvis før 2007. Den er derfor uegnet som første integrationstest —
+en fejl ville ikke kunne skelnes fra manglende data. Den beholdes i stedet som test af,
+at motoren melder ærligt om huller: den skal kunne sige, at 1. punktums oprindelse ikke
+kan spores længere tilbage, frem for at gætte.
+
+Acceptkriteriet formuleres herefter: motoren skal bestå på at *vide*, hvad den ikke kan
+spore. En motor, der ærligt melder hul i historikken, er brugbar; en der gætter, er
+værre end ingenting i juridisk sammenhæng.
 
 ## Åbne spørgsmål
 
@@ -338,10 +391,9 @@ Disse er empiriske og skal afklares med data, ikke med antagelser:
    parret `lovnummer` + `lovnummerdato`. Se afsnittet om verificeret adgang.
 2. Hvor stor en andel af ændringsinstrukserne kan parses deterministisk?
    `operation.parse_status` måler det.
-3. Kan Retsinformations FT-accession (`/eli/ft/{accn}`, fx `202522L00017`) udledes
-   deterministisk af Folketingets periode og lovforslagsnummer? Hvis ja, har vi en ren
-   bro fra sagen til den maskinlæsbare XML-udgave af lovforslaget i stedet for PDF.
-   Ikke testet endnu.
+3. AFKLARET. Accessionen udledes som `{periodekode}2L{nummer:05d}`. Verificeret på ét
+   lovforslag; mønsteret bør kontrolleres på et bredere udsnit, før det bruges blindt,
+   særligt for delte lovforslag (fx "L 64 A") hvor nummeret ikke er rent numerisk.
 4. Hvor langt tilbage findes Lex Dania-XML? Formatet er bekræftet for dokumenter fra
    2025 og 2026, men grænsen ved 2007-09-24 stammer fra Retsinformations egen
    beskrivelse og er ikke målt. Det afgør, hvornår vi mister `<Linea>`-opmærkningen og
