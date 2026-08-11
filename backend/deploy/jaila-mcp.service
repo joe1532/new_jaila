@@ -1,0 +1,25 @@
+[Unit]
+Description=JAILA Remote MCP (isolated retrieval service)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/opt/jaila_mcp
+EnvironmentFile=/etc/jaila-mcp.env
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/opt/jaila_mcp/.venv/bin/python -m uvicorn backend.mcp_server:app --host 127.0.0.1 --port 8020
+Restart=on-failure
+RestartSec=5
+
+# Runtime isolation: a crash or restart affects only this service.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

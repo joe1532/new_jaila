@@ -7,7 +7,7 @@ echo   JAILA Clean-Start Deployment
 echo ========================================
 echo.
 
-set "SSH_KEY=C:\Users\micro\.ssh\id_ed25519"
+if not defined SSH_KEY set "SSH_KEY=%USERPROFILE%\.ssh\id_ed25519"
 set "SSH_USER=maestro"
 set "SSH_HOST=168.119.63.168"
 set "REMOTE_BASE=/var/www/site/clean-start"

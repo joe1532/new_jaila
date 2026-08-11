@@ -2906,3 +2906,21 @@ def get_log_file(filename: str) -> FileResponse:
         raise HTTPException(status_code=404, detail="Logfil ikke fundet")
 
     return FileResponse(path=candidate, media_type="application/pdf", filename=filename)
+
+
+if os.getenv("JAILA_SERVE_FRONTEND", "").strip().lower() in {"1", "true", "yes", "on"}:
+    from fastapi.staticfiles import StaticFiles
+    from starlette.responses import RedirectResponse
+
+    frontend_dir = BASE_DIR / "Frontend"
+    if frontend_dir.is_dir():
+
+        @app.get("/", include_in_schema=False)
+        def _local_frontend_root():
+            return RedirectResponse(url="/clean-start/index.html")
+
+        app.mount(
+            "/clean-start",
+            StaticFiles(directory=str(frontend_dir), html=True),
+            name="clean-start",
+        )
