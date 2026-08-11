@@ -5,7 +5,7 @@ konstruktioner findes, hvor godt er målene opmærket, og hvordan ser de svære
 tilfælde ud. Værktøjet klassificerer kun — det anvender ikke operationerne på
 lovteksten, så en instruks kan sagtens være klassificeret uden at kunne udføres.
 
-Kør med:  streamlit run spikes/lovhistorik_app.py
+Kør med:  streamlit run lovhistorik/app.py
 
 Udtrækket ligger i lex_dania.py, som proben bruger samme vej, så de to aldrig kan
 komme til at vise forskellige tal.
@@ -102,7 +102,7 @@ def main() -> None:
         max_acts = st.slider("Højst antal ændringslove", 1, 100, 40)
         st.divider()
         st.caption(
-            "Dokumenter caches i spikes/.cache/. Første kørsel for en ny lov tager "
+            "Dokumenter caches i lovhistorik/.cache/. Første kørsel for en ny lov tager "
             "omkring et sekund pr. dokument."
         )
 

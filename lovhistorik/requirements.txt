@@ -1,0 +1,12 @@
+# Lovhistorikmotoren har bevidst få afhængigheder. Hentning og XML-parsning klares
+# med Pythons standardbibliotek (urllib, xml.etree, sqlite3), fordi kilderne er
+# enkle HTTP-endepunkter og velformet XML.
+
+# Validerer TLS mod OS'ets eget trust store. Nødvendig på maskiner med
+# TLS-inspektion, hvor Pythons medfølgende certifikatbundt afvises. Kan udelades
+# på en server uden inspektion.
+truststore>=0.9
+
+# Kun til inspektionsværktøjet app.py, ikke til selve motoren.
+streamlit>=1.40
+pandas>=2.0

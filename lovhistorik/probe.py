@@ -1,10 +1,12 @@
 """Engangs-probe mod Retsinformation.
 
-Formål: besvare de empiriske spørgsmål i backend/LOVHISTORIK_DATAMODEL_v1.md, før
-der bygges databaselag. Scriptet henter et lille antal URL'er og rapporterer, hvad
-der faktisk kommer tilbage.
+Formål: besvare de empiriske spørgsmål i DATAMODEL.md, før der bygges databaselag.
+Scriptet henter et lille antal URL'er og rapporterer, hvad der faktisk kommer tilbage.
 
-Denne kode skal smides væk. Den er ikke en del af motoren.
+Det meste af denne kode skal smides væk; den er udforskning, ikke motor. Undtagelsen
+er `mine`, som tæller på testmængden og henter sit udtræk fra lex_dania.py.
+
+Kør med:  python lovhistorik/probe.py <kommando> [argumenter]
 
 TLS: maskinen har TLS-inspektion, så Pythons certifi-bundle afvises. Vi bruger
 truststore, der validerer via Windows' eget trust store. På en Linux-server uden

@@ -66,8 +66,7 @@ interval, ellers rådner alle offsets stille, første gang normaliseringen forbe
 
 ## Verificeret adgang
 
-Afklaret empirisk med `spikes/retsinfo_probe.py` den 11. august 2026. Alt herunder er
-målt, ikke antaget.
+Afklaret empirisk med `probe.py` den 11. august 2026. Alt herunder er målt, ikke antaget.
 
 **Metadata.** Hæng `.rdfa` på en vilkårlig ELI-URI, så returneres ELI-metadata som
 struktureret JSON — fx `/eli/lta/2025/1772.rdfa`. Ingen autentificering. Relationerne
@@ -228,11 +227,10 @@ lovbekendtgørelse kan afgøre det. Forventningen er, at anvendelsesgraden blive
 lavere end 100 %, især for `affattes` (12 punkter), hvor den nye tekst kan spænde over
 flere stykker med egen intern struktur.
 
-Analysen kan gentages med `python spikes/retsinfo_probe.py mine eli/lta/2025/1500`, og
-materialet kan gennemses instruks for instruks med `streamlit run
-spikes/lovhistorik_app.py`. Begge bruger `spikes/lex_dania.py`, så de ikke kan komme til
-at måle forskellige ting. Dokumenterne caches i `spikes/.cache/`, så gentagne kørsler
-ikke belaster kilden.
+Analysen kan gentages med `python lovhistorik/probe.py mine eli/lta/2025/1500`, og
+materialet kan gennemses instruks for instruks med `streamlit run lovhistorik/app.py`.
+Begge bruger `lex_dania.py`, så de ikke kan komme til at måle forskellige ting.
+Dokumenterne caches i `lovhistorik/.cache/`, så gentagne kørsler ikke belaster kilden.
 
 Kursivering duer ikke alene som målangivelse. Den bruges også om den nye betegnelse
 ("indsættes som *stk. 2:*"), så antallet af kursiverede tekststykker siger intet om

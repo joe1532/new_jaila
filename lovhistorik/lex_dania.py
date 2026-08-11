@@ -1,8 +1,8 @@
 """Udtræk af ændringsinstrukser fra Retsinformations Lex Dania-XML.
 
 Dette modul er den ene implementering af hentning, udtræk og klassifikation.
-Både proben (`retsinfo_probe.py mine`) og inspektionsappen (`lovhistorik_app.py`)
-bruger det, så de aldrig kan komme til at måle to forskellige ting.
+Både proben (`probe.py mine`) og inspektionsappen (`app.py`) bruger det, så de aldrig
+kan komme til at måle to forskellige ting.
 
 Modulet klassificerer kun. Det anvender ikke operationerne på lovteksten, og en
 klassificeret instruks er derfor ikke det samme som en instruks, vi kan udføre.
