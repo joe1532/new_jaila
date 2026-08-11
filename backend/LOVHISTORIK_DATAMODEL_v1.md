@@ -11,6 +11,9 @@ bestemte forarbejdsmateriale.
 
 Dette dokument beskriver datamodellen. Der er ingen implementering endnu.
 
+Motoren bruger to kilder: Retsinformation til retsakter, tekst og ændringsrelationer,
+og Folketingets Åbne Data til koblingen mellem en vedtaget lov og dens lovforslag.
+
 ## Afgrænsning for v1
 
 - Kun én lovfamilie: ligningsloven.
@@ -52,6 +55,43 @@ Offsets regnes på normaliseret tekst. `normalization_version = 1` betyder: samm
 whitespace kollapset til ét mellemrum, hårde mellemrum og typografiske citationstegn
 erstattet af ASCII, ingen ændring af ordlyd. Versionsnummeret gemmes sammen med hvert
 interval, ellers rådner alle offsets stille, første gang normaliseringen forbedres.
+
+## Verificeret adgang
+
+Afklaret empirisk med `spikes/retsinfo_probe.py` den 11. august 2026. Alt herunder er
+målt, ikke antaget.
+
+**Metadata.** Hæng `.rdfa` på en vilkårlig ELI-URI, så returneres ELI-metadata som
+struktureret JSON — fx `/eli/lta/2025/1772.rdfa`. Ingen autentificering. Relationerne
+`changes`, `changed_by`, `consolidates`, `consolidated_by`, `commences`, `basis_for`,
+`in_force` og `id_local` findes, som Retsinformations egen dokumentation på
+`api/eli/documentation/metadata-types` beskriver.
+
+**Indhold.** `eli:is_embodied_by` peger direkte på `/dan/xml`, `/dan/html` og
+`/dan/pdf`. Vi skal ikke crawle websider. Selve sitet er en JavaScript-app, hvis HTML
+kun indeholder OpenGraph-tags, så server-renderet indhold er ikke en farbar vej.
+
+**Omfang.** Sitemap'et er et indeks med 21 sider à 10.000 URL'er, altså cirka 200.000
+dokumenter. `robots.txt` indeholder kun en sitemap-henvisning og ingen `Disallow`.
+
+**Identitet.** `eli:id_local` er identisk med accessionsnummeret, fx `A20250177230`.
+URI-skabelonerne er officielt dokumenteret på `api/eli/documentation/uri-templates`:
+`/{pubMedia}/{year}/{number}` og `/ft/{accn}` for Folketingets dokumenter.
+
+**Forarbejder.** Relationen lov → lovforslag findes IKKE i ELI-metadata. Det blev
+testet på en rigtig ændringslov (LOV nr. 1772 af 29/12/2025, 54 triples): den har
+`changes` og `consolidated_by`, men ingen henvisning til `/eli/ft/`. Koblingen hentes
+i stedet fra Folketingets Åbne Data (`https://oda.ft.dk/api`, OData v3), hvor
+`Sag`-entiteten har `lovnummer` og `lovnummerdato`. Kæden er verificeret hele vejen:
+lov 1772/2025 → sag 103490 ("L 68") → 14 dokumenter, herunder skriftlig fremsættelse,
+det fremsatte lovforslag, ændringsforslag, betænkning og vedtagelse ved 3. behandling.
+
+Feltet `Sag.retsinformationsurl` findes, men var tomt på begge undersøgte sager. Det
+kan bruges som bekræftelse, aldrig som primær kobling.
+
+**TLS.** Udviklingsmaskinen har TLS-inspektion, så Pythons certifi-bundle afvises med
+"unable to get local issuer certificate". Brug pakken `truststore`, der validerer mod
+OS'ets eget trust store. På en Linux-server uden inspektion er det ikke nødvendigt.
 
 ## Tabeller
 
@@ -153,14 +193,21 @@ provenance_range (
   completeness        TEXT NOT NULL   -- complete | truncated_at_cutoff | unknown
 )
 
--- Det empirisk usikre led: ændringslov -> Folketingets sagsforløb -> lovforslag.
+-- Ændringslov -> Folketingets sagsforløb -> lovforslag.
+-- Koblingen kommer fra Folketingets Åbne Data, ikke fra Retsinformations ELI-metadata.
+-- Nøglen er PARRET lovnummer + lovnummerdato: lovnumre genbruges hvert år.
 bill_link (
   id                  INTEGER PRIMARY KEY,
   act_document_id     INTEGER NOT NULL REFERENCES document(id),
-  ft_accession        TEXT,
+  lovnummer           TEXT NOT NULL,  -- fx '1772'
+  lovnummerdato       TEXT NOT NULL,  -- fx '2025-12-29'  ALDRIG nummer alene
+  oda_sag_id          INTEGER,        -- Folketingets Sag.id, fx 103490
+  ft_bill_number      TEXT,           -- fx 'L 68'
+  ft_periode_id       INTEGER,
+  ft_accession        TEXT,           -- Retsinformations /eli/ft/{accn}, hvis udledt
   bill_document_id    INTEGER REFERENCES document(id),
-  resolution_method   TEXT NOT NULL,  -- eli_metadata | sagsforloeb_html
-                                      -- | heuristic | manual
+  resolution_method   TEXT NOT NULL,  -- oda_lovnummer | oda_titel
+                                      -- | retsinfo_sagsforloeb | manual
   verified            INTEGER NOT NULL DEFAULT 0,
   verified_note       TEXT
 )
@@ -218,6 +265,10 @@ Disse skal håndhæves i kode, ikke kun i hovedet:
    `normalization_version`.
 6. Punktumnummerering lagres ikke som identitet. Den beregnes.
 7. `llm_interpretation` er afledt data. Den må ikke læses af replay-motoren.
+8. Koblingen til et lovforslag laves aldrig på `lovnummer` alene. Lovnumre genbruges
+   hvert år — et opslag på "1772" rammer både en lov fra 2023 og en fra 2025. Uden
+   datoen ville forarbejder fra en helt anden lov blive knyttet til bestemmelsen, og
+   fejlen ville være svær at opdage bagefter.
 
 ## Algoritmisk hovedarbejde
 
@@ -246,14 +297,17 @@ i juridisk sammenhæng.
 
 Disse er empiriske og skal afklares med data, ikke med antagelser:
 
-1. Kan relationen ændringslov → Folketingets sagsforløb hentes fra ELI-metadata, eller
-   kræver den parsning af sagsforløbs-HTML? `bill_link.resolution_method` måler det
-   løbende.
+1. AFKLARET. Relationen findes ikke i ELI-metadata, men i Folketingets Åbne Data via
+   parret `lovnummer` + `lovnummerdato`. Se afsnittet om verificeret adgang.
 2. Hvor stor en andel af ændringsinstrukserne kan parses deterministisk?
    `operation.parse_status` måler det.
-3. Holder antagelsen om, at Lex Dania-XML findes for dokumenter efter 2007-09-24?
-   Oplysningen stammer fra Retsinformations egen beskrivelse og er ikke verificeret her.
-4. Ophævelse efterfulgt af genindsættelse af samme paragrafnummer modelleres som ny
+3. Kan Retsinformations FT-accession (`/eli/ft/{accn}`, fx `202522L00017`) udledes
+   deterministisk af Folketingets periode og lovforslagsnummer? Hvis ja, har vi en ren
+   bro fra sagen til den maskinlæsbare XML-udgave af lovforslaget i stedet for PDF.
+   Ikke testet endnu.
+4. Holder antagelsen om, at Lex Dania-XML findes for dokumenter efter 2007-09-24?
+   Oplysningen stammer fra Retsinformations egen beskrivelse og er ikke verificeret.
+5. Ophævelse efterfulgt af genindsættelse af samme paragrafnummer modelleres som ny
    `provision` med `succeeds_provision_id`, så gamle forarbejder ikke arves utilsigtet.
    Konstruktionen er ikke afprøvet mod et virkeligt eksempel endnu.
 5. Stemmer vores punktumsegmentering overens med lovgiverens optælling? Måles ved, hvor
