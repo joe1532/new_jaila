@@ -228,8 +228,15 @@ lovbekendtgørelse kan afgøre det. Forventningen er, at anvendelsesgraden blive
 lavere end 100 %, især for `affattes` (12 punkter), hvor den nye tekst kan spænde over
 flere stykker med egen intern struktur.
 
-Analysen kan gentages med `python spikes/retsinfo_probe.py mine eli/lta/2025/1500`.
-Dokumenterne caches i `spikes/.cache/`, så gentagne kørsler ikke belaster kilden.
+Analysen kan gentages med `python spikes/retsinfo_probe.py mine eli/lta/2025/1500`, og
+materialet kan gennemses instruks for instruks med `streamlit run
+spikes/lovhistorik_app.py`. Begge bruger `spikes/lex_dania.py`, så de ikke kan komme til
+at måle forskellige ting. Dokumenterne caches i `spikes/.cache/`, så gentagne kørsler
+ikke belaster kilden.
+
+Kursivering duer ikke alene som målangivelse. Den bruges også om den nye betegnelse
+("indsættes som *stk. 2:*"), så antallet af kursiverede tekststykker siger intet om
+antallet af mål. Kun `signiChar="AendringURN"` kan tælles.
 
 ## Tabeller
 
