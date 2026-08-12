@@ -136,11 +136,15 @@ Forarbejdskoblingen måles med:
 
 ```bash
 python lovhistorik/probe.py motiver eli/lta/2025/1500 9C
+python lovhistorik/probe.py motiver eli/lta/2025/1500 33A
 python lovhistorik/probe.py motiver eli/lta/2024/15 alle
 ```
 
-Forventet: 6 af 6 punkter på § 9 C, alle bekræftet, og 36 af 40 punkter med bemærkning
-på den brede måling, hvoraf 3 ikke nævner målbestemmelsen.
+Forventet: 6 af 6 punkter på § 9 C, alle bekræftet. For § 33 A skal søgningen gå to led
+tilbage i kæden af lovbekendtgørelser og ende i LOV 871/2020, § 3, nr. 1 — en bestemmelse
+kan sagtens være uændret gennem flere lovbekendtgørelser, og "ikke ændret" må aldrig
+forveksles med "ingen forarbejder". Den brede måling giver 36 af 40 punkter med
+bemærkning, hvoraf 3 ikke nævner målbestemmelsen.
 
 Den sidste linje er den vigtige. Bemærkningen citerer selv den bestemmelse, den
 forklarer, så nævner den ikke målet, er koblingen sandsynligvis forkert. Stiger det tal,

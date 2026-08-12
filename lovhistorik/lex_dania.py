@@ -184,6 +184,33 @@ CONSOLIDATION_CLAUSE = re.compile(
 )
 
 
+PREVIOUS_CONSOLIDATION = re.compile(
+    r"jf\.\s*lovbekendtgørelse\s+nr\.\s*(\d+)\s+af\s+\d+\.\s*\w+\s+(\d{4})", re.IGNORECASE
+)
+
+
+def previous_consolidation(xml_bytes: bytes) -> str:
+    """Den lovbekendtgørelse, denne bygger videre på, som ELI-sti — ellers tom streng.
+
+    Indledningen lyder "Herved bekendtgøres ligningsloven, jf. lovbekendtgørelse nr. 42
+    af 13. januar 2023, med de ændringer, der følger af …". Første led er kædens
+    forrige led, og det er vejen bagud for bestemmelser, der ikke er ændret for nylig.
+    """
+    root = ElementTree.fromstring(xml_bytes)
+    for element in root.iter():
+        if element.tag == "Paragraf":
+            break
+        if element.tag != "Linea":
+            continue
+        text = element_text(element)
+        if "bekendtgøres" not in text.lower():
+            continue
+        match = PREVIOUS_CONSOLIDATION.search(text)
+        if match:
+            return f"eli/lta/{match.group(2)}/{match.group(1)}"
+    return ""
+
+
 @dataclass
 class ConsolidatedAmendment:
     """Én ændringslov, som en lovbekendtgørelse selv oplyser at have indarbejdet."""
@@ -273,6 +300,11 @@ def extract_explanatory_notes(xml_bytes: bytes) -> dict[tuple[int, int], str]:
 
     Nøglen svarer til ændringslovens egen struktur: (§ i ændringsloven, nummeret i
     opremsningen), altså præcis det, en instruks som "§ 1, nr. 2" identificeres ved.
+
+    Nummer 0 er tekst, der står under "Til § N" uden en "Til nr."-overskrift. Det er
+    enten en indledning til hele paragraffen, eller — når paragraffen kun har ét
+    ændringspunkt — hele bemærkningen, fordi "Til nr. 1" da ofte udelades. Kalderen
+    bør falde tilbage på nummer 0, når det søgte nummer ikke findes.
     """
     root = ElementTree.fromstring(xml_bytes)
 
@@ -288,7 +320,7 @@ def extract_explanatory_notes(xml_bytes: bytes) -> dict[tuple[int, int], str]:
         heading = NOTE_PARAGRAPH.match(text)
         if heading:
             paragraph = int(heading.group(1))
-            items = []
+            items = [0]
             continue
 
         heading = NOTE_ITEM.match(text)

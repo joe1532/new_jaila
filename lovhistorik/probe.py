@@ -763,7 +763,31 @@ def find_bill(law_number: str, law_date: str) -> tuple[str, str, str] | None:
 AMENDMENT_REFERENCE = re.compile(r"§\s*(\d+),\s*nr\.\s*(\d+)")
 
 
-def step_motiver(lbk_eli: str, paragraph_id: str) -> int:
+def _instructions_of(amendment, law_name: str) -> list:
+    """Aendringspunkter i den paragraf, lovbekendtgoerelsen har indarbejdet.
+
+    Fejl slugges bevidst: funktionen bruges kun til at afgoere, om en paragraf er
+    roert, og en enkelt lov, der ikke kan hentes, maa ikke stoppe soegningen bagud.
+    """
+    import lex_dania
+
+    try:
+        xml = lex_dania.fetch_document_xml(amendment.document_path)
+        instructions = lex_dania.extract_instructions(xml, amendment.document_path, law_name)
+    except Exception:  # noqa: BLE001 - netvaerk og XML fejler paa mange maader
+        return []
+
+    if not amendment.paragraph:
+        return instructions
+    kept = []
+    for instruction in instructions:
+        reference = AMENDMENT_REFERENCE.search(instruction.amendment_path)
+        if reference and int(reference.group(1)) == amendment.paragraph:
+            kept.append(instruction)
+    return kept
+
+
+def step_motiver(lbk_eli: str, paragraph_id: str, max_steps: str = "6") -> int:
     """Hele kaeden: fra en lovparagraf til lovforslagets specielle bemaerkninger.
 
     Gaar gennem de aendringslove, lovbekendtgoerelsen selv oplyser at have
@@ -788,8 +812,35 @@ def step_motiver(lbk_eli: str, paragraph_id: str) -> int:
         print(f"Kunne ikke forberede: {error}")
         return 1
 
+    # En bestemmelse kan vaere uaendret gennem flere lovbekendtgoerelser. Er den ikke
+    # roert i denne, ligger dens forarbejder laengere tilbage, og vi maa foelge kaeden
+    # bagud. Uden det ville et tomt svar blive forvekslet med "ingen forarbejder".
+    if not survey:
+        steps = 0
+        while steps < int(max_steps):
+            if any(
+                lex_dania.parse_target(raw).paragraph_id.upper() == wanted
+                for amendment in amendments
+                for instruction in _instructions_of(amendment, law_name)
+                for raw in instruction.probable_targets
+            ):
+                break
+            earlier = lex_dania.previous_consolidation(target_xml)
+            if not earlier or earlier == facit:
+                print(f"=== § {paragraph_id} er ikke aendret i {facit}, og kaeden stopper her.")
+                break
+            print(f"--- § {paragraph_id} er ikke aendret i {facit}; gaar tilbage til {earlier}")
+            facit = earlier
+            try:
+                target_xml = lex_dania.fetch_document_xml(facit)
+                amendments = lex_dania.consolidated_amendments(target_xml)
+            except (lex_dania.FetchError, ElementTree.ParseError) as error:
+                print(f"Kunne ikke hente {facit}: {error}")
+                return 1
+            steps += 1
+
     scope = "alle paragraffer" if survey else f"§ {paragraph_id}"
-    print(f"=== {law_name}, {scope}: soeger i {len(amendments)} aendringslove")
+    print(f"=== {law_name}, {scope}: soeger i {len(amendments)} aendringslove fra {facit}")
     print()
 
     hits = 0
@@ -843,7 +894,13 @@ def step_motiver(lbk_eli: str, paragraph_id: str) -> int:
             continue
 
         for instruction, item in relevant:
+            # Har paragraffen kun ét aendringspunkt, udelades "Til nr. 1" ofte, og
+            # bemaerkningen staar direkte under "Til § N". Tilbagefaldet markeres, for
+            # det er mindre praecist: teksten kan daekke hele paragraffen.
             note = notes.get((amendment.paragraph, item))
+            precise = note is not None
+            if note is None:
+                note = notes.get((amendment.paragraph, 0))
             if not note:
                 no_note += 1
                 if not survey:
@@ -861,9 +918,10 @@ def step_motiver(lbk_eli: str, paragraph_id: str) -> int:
             hits += 1
 
             if not survey:
+                kind = "til dette nummer" if precise else "til hele paragraffen (intet 'Til nr.')"
                 print(f"        {instruction.amendment_path}: {instruction.text[:88]}")
-                print(f"            {len(note)} tegn, bekraefter maalet: {confirms}")
-                print(f"            {note[:280]}")
+                print(f"            {len(note)} tegn, {kind}, bekraefter maalet: {confirms}")
+                print(f"            {note[:1100]}")
         if not survey:
             print()
 
@@ -1835,7 +1893,7 @@ if __name__ == "__main__":
             )
         )
     elif step == "motiver":
-        sys.exit(step_motiver(sys.argv[2], sys.argv[3]))
+        sys.exit(step_motiver(*sys.argv[2:5]))
     elif step == "notes":
         sys.exit(step_notes(sys.argv[2]))
     elif step == "intro":

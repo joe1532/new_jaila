@@ -178,6 +178,31 @@ almindelige. Læser man kun det første tal, mister man resten uden at opdage de
 ligningslovens § 9 C gjaldt det 2 af 6 punkter. Samme tekst føres til hvert af de numre,
 overskriften nævner; der findes ingen opdeling at læse.
 
+**"Til nr. 1" udelades ofte.** Har en ændringsparagraf kun ét ændringspunkt, står
+bemærkningen direkte under "Til § 3" uden underopdeling. Tekst uden en "Til nr."-
+overskrift gemmes derfor under nummer 0, og opslag falder tilbage på det, når det søgte
+nummer ikke findes. Tilbagefaldet markeres i outputtet, fordi det er mindre præcist:
+teksten kan dække hele paragraffen frem for det enkelte punkt.
+
+**En bestemmelse kan være uændret gennem flere lovbekendtgørelser.** Ligningslovens
+§ 33 A er ikke rørt i LBK 1500 (2025) og heller ikke i LBK 42 (2023). Søgningen følger
+derfor kæden bagud via `previous_consolidation`, indtil en ændring findes:
+
+```text
+LL § 33 A                       LBK 1500 (2025) — ikke ændret
+  → LBK 42 (2023)               ikke ændret
+  → LBK 1735 (2021)             ændret ved LOV 871 af 14/06/2020, § 3, nr. 1
+  → sag 83692, L 199            Folketingets Åbne Data (lovnummer + dato)
+  → /eli/ft/201912L00199        udledt accession
+  → bemærkning på 9.779 tegn    "Efter ligningslovens § 33 A kan en person, der er
+                                 fuldt skattepligtig til Danmark, … få nedsat skatten
+                                 af lønindkomst under ophold uden for riget …"
+```
+
+Uden vandringen ville et tomt svar blive forvekslet med "der findes ingen forarbejder".
+Skellet mellem "ikke ændret" og "ikke fundet" er afgørende, og motoren skal aldrig
+returnere det ene som det andet.
+
 **Målt dækning.** For de 40 ændringspunkter bag LBK 15/2024 (skatteindberetningsloven):
 
 | Resultat | Antal |
