@@ -171,6 +171,68 @@ def fetch_metadata(eli_uri: str) -> dict[str, object]:
     return summary
 
 
+# "§ 10 i lov nr. 1454 af 10. december 2024" — paragraffen i ændringsloven, lovens
+# nummer og året. Året er det, der sammen med nummeret giver ELI-stien.
+CONSOLIDATED_AMENDMENT = re.compile(
+    r"§+\s*(\d+)(?:\s*(?:og|,)\s*\d+)*\s+i\s+lov\s+nr\.\s*(\d+)\s+af\s+\d+\.\s*\w+\s+(\d{4})",
+    re.IGNORECASE,
+)
+# Uden IGNORECASE: flaget ville få [A-ZÆØÅ] til også at matche små bogstaver, og så
+# ville "af 10. december" blive læst som en sætningsafslutning midt i opremsningen.
+CONSOLIDATION_CLAUSE = re.compile(
+    r"med de ændringer, der følger af(.*?)(?:\.\s*$|\.\s+[A-ZÆØÅ])", re.DOTALL
+)
+
+
+@dataclass
+class ConsolidatedAmendment:
+    """Én ændringslov, som en lovbekendtgørelse selv oplyser at have indarbejdet."""
+
+    document_path: str
+    paragraph: int  # ændringslovens egen paragraf, fx 10 i "§ 10 i lov nr. 1454"
+
+
+def consolidated_amendments(xml_bytes: bytes) -> list[ConsolidatedAmendment]:
+    """Læs, hvilke ændringer en lovbekendtgørelse selv siger den indeholder.
+
+    Indledningen lyder "Herved bekendtgøres skatteindberetningsloven, jf.
+    lovbekendtgørelse nr. 15 af 8. januar 2024, med de ændringer, der følger af § 10 i
+    lov nr. 1454 af 10. december 2024, …". Det er en langt bedre kilde end
+    `eli:changed_by`, som også rummer love, der endnu ikke er trådt i kraft.
+
+    Den peger tilmed på den enkelte paragraf i ændringsloven, hvilket er nødvendigt,
+    når en lov ændrer samme lov flere steder med hver sin ikrafttræden.
+
+    Returnerer en tom liste, hvis sætningen ikke findes. Kalderen må da selv afgøre,
+    hvad der skal afspilles — vi opfinder ikke en liste.
+    """
+    root = ElementTree.fromstring(xml_bytes)
+    for element in root.iter():
+        if element.tag == "Paragraf":
+            break
+        if element.tag != "Linea":
+            continue
+        text = element_text(element)
+        if "bekendtgøres" not in text.lower():
+            continue
+        clause = CONSOLIDATION_CLAUSE.search(text)
+        if not clause:
+            continue
+
+        found: list[ConsolidatedAmendment] = []
+        for match in CONSOLIDATED_AMENDMENT.finditer(clause.group(1)):
+            paragraph, number, year = match.groups()
+            found.append(
+                ConsolidatedAmendment(
+                    document_path=f"eli/lta/{year}/{number}",
+                    paragraph=int(paragraph),
+                )
+            )
+        if found:
+            return found
+    return []
+
+
 def law_name_of(metadata: dict[str, object]) -> str:
     """Lovens navn, som ændringslove omtaler den i "I ligningsloven, jf. …".
 

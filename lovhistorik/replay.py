@@ -330,11 +330,42 @@ class TextState:
         # Den nye tekst indledes med sin egen etiket, som ikke er en del af
         # lovteksten i vores model. Genaffattes hele paragraffen, er etiketten
         # paragrafnummeret ("§ 5 D."); genaffattes et stykke, er den "Stk. 4.".
+        # Punktummet er en del af etiketten ("§ 5 D." og "Stk. 4."). Det kræves
+        # eksplicit, for uden det ville "§ 5 Den skattepligtige …" få sit "D" ædt.
         new_sentences[0] = re.sub(
-            r"^(?:§\s*\d+\s*[A-ZÆØÅ]?\s*|Stk\.\s*\d+\.\s*)+", "", new_sentences[0]
+            r"^(?:§\s*\d+\s*(?:[A-ZÆØÅ]\s*)?\.\s*|Stk\.\s*\d+\.\s*)+", "", new_sentences[0]
         )
         self.sentences[key] = new_sentences
         return ApplicationResult(operation, "applied")
+
+
+def classify_difference(ours: str, theirs: str) -> str:
+    """Sæt navn på, hvordan to tekster afviger, så mønstre kan tælles frem for læses.
+
+    Klasserne er valgt, så de peger på hver sin årsag: mellemrum kommer af oprydning
+    efter en tekstændring, manglende eller overskydende tekst til sidst kommer af
+    punktummer, der ikke blev indsat eller fjernet, og helt forskellig tekst kommer
+    typisk af, at stykker er forskudt af en indsættelse eller ophævelse.
+    """
+    if ours == theirs:
+        return "ens"
+    if re.sub(r"\s", "", ours) == re.sub(r"\s", "", theirs):
+        return "kun mellemrum"
+    if theirs.startswith(ours):
+        return "vi mangler tekst til sidst"
+    if ours.startswith(theirs):
+        return "vi har for meget til sidst"
+    if theirs in ours:
+        return "vi har tekst udenom facit"
+    if ours in theirs:
+        return "facit har tekst udenom vores"
+
+    shared = 0
+    while shared < min(len(ours), len(theirs)) and ours[shared] == theirs[shared]:
+        shared += 1
+    if shared < 20:
+        return "helt forskellig tekst"
+    return "forskel midt i teksten"
 
 
 @dataclass
@@ -350,16 +381,23 @@ class ReplayReport:
         return len(self.results)
 
 
-def replay(
-    state: TextState, documents: list[str], law_name: str
-) -> ReplayReport:
-    """Anvend alle ændringslovenes operationer på teksten, i den givne rækkefølge.
+AMENDMENT_PARAGRAPH = re.compile(r"§\s*(\d+)")
 
-    Rækkefølgen er kalderens ansvar. Den bør følge ikrafttrædelsesdatoer, ikke
-    lovnumre, fordi delvis ikrafttræden er almindelig.
+
+def replay(
+    state: TextState,
+    amendments: list[lex_dania.ConsolidatedAmendment],
+    law_name: str,
+) -> ReplayReport:
+    """Anvend ændringslovenes operationer på teksten, i den givne rækkefølge.
+
+    Hver post angiver både ændringsloven og den paragraf i den, der skal afspilles.
+    Afgrænsningen til paragraffen er nødvendig: en lov kan ændre samme lov flere
+    steder med hver sin ikrafttræden, og kun nogle af dem er konsolideret ind.
     """
-    report = ReplayReport(documents=list(documents))
-    for document in documents:
+    report = ReplayReport(documents=[item.document_path for item in amendments])
+    for amendment in amendments:
+        document = amendment.document_path
         try:
             xml = lex_dania.fetch_document_xml(document)
             instructions = lex_dania.extract_instructions(xml, document, law_name)
@@ -374,6 +412,10 @@ def replay(
             continue
 
         for instruction in instructions:
+            if amendment.paragraph:
+                match = AMENDMENT_PARAGRAPH.search(instruction.amendment_path)
+                if match and int(match.group(1)) != amendment.paragraph:
+                    continue
             for operation in parse_operations(instruction):
                 report.results.append(state.apply(operation))
     return report

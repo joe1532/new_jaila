@@ -316,16 +316,50 @@ Kørt med `python lovhistorik/probe.py replay eli/lta/2023/42 eli/lta/2025/1500`
 151 ændringspunkter forsøges udført på LBK 42's tekst, og resultatet sammenlignes ordret
 med LBK 1500.
 
-| Mål | Ligningsloven | Afskrivningsloven |
-| --- | --- | --- |
-| Ændringslove i kæden | 39 | 11 |
-| Operationer udført | 82 af 151 (54 %) | 20 af 38 (53 %) |
-| Berørte enheder der rammer ordret | 27 af 58 (47 %) | 9 af 18 (50 %) |
+| Mål | Ligningsloven | Afskrivningsloven | Skatteindberetningsloven |
+| --- | --- | --- | --- |
+| Ændringslove indarbejdet | 29 | 8 | 3 |
+| Operationer udført | 55 af 104 (53 %) | 12 af 21 (57 %) | 1 af 3 |
+| Berørte enheder der rammer ordret | 30 af 43 (70 %) | 9 af 12 (75 %) | 1 af 1 |
+| Afviger trods lykkedes operationer | 7 | 2 | 0 |
 
-Afskrivningsloven (LBK 242/2021 → LBK 1222/2025) er kørt uden en linje kode tilpasset
-til den, og tallene ligger på niveau med ligningslovens. Motoren er altså ikke bygget
-til én lov. Lovens navn udledes af den fulde titel, fordi `title_short` er
-dokumentnummeret ("LBK nr 42 af 13/01/2023") og ikke lovens kaldenavn.
+De to sidste love er kørt uden en linje kode tilpasset til dem. Lovens navn udledes af
+den fulde titel, fordi `title_short` er dokumentnummeret ("LBK nr 42 af 13/01/2023") og
+ikke lovens kaldenavn.
+
+## Lovbekendtgørelsen opregner selv sine ændringer
+
+Det største enkeltstående fremskridt kom af at holde op med at gætte, hvilke
+ændringslove der skal afspilles. `eli:changed_by` rummer alle love, der nogensinde
+ændrer loven, også dem der endnu ikke er trådt i kraft. Afspiller man dem alle, bliver
+teksten "for ny" på en måde, der er svær at få øje på: enkelte ord er skiftet ud, og
+resten passer.
+
+Lovbekendtgørelsens indledning siger det derimod præcist:
+
+> Herved bekendtgøres skatteindberetningsloven, jf. lovbekendtgørelse nr. 15 af 8. januar
+> 2024, med de ændringer, der følger af § 10 i lov nr. 1454 af 10. december 2024, § 13 i
+> lov nr. 1473 af 10. december 2024 og § 3 i lov nr. 563 af 27. maj 2025.
+
+Den angiver både udgangspunktet, de indarbejdede ændringslove **og hvilken paragraf i
+hver af dem**. Det sidste er nødvendigt, fordi en lov kan ændre samme lov flere steder
+med hver sin ikrafttræden. De efterfølgende afsnit begrunder oven i købet, hvad der ikke
+er indarbejdet, og hvornår det træder i kraft.
+
+Virkningen af at bruge listen frem for `changed_by`:
+
+| Lov | Træfsikkerhed før | Efter |
+| --- | --- | --- |
+| Ligningsloven | 59 % | 70 % |
+| Afskrivningsloven | 56 % | 75 % |
+| Skatteindberetningsloven | 10 % | 100 % |
+
+Skatteindberetningsloven viser, hvor galt det kan gå: 6 love blev afspillet, hvor kun 3
+hørte til. Loven har et kort interval, hvor de fleste ændringer endnu ikke var trådt i
+kraft, og motoren ramte derfor kun 1 af 10 enheder.
+
+Kan sætningen ikke læses, falder afspilningen tilbage på `changed_by`, men det skal
+betragtes som en nødløsning, og kilden oplyses i outputtet.
 
 **Det andet tal er det ærlige.** At 637 af 800 enheder er identiske med facit lyder
 godt, men de fleste af dem er aldrig blevet rørt — de var ens i forvejen. Kun de
@@ -350,10 +384,12 @@ fejlede en anden operation på samme enhed, så teksten kun er halvt opdateret �
 manglende dækning. Eller også lykkedes alle operationer, og teksten er stadig forkert —
 det er en fejl i motoren. Afspilningen skelner mellem de to.
 
-På ligningsloven afviger 19 enheder, selv om alle operationer på dem lykkedes. Det er
-det tal, der skal ned først, for det er dér motoren tager fejl uden at sige det.
+Det tal skal ned først, for det er dér motoren tager fejl uden at sige det. Bemærk dog,
+at det overvurderer antallet af egentlige motorfejl: når et ændringspunkt med flere mål
+fejler, kender vi kun dets første mål, så forureningen af de øvrige er usynlig for
+analysen. Den svaghed forsvinder først, når punkter med flere mål deles op.
 
-Fire fejlklasser er fundet og tre rettet ved at køre på afskrivningsloven:
+Fejlklasser fundet og rettet:
 
 - **Etiketten fulgte med ved genaffattelse.** Ny tekst indledes med "§ 5 D." eller
   "Stk. 4.", som er etiket og ikke lovtekst. Rettet.
@@ -363,6 +399,14 @@ Fire fejlklasser er fundet og tre rettet ved at køre på afskrivningsloven:
 - **Sletning efterlod forkert mellemrum.** Rettet ved oprydning, der kun rører mellemrum.
 - **Forskudte stykker.** Et indsat eller ophævet stykke forskyder alle de følgende. Ikke
   rettet; det er omnummereringsarbejdet.
+- **Genaffattelse af flere stykker på én gang.** Ny tekst kan rumme både "Stk. 1." og
+  "Stk. 2.", og hele klumpen havner i det første stykke. Ikke rettet.
+- **Noter læses som lovtekst.** I facit optræder tekst som "Den bekendtgjorte lovtekst
+  vedrørende § 8 X, stk. 4, 3. pkt., har virkning fra …" som var det en bestemmelse. Det
+  er en fejl i udtrækket af lovbekendtgørelsen, ikke i afspilningen, og den gør facit
+  forkert. Ikke rettet.
+
+De to sidste er fundet ved at køre på flere love og optræder i mere end én af dem.
 
 Skellet mellem de to grupper er vigtigt. De 53 første er funktioner, der ikke er bygget
 endnu, og de fejler højlydt med en begrundelse. De sidste 8 er tilfælde, hvor vi mener

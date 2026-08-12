@@ -803,6 +803,35 @@ def step_mine(eli: str, max_acts: int = 40) -> int:
     return 0
 
 
+def step_intro(eli: str) -> int:
+    """Vis lovbekendtgoerelsens indledning, som opregner de indarbejdede aendringslove.
+
+    En LBK skriver selv, hvilke aendringer den omfatter ("med de aendringer, der
+    foelger af § 2 i lov nr. X"). Det er en langt bedre kilde til, hvad der skal
+    afspilles, end at gaette ikrafttraedelsen ud fra datoer.
+    """
+    import xml.etree.ElementTree as ElementTree
+
+    import lex_dania
+
+    try:
+        root = ElementTree.fromstring(lex_dania.fetch_document_xml(eli.strip("/")))
+    except (lex_dania.FetchError, ElementTree.ParseError) as error:
+        print(f"Kunne ikke behandle {eli}: {error}")
+        return 1
+
+    print(f"=== {eli}: tekst foer foerste paragraf")
+    for element in root.iter():
+        if element.tag == "Paragraf":
+            break
+        if element.tag in ("Linea", "Titel", "Note", "NoteTekst"):
+            text = lex_dania.element_text(element)
+            if text:
+                print(f"--- <{element.tag}>")
+                print(f"    {text}")
+    return 0
+
+
 def step_laws(eli: str) -> int:
     """Vis hvilke love en aendringslov retter i, og hvor deres nyeste udgave ligger.
 
@@ -866,31 +895,51 @@ def step_replay(from_eli: str, to_eli: str, law_name: str = "") -> int:
         base = lex_dania.extract_provisions(base_xml)
         target_xml = lex_dania.fetch_document_xml(facit)
         expected = lex_dania.extract_provisions(target_xml)
-        documents = lex_dania.amending_documents(facit)
+        amendments = lex_dania.consolidated_amendments(target_xml)
     except (lex_dania.FetchError, ElementTree.ParseError) as error:
         print(f"Kunne ikke forberede afspilningen: {error}")
         return 1
 
-    # Udgangspunktet selv skal ikke afspilles oven paa sig selv.
-    documents = [path for path in documents if path != start]
-
-    dated: list[tuple[str, str]] = []
-    for path in documents:
+    # Lovbekendtgoerelsen opregner selv de aendringer, den har indarbejdet, og med
+    # hvilken paragraf i hver aendringslov. Kan den liste ikke laeses, falder vi
+    # tilbage paa eli:changed_by, men det er en daarligere kilde: den rummer ogsaa
+    # love, der endnu ikke er traadt i kraft.
+    if amendments:
+        source = "lovbekendtgoerelsens egen liste"
+    else:
+        source = "eli:changed_by (uden hensyn til ikrafttraeden)"
         try:
-            dated.append((lex_dania.document_date(lex_dania.fetch_document_xml(path)), path))
-        except (lex_dania.FetchError, ElementTree.ParseError):
-            dated.append(("", path))
-    dated.sort()
-    ordered = [path for _, path in dated]
+            paths = [p for p in lex_dania.amending_documents(facit) if p != start]
+        except lex_dania.FetchError as error:
+            print(f"Kunne ikke hente aendringslove: {error}")
+            return 1
+        facit_date = lex_dania.document_date(target_xml)
+        dated: list[tuple[str, str]] = []
+        for path in paths:
+            try:
+                dated.append((lex_dania.document_date(lex_dania.fetch_document_xml(path)), path))
+            except (lex_dania.FetchError, ElementTree.ParseError):
+                dated.append(("", path))
+        dated.sort()
+        amendments = [
+            lex_dania.ConsolidatedAmendment(document_path=path, paragraph=0)
+            for date, path in dated
+            if not (date and facit_date and date > facit_date)
+        ]
 
-    print(f"=== afspiller {len(ordered)} love fra {start} til {facit} ({law_name})")
+    print(f"=== afspiller {len(amendments)} love fra {start} til {facit} ({law_name})")
     print(f"--- udgangspunkt: {len(base)} stykker, facit: {len(expected)} stykker")
-    print(f"--- foerste lov: {dated[0][0]} {dated[0][1]}")
-    print(f"--- sidste lov:  {dated[-1][0]} {dated[-1][1]}")
+    print(f"--- kilde til listen: {source}")
+    for amendment in amendments:
+        where = f"§ {amendment.paragraph}" if amendment.paragraph else "hele loven"
+        print(f"        {amendment.document_path}  {where}")
+    if not amendments:
+        print("Ingen love at afspille.")
+        return 1
     print()
 
     state = replay_module.TextState(base)
-    report = replay_module.replay(state, ordered, law_name)
+    report = replay_module.replay(state, amendments, law_name)
 
     applied = report.count("applied")
     already = report.count("already_applied")
@@ -981,9 +1030,25 @@ def step_replay(from_eli: str, to_eli: str, law_name: str = "") -> int:
         rate = 100.0 * clean_hit / (clean_hit + clean_miss)
         print(f"    paa enheder uden fejlede operationer rammer vi {rate:.1f}%")
 
+    # Fejlklasser tælles frem for at blive laest enkeltvis. Ellers risikerer man at
+    # generalisere fra det foerste tilfaelde, man kigger paa.
+    by_label = {provision.label: provision for provision in expected}
+    classes: dict[str, list[str]] = {}
+    for label in clean_misses:
+        provision = by_label[label]
+        kind = replay_module.classify_difference(
+            state.text_of(provision.key), replay_module.normalise(provision.text)
+        )
+        classes.setdefault(kind, []).append(label)
+
+    print()
+    print("--- hvordan de fejler, naar alle operationer lykkedes:")
+    for kind, labels in sorted(classes.items(), key=lambda item: -len(item[1])):
+        print(f"    {len(labels):4d}  {kind}")
+        print(f"          {', '.join(labels[:5])}")
+
     print()
     print("--- enheder der afviger, selv om alle operationer lykkedes:")
-    by_label = {provision.label: provision for provision in expected}
     for label in clean_misses[:6]:
         provision = by_label[label]
         ours = state.text_of(provision.key)
@@ -1551,6 +1616,8 @@ if __name__ == "__main__":
                 int(sys.argv[3]) if len(sys.argv) > 3 else 40,
             )
         )
+    elif step == "intro":
+        sys.exit(step_intro(sys.argv[2]))
     elif step == "laws":
         sys.exit(step_laws(sys.argv[2]))
     elif step == "replay":

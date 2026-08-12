@@ -45,6 +45,11 @@ Disse punkter er målt og har kostet tid at finde ud af. De må ikke gættes om 
   ændrer sig undervejs i lovbehandlingen.
 - **Konsoliderede og efterfølgende ændringslove er ikke disjunkte mængder.** En lov kan
   optræde i både `eli:consolidates` og `eli:changed_by` ved delvis ikrafttræden.
+- **`eli:changed_by` må ikke bruges til at afgøre, hvad der skal afspilles.** Den rummer
+  også love, der endnu ikke er trådt i kraft. Lovbekendtgørelsen opregner selv sine
+  ændringer i indledningen ("med de ændringer, der følger af § 10 i lov nr. 1454 …"), og
+  den angiver tilmed hvilken paragraf i hver ændringslov. Brug `consolidated_amendments`.
+  Uden den ramte skatteindberetningsloven kun 1 af 10 enheder; med den 1 af 1.
 
 ## Ufravigelige regler for motoren
 
@@ -105,19 +110,22 @@ Afspilningen måles med:
 python lovhistorik/probe.py replay eli/lta/2023/42 eli/lta/2025/1500
 ```
 
-Forventet: 82 af 151 operationer udført, og 27 af 58 berørte enheder rammer LBK 1500
+Forventet: 55 af 104 operationer udført, og 30 af 43 berørte enheder rammer LBK 1500
 ordret. Det andet tal er det, der tæller — det første kan hæves ved at udføre flere
-operationer forkert. At 637 af 800 enheder er identiske siger intet, da de fleste aldrig
-er blevet rørt.
+operationer forkert. At de fleste enheder er identiske med facit siger intet, da de
+aldrig er blevet rørt.
 
-Enhver ændring skal også køres på en anden lov, ellers bygger vi til ligningsloven alene:
+Enhver ændring skal køres på alle tre love, ellers bygger vi til ligningsloven alene:
 
 ```bash
 python lovhistorik/probe.py replay eli/lta/2021/242 eli/lta/2025/1222
+python lovhistorik/probe.py replay eli/lta/2024/15 eli/lta/2025/1059
 ```
 
-Forventet: 20 af 38 operationer udført, og 9 af 18 berørte enheder rammer ordret.
-Afskrivningsloven fandt tre fejl, ligningsloven ikke afslørede.
+Forventet: 9 af 12 berørte enheder rammer på afskrivningsloven, 1 af 1 på
+skatteindberetningsloven. De to fandt fejl, ligningsloven ikke afslørede — blandt andet
+at etiketten "§ 5 D." fulgte med ved genaffattelse, og at ikrafttrædelsesproblemet var
+langt alvorligere, end ligningsloven lod ane.
 
 Hold især øje med linjen "afviger, selv om alle operationer lykkedes". Den tæller de
 tilfælde, hvor motoren tager fejl uden at sige det, og den er vigtigere end
