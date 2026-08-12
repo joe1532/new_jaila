@@ -787,6 +787,148 @@ def _instructions_of(amendment, law_name: str) -> list:
     return kept
 
 
+def _note_for(lex_dania, document_path: str, law_paragraph: int, item: int) -> tuple[str, bool, str]:
+    """Hent bemaerkningen til ét aendringspunkt. Returnerer (tekst, praecis, kilde)."""
+    number = document_path.rsplit("/", 1)[-1]
+    try:
+        date = lex_dania.document_date(lex_dania.fetch_document_xml(document_path))
+    except Exception:  # noqa: BLE001
+        return ("", False, "kunne ikke laese aendringsloven")
+
+    bill = find_bill(number, date)
+    if not bill:
+        return ("", False, "lovforslaget findes ikke i Folketingets data")
+    sag_id, bill_number, period = bill
+    accession = f"{period}2L{int(bill_number):05d}"
+
+    try:
+        notes = lex_dania.extract_explanatory_notes(
+            lex_dania.fetch_document_xml(f"eli/ft/{accession}")
+        )
+    except Exception:  # noqa: BLE001
+        return ("", False, f"L {bill_number} kunne ikke hentes (eli/ft/{accession})")
+
+    note = notes.get((law_paragraph, item))
+    if note is not None:
+        return (note, True, f"L {bill_number}, sag {sag_id}")
+    note = notes.get((law_paragraph, 0))
+    if note is not None:
+        return (note, False, f"L {bill_number}, sag {sag_id}")
+    return ("", False, f"L {bill_number}: ingen bemaerkning til § {law_paragraph}, nr. {item}")
+
+
+def _paragraph_history(
+    lex_dania, start: str, start_xml: bytes, amendments: list, law_name: str,
+    wanted: str, paragraph_id: str, max_steps: int,
+) -> int:
+    """Hele forarbejdshistorikken for én paragraf, grupperet efter hvad der blev aendret.
+
+    Vandrer kaeden af lovbekendtgoerelser bagud og samler alle aendringer af
+    paragraffen undervejs, ikke kun den seneste.
+    """
+    print(f"=== {law_name} § {paragraph_id}: foelger kaeden bagud fra {start}")
+
+    found: list[tuple[str, str, object, int]] = []  # (lbk, dokument, instruks, nr)
+    seen: set[str] = set()
+    current, current_xml, current_amendments = start, start_xml, amendments
+
+    for _ in range(max_steps):
+        touched = 0
+        for amendment in current_amendments:
+            if amendment.document_path in seen:
+                continue
+            for instruction in _instructions_of(amendment, law_name):
+                targets = [
+                    lex_dania.parse_target(raw) for raw in instruction.probable_targets
+                ]
+                if not any(t.paragraph_id.upper() == wanted for t in targets):
+                    continue
+                reference = AMENDMENT_REFERENCE.search(instruction.amendment_path)
+                item = int(reference.group(2)) if reference else 0
+                found.append((current, amendment.document_path, instruction, item))
+                touched += 1
+            seen.add(amendment.document_path)
+
+        print(f"--- {current}: {touched} aendringer af § {paragraph_id}")
+
+        earlier = lex_dania.previous_consolidation(current_xml)
+        if not earlier or earlier == current:
+            print(f"--- kaeden stopper ved {current}")
+            break
+        try:
+            current_xml = lex_dania.fetch_document_xml(earlier)
+            current_amendments = lex_dania.consolidated_amendments(current_xml)
+        except Exception as error:  # noqa: BLE001
+            print(f"--- kunne ikke hente {earlier}: {error}")
+            break
+        current = earlier
+
+    if not found:
+        print()
+        print(f"=== § {paragraph_id} er ikke aendret i den del af kaeden, vi kan naa.")
+        print("    Bestemmelsens forarbejder ligger foer 2007, hvor Lex Dania-XML begynder.")
+        return 0
+
+    # Oversigt pr. stykke. Det er den form, spoergsmaalet stilles i: "hvilke
+    # forarbejder gaelder for § 9 C, stk. 3?"
+    print()
+    print(f"=== {len(found)} aendringer af § {paragraph_id}, fordelt paa stykker")
+    by_stk: dict[str, list[str]] = {}
+    for lbk, document, instruction, item in found:
+        for raw in instruction.probable_targets:
+            target = lex_dania.parse_target(raw)
+            if target.paragraph_id.upper() != wanted:
+                continue
+            where = f"stk. {target.stk_number}" if target.stk_number else "hele paragraffen"
+            sentences = (
+                ", ".join(f"{n}. pkt." for n in target.sentence_numbers)
+                if target.sentence_numbers else ""
+            )
+            entry = f"{document.rsplit('/', 1)[-1]}/{document.split('/')[-2]} {instruction.amendment_path}"
+            by_stk.setdefault(where, []).append(f"{entry}{' — ' + sentences if sentences else ''}")
+    for where in sorted(by_stk, key=lambda key: (key != "hele paragraffen", key)):
+        print(f"    {where}:")
+        for entry in by_stk[where]:
+            print(f"        {entry}")
+
+    print()
+    print(f"=== bemaerkninger, nyeste foerst")
+    print()
+
+    confirmed = 0
+    for lbk, document, instruction, item in found:
+        # Bemaerkningen slaas op paa aendringslovens egen paragraf, ikke lovens.
+        reference = AMENDMENT_REFERENCE.search(instruction.amendment_path)
+        law_paragraph = int(reference.group(1)) if reference else 0
+        note, precise, source = _note_for(lex_dania, document, law_paragraph, item)
+
+        # Tomme maal opstaar, naar den nye betegnelse er kursiveret ("indsaettes som
+        # stk. 6"), og de skal ikke vises som var de selvstaendige maal.
+        targets = ", ".join(
+            target.label
+            for target in (lex_dania.parse_target(raw) for raw in instruction.probable_targets)
+            if target.paragraph_id
+        )
+        print(f"--- {document} {instruction.amendment_path}  (indarbejdet i {lbk})")
+        print(f"    rammer: {targets}")
+        print(f"    {instruction.text[:150]}")
+        if not note:
+            print(f"    INGEN bemaerkning: {source}")
+            print()
+            continue
+
+        flat = re.sub(r"\s+", "", note).upper()
+        confirms = f"§{wanted}" in flat
+        confirmed += 1 if confirms else 0
+        kind = "til dette nummer" if precise else "til hele aendringsparagraffen"
+        print(f"    bemaerkning: {source}, {len(note)} tegn, {kind}, naevner § {paragraph_id}: {confirms}")
+        print(f"    {note[:700]}")
+        print()
+
+    print(f"=== {confirmed} af {len(found)} bemaerkninger naevner § {paragraph_id}")
+    return 0
+
+
 def step_motiver(lbk_eli: str, paragraph_id: str, max_steps: str = "6") -> int:
     """Hele kaeden: fra en lovparagraf til lovforslagets specielle bemaerkninger.
 
@@ -812,32 +954,15 @@ def step_motiver(lbk_eli: str, paragraph_id: str, max_steps: str = "6") -> int:
         print(f"Kunne ikke forberede: {error}")
         return 1
 
-    # En bestemmelse kan vaere uaendret gennem flere lovbekendtgoerelser. Er den ikke
-    # roert i denne, ligger dens forarbejder laengere tilbage, og vi maa foelge kaeden
-    # bagud. Uden det ville et tomt svar blive forvekslet med "ingen forarbejder".
+    # For én paragraf foelges hele kaeden af lovbekendtgoerelser bagud, og alle
+    # aendringer samles. Stopper man ved den foerste, faar man kun den seneste
+    # aendring, mens de aeldre — som ofte baerer fortolkningen af den oprindelige
+    # regel — falder ud.
     if not survey:
-        steps = 0
-        while steps < int(max_steps):
-            if any(
-                lex_dania.parse_target(raw).paragraph_id.upper() == wanted
-                for amendment in amendments
-                for instruction in _instructions_of(amendment, law_name)
-                for raw in instruction.probable_targets
-            ):
-                break
-            earlier = lex_dania.previous_consolidation(target_xml)
-            if not earlier or earlier == facit:
-                print(f"=== § {paragraph_id} er ikke aendret i {facit}, og kaeden stopper her.")
-                break
-            print(f"--- § {paragraph_id} er ikke aendret i {facit}; gaar tilbage til {earlier}")
-            facit = earlier
-            try:
-                target_xml = lex_dania.fetch_document_xml(facit)
-                amendments = lex_dania.consolidated_amendments(target_xml)
-            except (lex_dania.FetchError, ElementTree.ParseError) as error:
-                print(f"Kunne ikke hente {facit}: {error}")
-                return 1
-            steps += 1
+        return _paragraph_history(
+            lex_dania, facit, target_xml, amendments, law_name, wanted, paragraph_id,
+            int(max_steps),
+        )
 
     scope = "alle paragraffer" if survey else f"§ {paragraph_id}"
     print(f"=== {law_name}, {scope}: soeger i {len(amendments)} aendringslove fra {facit}")

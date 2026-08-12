@@ -203,6 +203,26 @@ Uden vandringen ville et tomt svar blive forvekslet med "der findes ingen forarb
 Skellet mellem "ikke ændret" og "ikke fundet" er afgørende, og motoren skal aldrig
 returnere det ene som det andet.
 
+**Hele historikken, ikke kun den seneste ændring.** Vandringen må ikke stoppe, første
+gang paragraffen er rørt. Ældre ændringer bærer ofte fortolkningen af den oprindelige
+regel, og et fortolkningsbidrag, der kun omfatter den nyeste ændring, er misvisende.
+For ligningslovens § 9 C findes 14 ændringer i kæden tilbage til 2019, fordelt sådan:
+
+| Stykke | Ændringer |
+| --- | --- |
+| Hele paragraffen | 1 |
+| stk. 1 | 1 |
+| stk. 3 | 6 |
+| stk. 5 | 2 |
+| stk. 7 | 1 |
+| stk. 9 | 3 |
+
+Alle 14 fandt deres bemærkning, og alle 14 nævner § 9 C. Grupperingen efter stykke er
+den form, spørgsmålet stilles i: "hvilke forarbejder gælder for § 9 C, stk. 3?"
+
+Til sammenligning er § 33 A kun ændret én gang i hele kæden tilbage til 2016. Begge dele
+er normale, og motoren må ikke antage, at en bestemmelse er ændret for nylig.
+
 **Målt dækning.** For de 40 ændringspunkter bag LBK 15/2024 (skatteindberetningsloven):
 
 | Resultat | Antal |
