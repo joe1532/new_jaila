@@ -105,13 +105,24 @@ Afspilningen måles med:
 python lovhistorik/probe.py replay eli/lta/2023/42 eli/lta/2025/1500
 ```
 
-Forventet: 82 af 151 operationer udført, og 24 af 58 berørte enheder rammer LBK 1500
+Forventet: 82 af 151 operationer udført, og 27 af 58 berørte enheder rammer LBK 1500
 ordret. Det andet tal er det, der tæller — det første kan hæves ved at udføre flere
 operationer forkert. At 637 af 800 enheder er identiske siger intet, da de fleste aldrig
 er blevet rørt.
 
-Falder træfsikkerheden, mens antallet af udførte operationer stiger, er en ny operation
-begyndt at ødelægge tekst. Det er den vigtigste regression at holde øje med.
+Enhver ændring skal også køres på en anden lov, ellers bygger vi til ligningsloven alene:
+
+```bash
+python lovhistorik/probe.py replay eli/lta/2021/242 eli/lta/2025/1222
+```
+
+Forventet: 20 af 38 operationer udført, og 9 af 18 berørte enheder rammer ordret.
+Afskrivningsloven fandt tre fejl, ligningsloven ikke afslørede.
+
+Hold især øje med linjen "afviger, selv om alle operationer lykkedes". Den tæller de
+tilfælde, hvor motoren tager fejl uden at sige det, og den er vigtigere end
+dækningsgraden. Stiger den, mens antallet af udførte operationer stiger, er en ny
+operation begyndt at ødelægge tekst.
 
 ## Om TLS
 

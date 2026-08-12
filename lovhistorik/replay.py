@@ -154,6 +154,39 @@ def normalise(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+def tidy(text: str) -> str:
+    """Ryd op i mellemrum, en tekstændring kan have efterladt.
+
+    Fjerner man en frase midt i en opremsning, bliver der let to mellemrum tilbage
+    eller et mellemrum foran et komma. Kun mellemrum røres, aldrig ordlyd.
+    """
+    text = re.sub(r"[ \t]{2,}", " ", text)
+    text = re.sub(r"\s+([,.;:])", r"\1", text)
+    return text.strip()
+
+
+# Tegn, en indsat frase kan begynde med, uden at der skal mellemrum foran.
+PUNCTUATION_START = ",.;:)!?"
+
+
+def join_after(anchor: str, addition: str) -> str:
+    """Sæt en indsat frase efter sit anker med det mellemrum, der mangler i citatet.
+
+    Ændringslove citerer anker og ny tekst hver for sig uden det mellemrum, der
+    adskiller dem i den trykte lov: efter »lov om social service« indsættes
+    »eller barnets lov«. Antagelsen er, at der skal et mellemrum imellem, medmindre
+    den nye tekst begynder med tegnsætning. Det holder for de tilfælde, vi har målt,
+    men er en heuristik og kan tage fejl ved indsættelse midt i et ord.
+    """
+    if not addition or not anchor:
+        return f"{anchor}{addition}"
+    if anchor.endswith(" ") or addition.startswith(" "):
+        return f"{anchor}{addition}"
+    if addition[0] in PUNCTUATION_START:
+        return f"{anchor}{addition}"
+    return f"{anchor} {addition}"
+
+
 class TextState:
     """Lovens stykker under afspilning, som punktummer der kan ændres.
 
@@ -247,7 +280,7 @@ class TextState:
             )
 
         for index in indexes:
-            sentences[index] = sentences[index].replace(needle, replacement)
+            sentences[index] = tidy(sentences[index].replace(needle, replacement))
         return ApplicationResult(operation, "applied")
 
     def _replace_text(
@@ -259,7 +292,9 @@ class TextState:
         self, operation: Operation, key: tuple[str, int, int | None], sentences: list[str]
     ) -> ApplicationResult:
         anchor = operation.old_text
-        return self._substitute(operation, sentences, anchor, f"{anchor}{operation.new_text}")
+        return self._substitute(
+            operation, sentences, anchor, join_after(anchor, operation.new_text)
+        )
 
     def _delete_phrase(
         self, operation: Operation, key: tuple[str, int, int | None], sentences: list[str]
@@ -292,9 +327,12 @@ class TextState:
         new_sentences = lex_dania.split_sentences(operation.new_text)
         if not new_sentences:
             return ApplicationResult(operation, "failed", "tom ny tekst")
-        # Den nye tekst indledes med sin egen etiket, fx "Stk. 4.", som ikke er
-        # en del af lovteksten i vores model.
-        new_sentences[0] = re.sub(r"^Stk\.\s*\d+\.\s*", "", new_sentences[0])
+        # Den nye tekst indledes med sin egen etiket, som ikke er en del af
+        # lovteksten i vores model. Genaffattes hele paragraffen, er etiketten
+        # paragrafnummeret ("§ 5 D."); genaffattes et stykke, er den "Stk. 4.".
+        new_sentences[0] = re.sub(
+            r"^(?:§\s*\d+\s*[A-ZÆØÅ]?\s*|Stk\.\s*\d+\.\s*)+", "", new_sentences[0]
+        )
         self.sentences[key] = new_sentences
         return ApplicationResult(operation, "applied")
 

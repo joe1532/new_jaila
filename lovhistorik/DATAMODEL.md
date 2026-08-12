@@ -316,10 +316,16 @@ Kørt med `python lovhistorik/probe.py replay eli/lta/2023/42 eli/lta/2025/1500`
 151 ændringspunkter forsøges udført på LBK 42's tekst, og resultatet sammenlignes ordret
 med LBK 1500.
 
-| Mål | Resultat |
-| --- | --- |
-| Operationer udført | 82 af 151 (54 %) |
-| Berørte enheder der rammer ordret | 24 af 58 (41 %) |
+| Mål | Ligningsloven | Afskrivningsloven |
+| --- | --- | --- |
+| Ændringslove i kæden | 39 | 11 |
+| Operationer udført | 82 af 151 (54 %) | 20 af 38 (53 %) |
+| Berørte enheder der rammer ordret | 27 af 58 (47 %) | 9 af 18 (50 %) |
+
+Afskrivningsloven (LBK 242/2021 → LBK 1222/2025) er kørt uden en linje kode tilpasset
+til den, og tallene ligger på niveau med ligningslovens. Motoren er altså ikke bygget
+til én lov. Lovens navn udledes af den fulde titel, fordi `title_short` er
+dokumentnummeret ("LBK nr 42 af 13/01/2023") og ikke lovens kaldenavn.
 
 **Det andet tal er det ærlige.** At 637 af 800 enheder er identiske med facit lyder
 godt, men de fleste af dem er aldrig blevet rørt — de var ens i forvejen. Kun de
@@ -336,6 +342,27 @@ De 69 operationer, der ikke kunne udføres, fordeler sig sådan:
 | Målet kunne ikke læses | 4 | Målangivelser uden paragrafnummer |
 | Teksten kunne ikke findes | 4 | De alvorlige — se nedenfor |
 | Forkert antal forekomster | 4 | Do. |
+
+### To slags afvigelser
+
+En berørt enhed kan afvige af to grunde, og de kræver helt forskelligt arbejde. Enten
+fejlede en anden operation på samme enhed, så teksten kun er halvt opdateret — det er
+manglende dækning. Eller også lykkedes alle operationer, og teksten er stadig forkert —
+det er en fejl i motoren. Afspilningen skelner mellem de to.
+
+På ligningsloven afviger 19 enheder, selv om alle operationer på dem lykkedes. Det er
+det tal, der skal ned først, for det er dér motoren tager fejl uden at sige det.
+
+Fire fejlklasser er fundet og tre rettet ved at køre på afskrivningsloven:
+
+- **Etiketten fulgte med ved genaffattelse.** Ny tekst indledes med "§ 5 D." eller
+  "Stk. 4.", som er etiket og ikke lovtekst. Rettet.
+- **Indsat frase manglede mellemrum.** Anker og ny tekst citeres hver for sig uden det
+  mellemrum, der adskiller dem i loven. Rettet med en heuristik: der indsættes mellemrum,
+  medmindre den nye tekst begynder med tegnsætning.
+- **Sletning efterlod forkert mellemrum.** Rettet ved oprydning, der kun rører mellemrum.
+- **Forskudte stykker.** Et indsat eller ophævet stykke forskyder alle de følgende. Ikke
+  rettet; det er omnummereringsarbejdet.
 
 Skellet mellem de to grupper er vigtigt. De 53 første er funktioner, der ikke er bygget
 endnu, og de fejler højlydt med en begrundelse. De sidste 8 er tilfælde, hvor vi mener

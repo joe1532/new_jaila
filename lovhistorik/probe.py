@@ -803,7 +803,40 @@ def step_mine(eli: str, max_acts: int = 40) -> int:
     return 0
 
 
-def step_replay(from_eli: str, to_eli: str, law_name: str = "ligningslov") -> int:
+def step_laws(eli: str) -> int:
+    """Vis hvilke love en aendringslov retter i, og hvor deres nyeste udgave ligger.
+
+    Bruges til at finde et andet testinterval end ligningsloven, saa vi kan se, om
+    motoren er bygget til lovgivning i almindelighed eller kun til én lov.
+    """
+    import lex_dania
+
+    try:
+        meta = lex_dania.fetch_metadata(eli.strip("/"))
+    except lex_dania.FetchError as error:
+        print(f"Kunne ikke hente metadata: {error}")
+        return 1
+
+    changes = [str(uri) for uri in meta.get("changes", [])]  # type: ignore[union-attr]
+    print(f"=== {meta['title_short'] or meta['title']}")
+    print(f"--- retter i {len(changes)} love")
+    for uri in changes:
+        path = lex_dania.document_path_of(uri)
+        try:
+            target = lex_dania.fetch_metadata(path)
+        except lex_dania.FetchError as error:
+            print(f"    {path}: kunne ikke hentes ({error})")
+            continue
+        newer = [lex_dania.document_path_of(item) for item in target.get("consolidated_by", [])]  # type: ignore[union-attr]
+        amended = len(target.get("changed_by", []))  # type: ignore[arg-type]
+        print(f"    {path}  {lex_dania.law_name_of(target) or target['title']}")
+        print(f"        type={target['type']} aendret af {amended} love")
+        if newer:
+            print(f"        nyere udgave: {', '.join(newer)}")
+    return 0
+
+
+def step_replay(from_eli: str, to_eli: str, law_name: str = "") -> int:
     """Afspil aendringslovene fra én lovbekendtgoerelse til den naeste og maal traefsikkerheden.
 
     Det er motorens egentlige proeve. Kan vi ikke genskabe teksten, kan vi heller ikke
@@ -814,6 +847,19 @@ def step_replay(from_eli: str, to_eli: str, law_name: str = "ligningslov") -> in
 
     start = from_eli.strip("/")
     facit = to_eli.strip("/")
+
+    # Lovnavnet skal matche indledningen "I ligningsloven, jf. lovbekendtgoerelse …",
+    # og lovbekendtgoerelsens korte titel er netop den form. Uden det ville motoren
+    # kun kunne koere paa love, vi har skrevet ind i koden.
+    if not law_name:
+        try:
+            law_name = lex_dania.law_name_of(lex_dania.fetch_metadata(facit))
+        except lex_dania.FetchError as error:
+            print(f"Kunne ikke finde lovens navn: {error}")
+            return 1
+        if not law_name:
+            print("Kunne ikke udlede lovens navn fra titlen; angiv det som tredje argument.")
+            return 1
 
     try:
         base_xml = lex_dania.fetch_document_xml(start)
@@ -837,7 +883,7 @@ def step_replay(from_eli: str, to_eli: str, law_name: str = "ligningslov") -> in
     dated.sort()
     ordered = [path for _, path in dated]
 
-    print(f"=== afspiller {len(ordered)} love fra {start} til {facit}")
+    print(f"=== afspiller {len(ordered)} love fra {start} til {facit} ({law_name})")
     print(f"--- udgangspunkt: {len(base)} stykker, facit: {len(expected)} stykker")
     print(f"--- foerste lov: {dated[0][0]} {dated[0][1]}")
     print(f"--- sidste lov:  {dated[-1][0]} {dated[-1][1]}")
@@ -896,6 +942,63 @@ def step_replay(from_eli: str, to_eli: str, law_name: str = "ligningslov") -> in
     if touched:
         rate = 100.0 * changed_and_correct / len(touched)
         print(f"    af de roerte rammer {changed_and_correct} ordret ({rate:.1f}%)")
+
+    # Afgoerende skel: en beroert enhed kan afvige, fordi vores operation gjorde noget
+    # forkert, eller fordi en anden operation paa samme enhed fejlede, saa teksten kun
+    # er halvt opdateret. Det foerste er en fejl i motoren, det andet er manglende
+    # daekning. De to kraever helt forskelligt arbejde.
+    failed_units: dict[tuple, int] = {}
+    for result in report.results:
+        if result.status == "failed" and result.operation.target.is_resolvable:
+            key = result.operation.target.key[:2]
+            failed_units[key] = failed_units.get(key, 0) + 1
+
+    clean_hit = clean_miss = polluted_hit = polluted_miss = 0
+    clean_misses: list[str] = []
+    for provision in expected:
+        if provision.key not in touched:
+            continue
+        correct = state.text_of(provision.key) == replay_module.normalise(provision.text)
+        polluted = provision.key[:2] in failed_units
+        if polluted:
+            if correct:
+                polluted_hit += 1
+            else:
+                polluted_miss += 1
+        elif correct:
+            clean_hit += 1
+        else:
+            clean_miss += 1
+            clean_misses.append(provision.label)
+
+    print()
+    print("--- hvorfor de beroerte enheder afviger:")
+    print(f"    {clean_hit} rammer, hvor alle operationer paa enheden lykkedes")
+    print(f"    {clean_miss} afviger, selv om alle operationer lykkedes  <- fejl i motoren")
+    print(f"    {polluted_hit} rammer trods en fejlet operation paa samme enhed")
+    print(f"    {polluted_miss} afviger, hvor en operation paa samme enhed fejlede")
+    if clean_hit + clean_miss:
+        rate = 100.0 * clean_hit / (clean_hit + clean_miss)
+        print(f"    paa enheder uden fejlede operationer rammer vi {rate:.1f}%")
+
+    print()
+    print("--- enheder der afviger, selv om alle operationer lykkedes:")
+    by_label = {provision.label: provision for provision in expected}
+    for label in clean_misses[:6]:
+        provision = by_label[label]
+        ours = state.text_of(provision.key)
+        theirs = replay_module.normalise(provision.text)
+        print(f"    {label}")
+
+        # Vis kun stedet, hvor de to tekster skilles, ellers drukner forskellen i
+        # flere hundrede tegns enslydende lovtekst.
+        cut = 0
+        while cut < min(len(ours), len(theirs)) and ours[cut] == theirs[cut]:
+            cut += 1
+        start = max(0, cut - 40)
+        print(f"        faelles: …{ours[start:cut]}")
+        print(f"        vores:   {ours[cut:cut + 90]!r}")
+        print(f"        facit:   {theirs[cut:cut + 90]!r}")
 
     print()
     print("--- eksempler paa stykker der afviger:")
@@ -1448,8 +1551,10 @@ if __name__ == "__main__":
                 int(sys.argv[3]) if len(sys.argv) > 3 else 40,
             )
         )
+    elif step == "laws":
+        sys.exit(step_laws(sys.argv[2]))
     elif step == "replay":
-        sys.exit(step_replay(sys.argv[2], sys.argv[3]))
+        sys.exit(step_replay(*sys.argv[2:5]))
     elif step == "instr":
         sys.exit(step_instructions(sys.argv[2]))
     elif step == "validate":

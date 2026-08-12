@@ -171,6 +171,23 @@ def fetch_metadata(eli_uri: str) -> dict[str, object]:
     return summary
 
 
+def law_name_of(metadata: dict[str, object]) -> str:
+    """Lovens navn, som ændringslove omtaler den i "I ligningsloven, jf. …".
+
+    `title_short` duer ikke: den er dokumentnummeret ("LBK nr 42 af 13/01/2023").
+    Den fulde titel er "Bekendtgørelse af lov om påligningen af indkomstskat til
+    staten (ligningsloven)", og det er kaldenavnet i parentesen, ændringslovene
+    bruger. Har loven intet kaldenavn, bruges dens egen betegnelse ("lov om …").
+    """
+    title = str(metadata.get("title") or "")
+    title = re.sub(r"^Bekendtgørelse af\s+", "", title, flags=re.IGNORECASE).strip()
+
+    nickname = re.search(r"\(([^)]*lov[^)]*)\)\s*$", title, re.IGNORECASE)
+    if nickname:
+        return nickname.group(1).strip()
+    return re.sub(r"\s*\([^)]*\)\s*$", "", title).strip()
+
+
 def document_date(xml_bytes: bytes) -> str:
     """Lovens underskriftsdato (`DiesSigni`) som ISO-dato, eller tom streng.
 
