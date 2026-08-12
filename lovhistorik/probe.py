@@ -841,7 +841,10 @@ def _paragraph_history(
                 targets = [
                     lex_dania.parse_target(raw) for raw in instruction.probable_targets
                 ]
-                if not any(t.paragraph_id.upper() == wanted for t in targets):
+                hit = any(t.paragraph_id.upper() == wanted for t in targets)
+                # Indsaettes paragraffen, er maalet den foregaaende paragraf, saa
+                # den skal ogsaa soeges i den nye tekst.
+                if not hit and wanted not in lex_dania.inserted_paragraphs(instruction.new_text):
                     continue
                 reference = AMENDMENT_REFERENCE.search(instruction.amendment_path)
                 item = int(reference.group(2)) if reference else 0
@@ -869,21 +872,31 @@ def _paragraph_history(
         print("    Bestemmelsens forarbejder ligger foer 2007, hvor Lex Dania-XML begynder.")
         return 0
 
+    # Kronologi, nyeste foerst. Lovnumre stiger inden for et aar, saa (aar, nummer)
+    # er en korrekt datoorden uden at hente hver lov igen. Raekkefoelgen i
+    # lovbekendtgoerelsens egen liste er ikke kronologisk, og for § 33 A afgoer
+    # forskellen, om ophaevelsen eller genindfoerelsen ser ud til at komme sidst.
+    found.sort(key=lambda row: (int(row[1].split("/")[-2]), int(row[1].split("/")[-1])), reverse=True)
+
     # Oversigt pr. stykke. Det er den form, spoergsmaalet stilles i: "hvilke
     # forarbejder gaelder for § 9 C, stk. 3?"
     print()
     print(f"=== {len(found)} aendringer af § {paragraph_id}, fordelt paa stykker")
     by_stk: dict[str, list[str]] = {}
     for lbk, document, instruction, item in found:
+        places: list[tuple[str, str]] = []  # (hvor, punktumangivelse)
         for raw in instruction.probable_targets:
             target = lex_dania.parse_target(raw)
             if target.paragraph_id.upper() != wanted:
                 continue
-            where = f"stk. {target.stk_number}" if target.stk_number else "hele paragraffen"
-            sentences = (
+            places.append((
+                f"stk. {target.stk_number}" if target.stk_number else "hele paragraffen",
                 ", ".join(f"{n}. pkt." for n in target.sentence_numbers)
-                if target.sentence_numbers else ""
-            )
+                if target.sentence_numbers else "",
+            ))
+        if not places:
+            places = [("hele paragraffen — indsat", "")]
+        for where, sentences in places:
             entry = f"{document.rsplit('/', 1)[-1]}/{document.split('/')[-2]} {instruction.amendment_path}"
             by_stk.setdefault(where, []).append(f"{entry}{' — ' + sentences if sentences else ''}")
     for where in sorted(by_stk, key=lambda key: (key != "hele paragraffen", key)):
@@ -908,7 +921,7 @@ def _paragraph_history(
             target.label
             for target in (lex_dania.parse_target(raw) for raw in instruction.probable_targets)
             if target.paragraph_id
-        )
+        ) or f"§ {paragraph_id} (indsat her)"
         print(f"--- {document} {instruction.amendment_path}  (indarbejdet i {lbk})")
         print(f"    rammer: {targets}")
         print(f"    {instruction.text[:150]}")

@@ -173,8 +173,13 @@ def fetch_metadata(eli_uri: str) -> dict[str, object]:
 
 # "§ 10 i lov nr. 1454 af 10. december 2024" — paragraffen i ændringsloven, lovens
 # nummer og året. Året er det, der sammen med nummeret giver ELI-stien.
+#
+# Paragrafangivelsen er valgfri: er hele ændringsloven indarbejdet, står der blot
+# "lov nr. 1379 af 28. december 2011". Uden den valgfrihed forsvandt sådanne love
+# lydløst fra listen, og deres ændringer kunne aldrig findes.
 CONSOLIDATED_AMENDMENT = re.compile(
-    r"§+\s*(\d+)(?:\s*(?:og|,)\s*\d+)*\s+i\s+lov\s+nr\.\s*(\d+)\s+af\s+\d+\.\s*\w+\s+(\d{4})",
+    r"(?:§+\s*(?P<paragraph>\d+)(?:\s*(?:og|,)\s*\d+)*\s+i\s+)?"
+    r"lov\s+nr\.\s*(?P<number>\d+)\s+af\s+\d+\.\s*\w+\s+(?P<year>\d{4})",
     re.IGNORECASE,
 )
 # Uden IGNORECASE: flaget ville få [A-ZÆØÅ] til også at matche små bogstaver, og så
@@ -248,16 +253,38 @@ def consolidated_amendments(xml_bytes: bytes) -> list[ConsolidatedAmendment]:
 
         found: list[ConsolidatedAmendment] = []
         for match in CONSOLIDATED_AMENDMENT.finditer(clause.group(1)):
-            paragraph, number, year = match.groups()
+            paragraph = match.group("paragraph")
             found.append(
                 ConsolidatedAmendment(
-                    document_path=f"eli/lta/{year}/{number}",
-                    paragraph=int(paragraph),
+                    document_path=f"eli/lta/{match.group('year')}/{match.group('number')}",
+                    # 0 betyder, at hele ændringsloven er indarbejdet.
+                    paragraph=int(paragraph) if paragraph else 0,
                 )
             )
         if found:
             return found
     return []
+
+
+# En indsat paragraf indledes med sin egen betegnelse: "§ 33 A. Har en person, …".
+INSERTED_PARAGRAPH = re.compile(r"(?:^|\.\s+)§\s*(\d+)\s*([A-ZÆØÅ])?\.\s")
+
+
+def inserted_paragraphs(new_text: str) -> list[str]:
+    """Paragraffer, en instruks indsætter, som normaliserede localId ('33A').
+
+    Indsættes en ny paragraf, er målet den *foregående* paragraf: "Efter § 33
+    indsættes: § 33 A. …". Søger man på den nye paragraf, findes ændringen derfor
+    ikke blandt målene, selv om det er dér, hele bestemmelsen kommer fra. Uden dette
+    ville den vigtigste forarbejde til en bestemmelse — den, der indførte den — være
+    usynlig.
+    """
+    found: list[str] = []
+    for number, letter in INSERTED_PARAGRAPH.findall(new_text or ""):
+        label = f"{number}{letter or ''}".upper()
+        if label not in found:
+            found.append(label)
+    return found
 
 
 NOTE_PARAGRAPH = re.compile(r"^Til\s+§+\s*(\d+)\s*$")

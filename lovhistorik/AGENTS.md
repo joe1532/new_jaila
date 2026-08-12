@@ -149,6 +149,17 @@ ligningsloven og 36 af 40 på skatteindberetningsloven.
 Søgningen for én paragraf skal gå hele kæden igennem, ikke stoppe ved første ændring.
 Ældre ændringer bærer ofte fortolkningen af den oprindelige regel.
 
+**En indsat paragraf står ikke som mål for sin egen indsættelse.** Målet er den
+foregående paragraf ("Efter § 33 indsættes: § 33 A"), så paragrafbetegnelser skal også
+læses i den nye tekst. Ellers mangler netop den ændring, der indførte bestemmelsen.
+Ligningslovens § 33 A blev ophævet i 2012 og genindført samme år med tilbagevirkende
+kraft; kun målsøgning fandt ophævelsen, ikke genindførelsen. Historikken skal desuden
+sorteres efter (år, lovnummer), for lovbekendtgørelsens egen liste er ikke kronologisk.
+
+**Lovbekendtgørelsens liste udelader paragrafangivelsen, når hele ændringsloven er
+indarbejdet** ("… , lov nr. 1379 af 28. december 2011, …"). Kræver mønsteret "§ N i",
+forsvinder sådanne love lydløst. Paragraf `0` betyder hele loven.
+
 Den sidste linje er den vigtige. Bemærkningen citerer selv den bestemmelse, den
 forklarer, så nævner den ikke målet, er koblingen sandsynligvis forkert. Stiger det tal,
 er noget gået galt i koblingen — undersøg det frem for at sænke kravet.

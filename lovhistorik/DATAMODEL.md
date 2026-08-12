@@ -217,11 +217,49 @@ For ligningslovens § 9 C findes 14 ændringer i kæden tilbage til 2019, fordel
 | stk. 7 | 1 |
 | stk. 9 | 3 |
 
-Alle 14 fandt deres bemærkning, og alle 14 nævner § 9 C. Grupperingen efter stykke er
-den form, spørgsmålet stilles i: "hvilke forarbejder gælder for § 9 C, stk. 3?"
+Alle fandt deres bemærkning. Grupperingen efter stykke er den form, spørgsmålet stilles
+i: "hvilke forarbejder gælder for § 9 C, stk. 3?"
 
-Til sammenligning er § 33 A kun ændret én gang i hele kæden tilbage til 2016. Begge dele
-er normale, og motoren må ikke antage, at en bestemmelse er ændret for nylig.
+**Kontrolmålet er ikke ufejlbarligt.** At bemærkningen nævner målbestemmelsen er et godt
+tegn, men fraværet er ikke bevis for en forkert kobling. LOV 1890/2015 § 1, nr. 1 hæver
+Storebæltsfradraget i § 9 C, stk. 9 fra 90 til 110 kr., og bemærkningen er korrekt fundet:
+"Det foreslås at forhøje fradraget for skattepligtiges passage over Storebæltsforbindelsen
+fra 90 kr. til 110 kr." Den nævner aldrig "§ 9 C", fordi hele ændringsloven kun handler om
+den ene bestemmelse, og paragrafnummeret derfor er overflødigt. Et lavt tal skal
+undersøges, ikke bortforklares — men enkelttilfælde skal læses, før de tælles som fejl.
+
+### En indsat paragraf står ikke som mål for sin egen indsættelse
+
+§ 33 A så længe ud til kun at være ændret én gang, tilbage til 2016. Det var forkert, og
+fejlen var principiel. Da kæden blev ført helt tilbage til 2006, dukkede dette op:
+
+```text
+LOV 921 af 18/09/2012, § 1, nr. 7    "§ 33 A ophæves."
+LOV 1395 af 23/12/2012, § 3, nr. 2   "Efter § 33 indsættes: § 33 A. Har en person, …"
+```
+
+Bestemmelsen blev **ophævet og tre måneder senere genindført med tilbagevirkende kraft**
+til ophævelsesdagen, så ophævelsen aldrig fik virkning. Bemærkningerne siger det selv:
+"Det foreslås at genindføre ligningslovens § 33 A, sådan som bestemmelsen var udformet på
+det tidspunkt, hvor ophævelsen af bestemmelsen trådte i kraft."
+
+Genindførelsen var usynlig for søgningen, fordi **målet for en indsættelse er den
+foregående paragraf**. Instruksen peger på § 33, ikke på § 33 A; den nye paragraf findes
+kun i den indsatte tekst. Søger man på målene alene, mangler netop den ændring, der
+indførte bestemmelsen — det vigtigste forarbejde, der findes til den. Søgningen læser nu
+også paragrafbetegnelser i den nye tekst (`inserted_paragraphs`).
+
+For § 33 A giver det 3 ændringer i stedet for 1, alle med bekræftet bemærkning:
+
+| Lov | Punkt | Hvad | Forslag |
+| --- | --- | --- | --- |
+| LOV 871/2020 | § 3, nr. 1 | Nyt stk. 6 (corona) | L 199 |
+| LOV 1395/2012 | § 3, nr. 2 | Genindført | L 82 |
+| LOV 921/2012 | § 1, nr. 7 | Ophævet | L 195 |
+
+Rækkefølgen i lovbekendtgørelsens egen liste er ikke kronologisk, så historikken sorteres
+efter (år, lovnummer). For § 33 A afgør det, om ophævelsen eller genindførelsen ser ud til
+at komme sidst — altså om bestemmelsen ser ud til at gælde.
 
 **Målt dækning.** For de 40 ændringspunkter bag LBK 15/2024 (skatteindberetningsloven):
 
@@ -431,6 +469,19 @@ kraft, og motoren ramte derfor kun 1 af 10 enheder.
 
 Kan sætningen ikke læses, falder afspilningen tilbage på `changed_by`, men det skal
 betragtes som en nødløsning, og kilden oplyses i outputtet.
+
+### Paragrafangivelsen mangler, når hele loven er indarbejdet
+
+Listen er ikke ensartet. Ændrer hele ændringsloven kun den ene lov, udelades
+paragrafangivelsen, og der står blot lovens navn:
+
+> … § 2 i lov nr. 1061 af 22. november 2011, **lov nr. 1379 af 28. december 2011**, § 1 i
+> lov nr. 1382 af 28. december 2011 …
+
+Mit mønster krævede "§ N i" foran, så sådanne love forsvandt lydløst fra listen — ikke
+med en fejl, men ved at ingen ændringer fra dem nogensinde blev fundet. Paragrafdelen er
+nu valgfri, og paragraf `0` betyder "hele loven". Ligningslovens måltal ændrede sig ikke
+af rettelsen, men fejlen ville ramme vilkårligt og usynligt på andre love.
 
 **Det andet tal er det ærlige.** At 637 af 800 enheder er identiske med facit lyder
 godt, men de fleste af dem er aldrig blevet rørt — de var ens i forvejen. Kun de
