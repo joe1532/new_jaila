@@ -722,6 +722,224 @@ def step_chain(sag_id: str) -> int:
     return 0
 
 
+def oda_quiet(path_and_query: str) -> dict | None:
+    """Som oda_get, men uden at printe. Bruges naar opslaget er et mellemled."""
+    status, content_type, body, error = fetch(f"{ODA_BASE}/{path_and_query}", "application/json")
+    if error or status != 200 or "json" not in content_type.lower():
+        return None
+    try:
+        return json.loads(body.decode("utf-8", errors="replace"))
+    except json.JSONDecodeError:
+        return None
+
+
+def find_bill(law_number: str, law_date: str) -> tuple[str, str, str] | None:
+    """Fra vedtaget lov til lovforslag: returnerer (sag_id, lovforslagsnummer, periodekode).
+
+    Opslaget sker paa lovnummer *og* dato. Lovnumre genbruges hvert aar, saa nummeret
+    alene ville kunne knytte forarbejder fra en helt anden lov til bestemmelsen.
+    """
+    from urllib.parse import quote
+
+    odata_filter = quote(f"lovnummer eq '{law_number}'", safe="(),'")
+    data = oda_quiet(f"Sag?$filter={odata_filter}&$top=20&$format=json")
+    if not data:
+        return None
+
+    for row in data.get("value", []):
+        if str(row.get("lovnummerdato") or "")[:10] != law_date:
+            continue
+        number = str(row.get("nummernumerisk") or "")
+        if not number.isdigit():
+            continue
+        time.sleep(DELAY_SECONDS)
+        periode = oda_quiet(f"Periode({row.get('periodeid')})?$format=json")
+        if not periode:
+            continue
+        return (str(row.get("id")), number, str(periode.get("kode") or ""))
+    return None
+
+
+AMENDMENT_REFERENCE = re.compile(r"§\s*(\d+),\s*nr\.\s*(\d+)")
+
+
+def step_motiver(lbk_eli: str, paragraph_id: str) -> int:
+    """Hele kaeden: fra en lovparagraf til lovforslagets specielle bemaerkninger.
+
+    Gaar gennem de aendringslove, lovbekendtgoerelsen selv oplyser at have
+    indarbejdet, finder de aendringspunkter der rammer paragraffen, og henter
+    bemaerkningen til hvert punkt.
+    """
+    import xml.etree.ElementTree as ElementTree
+
+    import lex_dania
+
+    facit = lbk_eli.strip("/")
+    # "alle" maaler daekningen for hele loven i stedet for at vise én paragraf.
+    # Det er det tal, der siger, om koblingen kan baere.
+    wanted = "" if paragraph_id.lower() == "alle" else paragraph_id.upper().replace(" ", "").lstrip("§")
+    survey = not wanted
+
+    try:
+        target_xml = lex_dania.fetch_document_xml(facit)
+        amendments = lex_dania.consolidated_amendments(target_xml)
+        law_name = lex_dania.law_name_of(lex_dania.fetch_metadata(facit))
+    except (lex_dania.FetchError, ElementTree.ParseError) as error:
+        print(f"Kunne ikke forberede: {error}")
+        return 1
+
+    scope = "alle paragraffer" if survey else f"§ {paragraph_id}"
+    print(f"=== {law_name}, {scope}: soeger i {len(amendments)} aendringslove")
+    print()
+
+    hits = 0
+    total = 0
+    no_bill = 0
+    no_note = 0
+    unconfirmed: list[str] = []
+    for amendment in amendments:
+        try:
+            xml = lex_dania.fetch_document_xml(amendment.document_path)
+            instructions = lex_dania.extract_instructions(xml, amendment.document_path, law_name)
+        except (lex_dania.FetchError, ElementTree.ParseError) as error:
+            print(f"--- {amendment.document_path}: kunne ikke hentes ({error})")
+            continue
+
+        relevant = []
+        for instruction in instructions:
+            reference = AMENDMENT_REFERENCE.search(instruction.amendment_path)
+            if not reference or int(reference.group(1)) != amendment.paragraph:
+                continue
+            if survey:
+                relevant.append((instruction, int(reference.group(2))))
+                continue
+            for raw in instruction.probable_targets:
+                if lex_dania.parse_target(raw).paragraph_id.upper() == wanted:
+                    relevant.append((instruction, int(reference.group(2))))
+                    break
+        if not relevant:
+            continue
+        total += len(relevant)
+
+        number = amendment.document_path.rsplit("/", 1)[-1]
+        date = lex_dania.document_date(xml)
+        print(f"--- LOV nr. {number} af {date}, § {amendment.paragraph}")
+
+        bill = find_bill(number, date)
+        if not bill:
+            print("        fandt ikke lovforslaget i Folketingets data")
+            no_bill += len(relevant)
+            continue
+        sag_id, bill_number, period = bill
+        accession = f"{period}2L{int(bill_number):05d}"
+        print(f"        sag {sag_id}, L {bill_number}, periode {period} -> eli/ft/{accession}")
+
+        try:
+            bill_xml = lex_dania.fetch_document_xml(f"eli/ft/{accession}")
+            notes = lex_dania.extract_explanatory_notes(bill_xml)
+        except (lex_dania.FetchError, ElementTree.ParseError) as error:
+            print(f"        lovforslaget kunne ikke hentes: {error}")
+            no_bill += len(relevant)
+            continue
+
+        for instruction, item in relevant:
+            note = notes.get((amendment.paragraph, item))
+            if not note:
+                no_note += 1
+                if not survey:
+                    print(f"        {instruction.amendment_path}: INGEN bemaerkning")
+                continue
+
+            # Bemaerkningen citerer selv den bestemmelse, den forklarer. Naevner den
+            # ikke maalet, er koblingen sandsynligvis forkert, og det skal ses.
+            targets = [lex_dania.parse_target(raw) for raw in instruction.probable_targets]
+            labels = {t.paragraph_id.upper() for t in targets if t.paragraph_id}
+            flat = re.sub(r"\s+", "", note).upper()
+            confirms = any(f"§{label}" in flat for label in labels) if labels else False
+            if not confirms:
+                unconfirmed.append(f"{amendment.document_path} {instruction.amendment_path}")
+            hits += 1
+
+            if not survey:
+                print(f"        {instruction.amendment_path}: {instruction.text[:88]}")
+                print(f"            {len(note)} tegn, bekraefter maalet: {confirms}")
+                print(f"            {note[:280]}")
+        if not survey:
+            print()
+
+    print()
+    print(f"=== {total} aendringspunkter undersoegt")
+    print(f"    {hits} fik en bemaerkning")
+    print(f"    {no_note} havde intet 'Til nr.' i lovforslaget")
+    print(f"    {no_bill} kunne ikke naa lovforslaget")
+    if hits:
+        share = 100.0 * (hits - len(unconfirmed)) / hits
+        print(f"    {len(unconfirmed)} bemaerkninger naevner ikke maalbestemmelsen ({share:.1f}% bekraeftet)")
+    for label in unconfirmed[:10]:
+        print(f"        {label}")
+    return 0
+
+
+def step_notes(ft_eli: str) -> int:
+    """Er de specielle bemaerkninger opmaerket, eller er de loebende tekst?
+
+    Det afgoer, om vi kan udtraekke bemaerkningen til ét bestemt aendringspunkt
+    praecist, eller om vi kun kan lede efter overskrifter i fritekst. I sidste
+    tilfaelde skal koblingen behandles som usikker.
+    """
+    import xml.etree.ElementTree as ElementTree
+
+    import lex_dania
+
+    try:
+        body = lex_dania.fetch_document_xml(ft_eli.strip("/"))
+        root = ElementTree.fromstring(body)
+    except (lex_dania.FetchError, ElementTree.ParseError) as error:
+        print(f"Kunne ikke behandle {ft_eli}: {error}")
+        return 1
+
+    print(f"=== {ft_eli}: {len(body)} bytes")
+
+    tags: dict[str, int] = {}
+    for element in root.iter():
+        tags[element.tag] = tags.get(element.tag, 0) + 1
+    print("--- hyppigste elementer:")
+    for tag, count in sorted(tags.items(), key=lambda item: -item[1])[:14]:
+        print(f"    {count:5d}  <{tag}>")
+
+    # Find de elementer, hvis tekst er en bemaerkningsoverskrift ("Til nr. 2"),
+    # og vis deres placering i traeet. Er de opmaerket, har de en egen tag.
+    print()
+    print("--- elementer hvis tekst ligner en bemaerkningsoverskrift:")
+    parents = {child: parent for parent in root.iter() for child in parent}
+    shown = 0
+    for element in root.iter():
+        text = lex_dania.element_text(element)
+        if not re.fullmatch(r"Til (nr\.|§)\s*[\d\w]+[\.\s]*", text or ""):
+            continue
+        if list(element):
+            continue
+        path = []
+        node = element
+        while node is not None and len(path) < 4:
+            path.append(node.tag)
+            node = parents.get(node)
+        print(f"    {text!r:20s} {' < '.join(path)}  attrib={element.attrib or '{}'}")
+        shown += 1
+        if shown >= 12:
+            break
+    if not shown:
+        print("    ingen — overskrifterne staar formentlig som loebende tekst")
+
+    notes = lex_dania.extract_explanatory_notes(body)
+    print()
+    print(f"--- {len(notes)} specielle bemaerkninger udtrukket:")
+    for (paragraph, item), text in sorted(notes.items()):
+        print(f"    § {paragraph}, nr. {item}  ({len(text)} tegn)")
+        print(f"        {text[:260]}")
+    return 0
+
+
 def step_mine(eli: str, max_acts: int = 40) -> int:
     """Udvind testmaengden: alle aendringsinstrukser mod en lov, grupperet efter type.
 
@@ -1616,6 +1834,10 @@ if __name__ == "__main__":
                 int(sys.argv[3]) if len(sys.argv) > 3 else 40,
             )
         )
+    elif step == "motiver":
+        sys.exit(step_motiver(sys.argv[2], sys.argv[3]))
+    elif step == "notes":
+        sys.exit(step_notes(sys.argv[2]))
     elif step == "intro":
         sys.exit(step_intro(sys.argv[2]))
     elif step == "laws":

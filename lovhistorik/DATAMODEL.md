@@ -166,6 +166,32 @@ LL § 9 C, stk. 3                     LBK nr 1500 af 24/11/2025, <Linea> pr. pun
 Ingen LLM indgår i noget af dette. Bemærkningen citerer selv den ændring, instruksen
 foreskriver, hvilket giver en direkte kontrol af, at koblingen er rigtig.
 
+**Bemærkningerne er ikke opmærkede.** Overskrifterne "Til § 1" og "Til nr. 2" står som
+almindelig tekst i `<Char>` inde i `<Linea>`; kun paragrafoverskriften er kursiveret, og
+"Til nr."-overskriften har ingen attributter overhovedet. Udtrækket må derfor bygge på
+tekstmønstre. Det er en reel svaghed: ændres formuleringen af en overskrift, forsvinder
+bemærkningen i stilhed frem for at fejle. Antallet af fundne bemærkninger skal derfor
+altid holdes op mod antallet af ændringspunkter.
+
+**Én bemærkning kan dække flere ændringspunkter.** "Til nr. 7 og 8" og "Til nr. 2-5" er
+almindelige. Læser man kun det første tal, mister man resten uden at opdage det — på
+ligningslovens § 9 C gjaldt det 2 af 6 punkter. Samme tekst føres til hvert af de numre,
+overskriften nævner; der findes ingen opdeling at læse.
+
+**Målt dækning.** For de 40 ændringspunkter bag LBK 15/2024 (skatteindberetningsloven):
+
+| Resultat | Antal |
+| --- | --- |
+| Fik en bemærkning | 36 |
+| Intet "Til nr." i lovforslaget | 2 |
+| Kunne ikke nå lovforslaget | 2 |
+| Bemærkning nævner ikke målbestemmelsen | 3 af 36 |
+
+Den sidste linje er kontrollen: bemærkningen citerer selv den bestemmelse, den forklarer
+("Det foreslås i ligningslovens § 9 C, stk. 3, at indsætte som 5. pkt.: …"). Nævner den
+ikke målet, er koblingen sandsynligvis forkert, og den skal efterses frem for at indgå.
+For ligningslovens § 9 C blev alle 6 punkter koblet og alle 6 bekræftet.
+
 **Titler kan ikke bruges som nøgle.** Sagens titel i Folketingets data er "ændring af
 ligningsloven og lov om en aktiv beskæftigelsesindsats", mens lovforslagets egen titel
 er "ændring af ligningsloven (Forhøjelse af befordringsfradraget for indkomståret

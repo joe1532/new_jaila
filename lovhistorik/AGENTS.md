@@ -132,6 +132,20 @@ tilfælde, hvor motoren tager fejl uden at sige det, og den er vigtigere end
 dækningsgraden. Stiger den, mens antallet af udførte operationer stiger, er en ny
 operation begyndt at ødelægge tekst.
 
+Forarbejdskoblingen måles med:
+
+```bash
+python lovhistorik/probe.py motiver eli/lta/2025/1500 9C
+python lovhistorik/probe.py motiver eli/lta/2024/15 alle
+```
+
+Forventet: 6 af 6 punkter på § 9 C, alle bekræftet, og 36 af 40 punkter med bemærkning
+på den brede måling, hvoraf 3 ikke nævner målbestemmelsen.
+
+Den sidste linje er den vigtige. Bemærkningen citerer selv den bestemmelse, den
+forklarer, så nævner den ikke målet, er koblingen sandsynligvis forkert. Stiger det tal,
+er noget gået galt i koblingen — undersøg det frem for at sænke kravet.
+
 ## Om TLS
 
 Udviklingsmaskinen har TLS-inspektion, så Pythons medfølgende certifikatbundt afvises.

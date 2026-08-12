@@ -233,6 +233,80 @@ def consolidated_amendments(xml_bytes: bytes) -> list[ConsolidatedAmendment]:
     return []
 
 
+NOTE_PARAGRAPH = re.compile(r"^Til\s+§+\s*(\d+)\s*$")
+# "Til nr. 7", "Til nr. 7 og 8", "Til nr. 2-5" og "Til nr. 1, 3 og 4" er alle
+# almindelige. Én bemærkning kan altså dække flere ændringspunkter.
+NOTE_ITEM = re.compile(r"^Til\s+nr\.\s*([\d\s,ogå-]+?)\s*$", re.IGNORECASE)
+
+
+def note_item_numbers(text: str) -> list[int]:
+    """Hvilke ændringspunkter dækker en overskrift som "Til nr. 2-5 og 7"?
+
+    Intervaller udvides. Er overskriften uforståelig, returneres en tom liste, og
+    bemærkningen henføres ikke — det er bedre end at gætte på ét nummer.
+    """
+    numbers: list[int] = []
+    for part in re.split(r"\s*(?:,|\bog\b)\s*", text):
+        part = part.strip()
+        if not part:
+            continue
+        span = re.fullmatch(r"(\d+)\s*-\s*(\d+)", part)
+        if span:
+            first, last = int(span.group(1)), int(span.group(2))
+            if first <= last <= first + 50:  # værn mod at et årstal læses som interval
+                numbers.extend(range(first, last + 1))
+            continue
+        if part.isdigit():
+            numbers.append(int(part))
+    return numbers
+
+
+def extract_explanatory_notes(xml_bytes: bytes) -> dict[tuple[int, int], str]:
+    """Træk lovforslagets specielle bemærkninger ud, nøglet på (paragraf, nummer).
+
+    Bemærkningerne er ikke semantisk opmærkede. Overskrifterne "Til § 1" og
+    "Til nr. 2" står som almindelig tekst i `<Char>`, og kun paragrafoverskriften er
+    kursiveret. Udtrækket bygger derfor på tekstmønstre, og det er en svaghed: en
+    ændret formulering af overskriften vil få bemærkninger til at forsvinde frem for
+    at fejle højlydt. Derfor skal antallet af fundne bemærkninger altid kontrolleres
+    mod antallet af ændringspunkter i loven.
+
+    Nøglen svarer til ændringslovens egen struktur: (§ i ændringsloven, nummeret i
+    opremsningen), altså præcis det, en instruks som "§ 1, nr. 2" identificeres ved.
+    """
+    root = ElementTree.fromstring(xml_bytes)
+
+    notes: dict[tuple[int, int], list[str]] = {}
+    paragraph: int | None = None
+    items: list[int] = []
+
+    for linea in root.iter("Linea"):
+        text = element_text(linea)
+        if not text:
+            continue
+
+        heading = NOTE_PARAGRAPH.match(text)
+        if heading:
+            paragraph = int(heading.group(1))
+            items = []
+            continue
+
+        heading = NOTE_ITEM.match(text)
+        if heading:
+            found = note_item_numbers(heading.group(1))
+            if found:
+                items = found
+                continue
+
+        # Samme tekst føres til alle de numre, overskriften dækker. Bemærkningen er
+        # skrevet under ét, og der findes ingen opdeling at læse.
+        if paragraph is not None and items:
+            for item in items:
+                notes.setdefault((paragraph, item), []).append(text)
+
+    return {key: " ".join(parts) for key, parts in notes.items()}
+
+
 def law_name_of(metadata: dict[str, object]) -> str:
     """Lovens navn, som ændringslove omtaler den i "I ligningsloven, jf. …".
 
