@@ -126,8 +126,15 @@ def render_history_tab() -> None:
         + ("  ·  nåede enden af det maskinlæsbare materiale" if history.reached_end else
            "  ·  standsede efter det valgte antal led — hæv det for at gå længere tilbage")
     )
-    for problem in history.problems:
-        st.warning(problem)
+    if history.problems:
+        # Et problem betyder, at en ændringslov ikke kunne læses. Svaret er da
+        # ufuldstændigt, og det skal stå, hvor man ser resultatet — ikke nede i en log.
+        with st.expander(
+            f"{len(history.problems)} ændringslove kunne ikke læses — svaret kan mangle noget",
+            expanded=True,
+        ):
+            for problem in history.problems:
+                st.warning(problem)
 
     if not history.changes:
         st.info(

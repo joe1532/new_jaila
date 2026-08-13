@@ -29,7 +29,12 @@ TIMEOUT_SECONDS = 30
 
 # Vi kender ikke Retsinformations rate limits. Gå langsomt ved hentning over nettet.
 DELAY_SECONDS = 1.0
-MAX_BYTES = 8_000_000
+
+# Grænsen findes for ikke at æde hukommelsen på et uventet svar, ikke for at afvise
+# store dokumenter. Den var 8 MB, hvilket huggede lovforslag L 88 (2022-23) over midt i
+# et element; den afkortede fil blev gemt i cachen og gjorde forslagets bemærkninger
+# permanent utilgængelige. Størstedelen af det, der fylder, er indlejret formatering.
+MAX_BYTES = 64_000_000
 
 CACHE_DIRECTORY = pathlib.Path(__file__).with_name(".cache")
 
@@ -95,7 +100,13 @@ def fetch(url: str, accept: str | None = None) -> tuple[bytes, str]:
     request = urllib.request.Request(url, headers=headers)
     try:
         with urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS, context=CONTEXT) as response:
-            return response.read(MAX_BYTES), response.headers.get("Content-Type", "")
+            # Der læses én byte mere end grænsen, så et for stort svar kan afvises i
+            # stedet for stiltiende at blive skåret over. Et afkortet dokument ligner
+            # et helt dokument og forsvinder ellers ind i cachen.
+            body = response.read(MAX_BYTES + 1)
+            if len(body) > MAX_BYTES:
+                raise FetchError(f"Svaret overstiger {MAX_BYTES} bytes for {url}")
+            return body, response.headers.get("Content-Type", "")
     except urllib.error.HTTPError as http_error:
         raise FetchError(f"HTTP {http_error.code} for {url}") from http_error
     except (urllib.error.URLError, ssl.SSLError, TimeoutError, OSError) as error:
@@ -116,15 +127,31 @@ def fetch_document_xml(document_path: str) -> bytes:
     """
     cache_file = cache_path_for(document_path)
     if cache_file.exists():
-        return cache_file.read_bytes()
+        cached = cache_file.read_bytes()
+        if is_complete_document(cached):
+            return cached
+        # En ufuldstændig fil i cachen ville aldrig blive hentet igen, og fejlen ville
+        # være permanent. Den kasseres i stedet, så hentningen kan forsøges på ny.
+        cache_file.unlink()
 
     CACHE_DIRECTORY.mkdir(exist_ok=True)
     time.sleep(DELAY_SECONDS)
     body, _ = fetch(f"https://retsinformation.dk/{document_path}/dan/xml")
     if not body:
         raise FetchError(f"Tomt svar for {document_path}")
+    if not is_complete_document(body):
+        raise FetchError(f"Ufuldstændigt dokument for {document_path} ({len(body)} bytes)")
     cache_file.write_bytes(body)
     return body
+
+
+def is_complete_document(body: bytes) -> bool:
+    """Slutter dokumentet, hvor det skal?
+
+    Kontrollen er bevidst billig: den skal kunne køre ved hver læsning fra cachen. Den
+    fanger afkortede svar, ikke skader midt i dokumentet — dem opdager XML-parseren.
+    """
+    return body.rstrip().endswith(b"</Dokument>")
 
 
 def fetch_metadata(eli_uri: str) -> dict[str, object]:

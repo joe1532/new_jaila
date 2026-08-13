@@ -272,6 +272,32 @@ ligningsloven med 227 ændringslove mod 211, og af 11 love uden for kæden er 10
 af data. Den sidste rammer 2006, hvor Lex Dania-opmærkningen slipper op. Afskrivningsloven
 og skatteindberetningsloven har nul uforklarede.
 
+### Hentningen kunne ødelægge et dokument og gemme det for altid
+
+Spørgsmålet "fungerer det deterministisk?" viste tre fejl, som alle sad i hentningen og
+ikke i logikken.
+
+**Et for stort dokument blev skåret over i stilhed.** `response.read(MAX_BYTES)` med
+grænsen 8 MB huggede lovforslag L 88 (2022-23) over midt i et element ved præcis
+8.000.000 bytes. Den afkortede fil blev skrevet i cachen, og da cachen ikke har
+udløbstid, blev fejlen permanent: forslagets 564 bemærkninger var utilgængelige, og
+dokumentet ville aldrig blive hentet igen. Det rigtige dokument fylder 10,99 MB. Nu
+læses én byte mere end grænsen, så et for stort svar afvises frem for at blive
+forkortet, og grænsen er hævet til 64 MB. Grænsen findes for ikke at æde hukommelsen
+på et uventet svar — ikke for at afvise store dokumenter.
+
+**En fejlside blev gemt som et dokument.** Retsinformation svarer med HTTP 200 og en
+HTML-side for en ELI-sti, der ikke findes. Uden en kontrol af indholdet endte siden i
+cachen under dokumentets navn. Nu kontrolleres det ved både skrivning og læsning, at
+indholdet slutter med `</Dokument>`. Kontrollen er billig nok til at køre hver gang og
+fanger netop afkortning og fejlsider; skader midt i dokumentet opdager XML-parseren.
+
+**Kilden indeholder trykfejl.** LBK 176/2009 skriver "§ 7 i lov nr. 1534 af 19. december
+2207". Året findes ikke, og loven kan ikke hentes. Vores parsing læste teksten korrekt;
+fejlen står i bekendtgørelsen. Umulige årstal fanges nu før hentningen og rapporteres
+som det, de er. Vi retter dem ikke: en gætværksrettelse af kildens tekst ville være en
+tavs fejl af netop den slags, vi leder efter.
+
 ### Lovforslagets paragrafnumre er ikke lovens
 
 Den alvorligste fejl gav ikke for få svar, men forkerte. Bemærkningerne slås op på

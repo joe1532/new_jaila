@@ -26,6 +26,7 @@ import json
 import re
 import time
 from dataclasses import dataclass, field
+from datetime import date
 from typing import Callable
 
 import lex_dania
@@ -40,22 +41,26 @@ AMENDMENT_REFERENCE = re.compile(r"§\s*(\d+),\s*nr\.\s*(\d+)")
 MATCH_THRESHOLD = 0.90
 
 
-def oda_json(path_and_query: str) -> dict | None:
-    """Hent JSON fra Folketingets Åbne Data. Returnerer None ved enhver fejl.
+class LookupFailed(Exception):
+    """Opslaget kunne ikke gennemføres.
 
-    Fejl slugges bevidst: opslaget er et mellemled, og en enkelt utilgængelig sag må
-    ikke stoppe hele historikken. Manglende svar viser sig som en manglende bemærkning.
+    Adskilt fra "der var intet at finde", som er et gyldigt svar. Blandes de to, kommer
+    et netværksglip til at ligne et forarbejde, der ikke findes.
     """
+
+
+def oda_json(path_and_query: str) -> dict:
+    """Hent JSON fra Folketingets Åbne Data."""
     try:
         body, content_type = lex_dania.fetch(f"{ODA_BASE}/{path_and_query}", "application/json")
-    except lex_dania.FetchError:
-        return None
+    except lex_dania.FetchError as error:
+        raise LookupFailed(f"Folketingets data svarede ikke: {error}") from error
     if "json" not in content_type.lower():
-        return None
+        raise LookupFailed(f"Folketingets data svarede med {content_type!r}, ikke JSON")
     try:
         return json.loads(body.decode("utf-8", errors="replace"))
-    except json.JSONDecodeError:
-        return None
+    except json.JSONDecodeError as error:
+        raise LookupFailed(f"Folketingets data gav ulæselig JSON: {error}") from error
 
 
 def find_bill(law_number: str, law_date: str) -> tuple[str, str, str] | None:
@@ -67,9 +72,11 @@ def find_bill(law_number: str, law_date: str) -> tuple[str, str, str] | None:
     from urllib.parse import quote
 
     odata_filter = quote(f"lovnummer eq '{law_number}'", safe="(),'")
-    data = oda_json(f"Sag?$filter={odata_filter}&$top=20&$format=json")
-    if not data:
-        return None
+    # Sorteringen er eksplicit, fordi OData ellers ikke garanterer en rækkefølge, og et
+    # opslag kunne give forskellige svar fra gang til gang.
+    data = oda_json(
+        f"Sag?$filter={odata_filter}&$orderby=id&$top=50&$format=json"
+    )
 
     for row in data.get("value", []):
         if str(row.get("lovnummerdato") or "")[:10] != law_date:
@@ -79,8 +86,6 @@ def find_bill(law_number: str, law_date: str) -> tuple[str, str, str] | None:
             continue
         time.sleep(lex_dania.DELAY_SECONDS)
         period = oda_json(f"Periode({row.get('periodeid')})?$format=json")
-        if not period:
-            continue
         return (str(row.get("id")), number, str(period.get("kode") or ""))
     return None
 
@@ -128,27 +133,38 @@ def realign(proposed: list, instruction_text: str) -> tuple[int, int] | None:
         return None
 
 
-def instructions_of(amendment, law_name: str) -> list:
+def instructions_of(amendment, law_name: str) -> tuple[list, str]:
     """Ændringspunkter i den paragraf, lovbekendtgørelsen har indarbejdet.
 
-    Fejl slugges bevidst: funktionen bruges til at afgøre, om en paragraf er rørt, og
-    en enkelt lov, der ikke kan hentes, må ikke stoppe søgningen bagud.
+    Returnerer (punkter, problem). En lov, der ikke kan hentes, må ikke stoppe
+    søgningen bagud, men fejlen skal med ud: sluges den, ligner en utilgængelig
+    ændringslov en lov, der ikke rørte paragraffen, og svaret bliver tavst ufuldstændigt.
     """
+    # Lovbekendtgørelser er skrevet af mennesker og indeholder trykfejl. LBK 176/2009
+    # skriver "lov nr. 1534 af 19. december 2207" om en lov fra 2007. Fejlen fanges her,
+    # så den ikke kommer til at ligne et netværksproblem — og så vi ikke retter i det,
+    # kilden har skrevet, på et gæt.
+    year = amendment.document_path.split("/")[-2]
+    if not (year.isdigit() and 1849 <= int(year) <= date.today().year):
+        return ([], f"{amendment.document_path}: lovbekendtgørelsen angiver årstallet "
+                    f"{year}, som ikke kan passe. Trykfejl i kilden, og lovens ændringer "
+                    "kommer derfor ikke med.")
+
     try:
         xml = lex_dania.fetch_document_xml(amendment.document_path)
         instructions = lex_dania.extract_instructions(xml, amendment.document_path, law_name)
-    except Exception:  # noqa: BLE001 - netværk og XML fejler på mange måder
-        return []
+    except Exception as error:  # noqa: BLE001 - netværk og XML fejler på mange måder
+        return ([], f"{amendment.document_path} kunne ikke læses: {error}")
 
     # Paragraf 0 betyder, at hele ændringsloven er indarbejdet.
     if not amendment.paragraph:
-        return instructions
+        return (instructions, "")
     kept = []
     for instruction in instructions:
         reference = AMENDMENT_REFERENCE.search(instruction.amendment_path)
         if reference and int(reference.group(1)) == amendment.paragraph:
             kept.append(instruction)
-    return kept
+    return (kept, "")
 
 
 @dataclass
@@ -192,7 +208,11 @@ def note_for(
     except Exception:  # noqa: BLE001
         return Note(problem="ændringsloven kunne ikke læses")
 
-    bill = find_bill(number, date)
+    try:
+        bill = find_bill(number, date)
+    except LookupFailed as error:
+        # Adskilt fra "findes ikke": her ved vi ikke, om der er et forarbejde.
+        return Note(problem=f"opslaget kunne ikke gennemføres — {error}")
     if not bill:
         return Note(problem="lovforslaget findes ikke i Folketingets data")
     case_id, bill_number, period = bill
@@ -353,7 +373,10 @@ def paragraph_history(
             if amendment.document_path in seen:
                 continue
             seen.add(amendment.document_path)
-            for instruction in instructions_of(amendment, law_name):
+            instructions, problem = instructions_of(amendment, law_name)
+            if problem:
+                history.problems.append(problem)
+            for instruction in instructions:
                 places: list[tuple[str, str]] = []
                 for raw in instruction.probable_targets:
                     target = lex_dania.parse_target(raw)

@@ -765,27 +765,15 @@ AMENDMENT_REFERENCE = re.compile(r"§\s*(\d+),\s*nr\.\s*(\d+)")
 
 
 def _instructions_of(amendment, law_name: str) -> list:
-    """Aendringspunkter i den paragraf, lovbekendtgoerelsen har indarbejdet.
+    """Aendringspunkter i den indarbejdede paragraf. Logikken ligger i forarbejder.py.
 
-    Fejl slugges bevidst: funktionen bruges kun til at afgoere, om en paragraf er
-    roert, og en enkelt lov, der ikke kan hentes, maa ikke stoppe soegningen bagud.
+    Fejlen kasseres her, fordi daekningsmaalingen har sin egen laekagetest til at
+    opdage love, der falder ud. I selve forarbejdssoegningen rapporteres den.
     """
-    import lex_dania
+    import forarbejder
 
-    try:
-        xml = lex_dania.fetch_document_xml(amendment.document_path)
-        instructions = lex_dania.extract_instructions(xml, amendment.document_path, law_name)
-    except Exception:  # noqa: BLE001 - netvaerk og XML fejler paa mange maader
-        return []
-
-    if not amendment.paragraph:
-        return instructions
-    kept = []
-    for instruction in instructions:
-        reference = AMENDMENT_REFERENCE.search(instruction.amendment_path)
-        if reference and int(reference.group(1)) == amendment.paragraph:
-            kept.append(instruction)
-    return kept
+    instructions, _ = forarbejder.instructions_of(amendment, law_name)
+    return instructions
 
 
 def _realign(proposed: list, instruction_text: str) -> tuple[int, int] | None:

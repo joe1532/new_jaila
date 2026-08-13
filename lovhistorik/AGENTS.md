@@ -153,6 +153,23 @@ Streamlit-appen kalder `paragraph_history`, så de ikke kan nå frem til forskel
 på samme spørgsmål. Lægger man ny logik i proben, opstår netop den forskel. Efter en
 ændring skal begge veje give samme tal — sammenlign `probe.py motiver` med appen.
 
+**Et kald, der fejler, må aldrig ligne et kald, der intet fandt.** En ændringslov, der
+ikke kan hentes, ligner ellers en lov, der ikke rørte paragraffen, og svaret bliver
+tavst ufuldstændigt. `instructions_of` returnerer derfor `(punkter, problem)`, og
+problemet skal med i `History.problems` og vises. Samme skel gælder mod Folketingets
+data: `LookupFailed` betyder "opslaget lykkedes ikke", ikke "der er intet forarbejde".
+
+**Alt hentet indhold skal kontrolleres, før det caches.** Cachen har ingen udløbstid, så
+et ødelagt dokument bliver en permanent fejl. `is_complete_document` kontrollerer ved
+både skrivning og læsning. Hæves `MAX_BYTES`, skal `fetch` blive ved med at læse én byte
+mere end grænsen, så et for stort svar afvises frem for at blive skåret over.
+
+Cachen kan efterses uden netværk:
+
+```bash
+python -c "import sys; sys.path.insert(0,'lovhistorik'); import lex_dania; print([p.name for p in lex_dania.CACHE_DIRECTORY.glob('*.xml') if not lex_dania.is_complete_document(p.read_bytes())])"
+```
+
 Dækning og lækage måles med:
 
 ```bash
