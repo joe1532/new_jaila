@@ -33,7 +33,18 @@ scp -i "%SSH_KEY%" backend\deploy\jaila-backend.service %SSH_USER%@%SSH_HOST%:~/
 if errorlevel 1 goto :upload_failed
 
 echo [3/7] Opretter app mappe og udpakker...
-ssh -i "%SSH_KEY%" %SSH_USER%@%SSH_HOST% "echo %SUDO_PASS% | sudo -S mkdir -p %REMOTE_APP% && rm -rf %REMOTE_TMP% && mkdir -p %REMOTE_TMP% && tar -xzf ~/backend-deploy.tar.gz -C %REMOTE_TMP%"
+rem Projektmapperne ligger i OneDrive og baerer Windows' ReadOnly-attribut, som tar
+rem oversaetter til dr-xr-xr-x. Uden write-bit kan tar ikke laegge filer i mappen, den
+rem lige har oprettet, og udpakningen fejler fil for fil.
+rem
+rem --delay-directory-restore udpakker foerst indholdet og saetter foerst mappernes
+rem rettigheder til sidst, saa udpakningen kan gennemfoeres. Derefter rettes de med
+rem chmod. rsync -a bevarer rettigheder, saa det der landes i app-mappen skal vaere
+rem laesbart for den bruger, servicen koerer som.
+rem
+rem chmod foer rm af samme grund: uden write-bit kan en mappes indhold ikke slettes,
+rem heller ikke af ejeren.
+ssh -i "%SSH_KEY%" %SSH_USER%@%SSH_HOST% "echo %SUDO_PASS% | sudo -S mkdir -p %REMOTE_APP% && chmod -R u+rwX %REMOTE_TMP% 2>/dev/null; rm -rf %REMOTE_TMP% && mkdir -p %REMOTE_TMP% && tar -xzf ~/backend-deploy.tar.gz --delay-directory-restore -C %REMOTE_TMP% && chmod -R u=rwX,go=rX %REMOTE_TMP%"
 if errorlevel 1 goto :remote_failed
 
 echo [4/7] Synkroniserer filer...
@@ -54,6 +65,12 @@ if errorlevel 1 goto :remote_failed
 
 echo [7/7] Viser service-status...
 ssh -i "%SSH_KEY%" %SSH_USER%@%SSH_HOST% "echo %SUDO_PASS% | sudo -S systemctl --no-pager --full status jaila-backend | head -n 20"
+if errorlevel 1 goto :remote_failed
+
+echo [7b/7] Kontrollerer at API'et svarer efter genstart...
+rem En service, der er "active", kan stadig have fejlet under import. Der spoerges derfor
+rem paa et endepunkt frem for at stole paa status. Servicen faar et oejeblik til at binde.
+ssh -i "%SSH_KEY%" %SSH_USER%@%SSH_HOST% "sleep 4; curl -s -o /dev/null -w 'api/health: HTTP %%{http_code}\n' http://127.0.0.1:8010/api/health; curl -s -w '\n' http://127.0.0.1:8010/api/forarbejder/laws | head -c 200; echo"
 if errorlevel 1 goto :remote_failed
 
 echo.
