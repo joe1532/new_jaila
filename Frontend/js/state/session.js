@@ -30,7 +30,13 @@ export function clearActiveUser() {
 export function getActiveTab(defaultTab) {
   try {
     const raw = localStorage.getItem(ACTIVE_TAB_KEY);
-    if (raw === "analyse" || raw === "sagsbehandling" || raw === "chat" || raw === "test") {
+    if (
+      raw === "analyse" ||
+      raw === "sagsbehandling" ||
+      raw === "chat" ||
+      raw === "test" ||
+      raw === "forarbejder"
+    ) {
       return raw;
     }
   } catch (_err) {

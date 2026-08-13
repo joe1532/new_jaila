@@ -13,13 +13,17 @@ set "SSH_HOST=168.119.63.168"
 set "REMOTE_APP=/opt/jaila_backend"
 set "REMOTE_TMP=~/jaila_backend_tmp"
 set "REMOTE_DATA_DIR=/var/lib/jaila/analyse_logs"
+set "REMOTE_CACHE_DIR=/var/lib/jaila/lovhistorik_cache"
 
 if not defined SUDO_PASS set /p SUDO_PASS=Indtast sudo password for server: 
 
 echo.
 echo [1/7] Pakker backend filer lokalt...
 if exist backend-deploy.tar.gz del /f /q backend-deploy.tar.gz
-tar -czf backend-deploy.tar.gz backend requirements.txt
+rem lovhistorik skal med: backend/services/forarbejder_service.py importerer motoren derfra.
+rem .cache udelades bevidst - den fylder flere hundrede megabyte og bygges op paa serveren
+rem i /var/lib/jaila/lovhistorik_cache, hvor den overlever naeste udrulning.
+tar -czf backend-deploy.tar.gz --exclude=".cache" --exclude="__pycache__" backend requirements.txt lovhistorik
 if errorlevel 1 goto :local_failed
 
 echo [2/7] Uploader archive og service-fil...
@@ -36,8 +40,8 @@ echo [4/7] Synkroniserer filer...
 ssh -i "%SSH_KEY%" %SSH_USER%@%SSH_HOST% "echo %SUDO_PASS% | sudo -S rsync -a --delete %REMOTE_TMP%/ %REMOTE_APP%/ && echo %SUDO_PASS% | sudo -S chown -R www-data:www-data %REMOTE_APP%"
 if errorlevel 1 goto :remote_failed
 
-echo [4b/7] Sikrer persistent datamappe for analyse-logs...
-ssh -i "%SSH_KEY%" %SSH_USER%@%SSH_HOST% "echo %SUDO_PASS% | sudo -S mkdir -p %REMOTE_DATA_DIR% && echo %SUDO_PASS% | sudo -S chown -R www-data:www-data /var/lib/jaila"
+echo [4b/7] Sikrer persistente datamapper for analyse-logs og forarbejdscache...
+ssh -i "%SSH_KEY%" %SSH_USER%@%SSH_HOST% "echo %SUDO_PASS% | sudo -S mkdir -p %REMOTE_DATA_DIR% %REMOTE_CACHE_DIR% && echo %SUDO_PASS% | sudo -S chown -R www-data:www-data /var/lib/jaila"
 if errorlevel 1 goto :remote_failed
 
 echo [5/7] Sikrer venv og installerer kun dependencies ved behov...
@@ -55,6 +59,9 @@ if errorlevel 1 goto :remote_failed
 echo.
 echo Deployment af backend lykkedes.
 echo Husk: /etc/jaila-backend.env skal indeholde OPENAI_API_KEY og FRONTEND_ORIGINS.
+echo Forarbejder-fanen kraever desuden linjen:
+echo   LOVHISTORIK_CACHE_DIR=%REMOTE_CACHE_DIR%
+echo Uden den lander cachen i app-mappen og slettes ved naeste udrulning.
 echo.
 goto :done
 

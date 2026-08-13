@@ -94,6 +94,32 @@ Disse punkter er målt og har kostet tid at finde ud af. De må ikke gættes om 
 
 De fulde invarianter står i DATAMODEL.md.
 
+## Motoren har nu to brugerflader
+
+Streamlit-appen i `app.py` er ikke længere den eneste. JAILA har en fane, der kalder de
+samme funktioner gennem `backend/services/forarbejder_service.py`. Det ændrer tre ting:
+
+- **Faglig logik hører til i `forarbejder.py` og `lex_dania.py`, ikke i en flade.** Lægges
+  en regel i JAILA-laget, vil proben og Streamlit-appen svare noget andet på samme
+  spørgsmål, og det vil ingen opdage. Det gælder også lister, der ligner opsætning:
+  lovlisten blev flyttet til `forarbejder.py`, netop fordi to flader hver havde sin.
+- **Modulet kan nu kaldes fra flere tråde.** Det kunne det ikke før, hvor der altid kørte
+  én hentning ad gangen. Skriver du noget til disk, skal det skrives atomisk — gennem en
+  midlertidig fil og `os.replace` — ellers kan en anden læser ramme en halvfærdig fil.
+  Delt foranderlig tilstand i modulet skal undgås.
+- **Et opslag, ingen venter på, holder stadig turen.** Afbrydes en forespørgsel, kan
+  kørslen ikke standses midt i et netværkskald. Frigives turen med det samme, kommer to
+  kørsler til at ramme kilden samtidig. Turen frigives derfor først, når den forladte
+  kørsel er løbet ud.
+
+## Et forbehold skal med i teksten, ikke kun på skærmen
+
+Når et svar sendes videre til en sprogmodel som fortolkningsbidrag, skal det stå *i*
+teksten, hvor sikker koblingen er: bekræftet, ubekræftet, eller ikke til at efterprøve.
+En advarsel, der kun står i brugerfladen, følger ikke med teksten, og modellen kan da
+ikke skelne et bekræftet forarbejde fra et gæt. Samme grund til at formateringen sker ét
+sted i backend og ikke i den enkelte flade.
+
 ## Kildeadgang
 
 Vær varsom med Retsinformation og Folketingets Åbne Data. Der er ingen offentliggjorte

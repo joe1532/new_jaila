@@ -27,39 +27,9 @@ import lex_dania  # noqa: E402
 DEFAULT_ELI = "eli/lta/2025/1500"
 DEFAULT_LAW = "ligningslov"
 
-# Love, hvor kæden er kørt igennem og målt. Andre kan indtastes frit.
-# Et kendt holdepunkt pr. lov — ikke nødvendigvis den nyeste udgave. Appen følger selv
-# `eli:consolidated_by` frem til den seneste bekendtgørelse, så listen ikke forælder, når
-# Skatteministeriet udsender en ny. Da kontrollen blev bygget, var to af posterne allerede
-# overhalet, uden at det kunne ses.
-#
-# Stierne er fundet ved at spørge samlelovene LOV 679/2023 og LOV 1563/2023, hvilke love de
-# ændrer, ikke skrevet efter hukommelsen. Bemærk at ejendomsavancebeskatningsloven i
-# metadata hedder "lov om beskatning af fortjeneste ved afståelse af fast ejendom".
-KNOWN_LAWS = {
-    "Ligningsloven": "eli/lta/2025/1500",
-    "Kildeskatteloven": "eli/lta/2024/460",
-    "Selskabsskatteloven": "eli/lta/2025/279",
-    "Personskatteloven": "eli/lta/2021/1284",
-    "Afskrivningsloven": "eli/lta/2025/1222",
-    "Aktieavancebeskatningsloven": "eli/lta/2025/1098",
-    "Kursgevinstloven": "eli/lta/2025/1176",
-    "Ejendomsavancebeskatningsloven": "eli/lta/2019/132",
-    "Pensionsbeskatningsloven": "eli/lta/2024/1243",
-    "Virksomhedsskatteloven": "eli/lta/2021/1836",
-    "Dødsboskatteloven": "eli/lta/2019/426",
-    "Fondsbeskatningsloven": "eli/lta/2025/207",
-    "Skatteforvaltningsloven": "eli/lta/2024/1053",
-    "Skattekontrolloven": "eli/lta/2024/12",
-    "Skatteindberetningsloven": "eli/lta/2025/1059",
-    "Opkrævningsloven": "eli/lta/2024/1040",
-    "Ejendomsvurderingsloven": "eli/lta/2023/1510",
-    "Tinglysningsafgiftsloven": "eli/lta/2025/27",
-    "Arbejdsmarkedsbidragsloven": "eli/lta/2020/121",
-    "Aktiesparekontoloven": "eli/lta/2025/281",
-    "Konkursskatteloven": "eli/lta/2019/353",
-    "Anden lov — indtast selv": "",
-}
+# Lovlisten deles med JAILA-fanen gennem forarbejder.py, så de to flader ikke kan komme
+# til at tilbyde hver sit udvalg. Den frie indtastning findes kun her i inspektionsappen.
+KNOWN_LAWS = {**forarbejder.KNOWN_LAWS, "Anden lov — indtast selv": ""}
 
 MARKUP_LABELS = {
     "signi_char": "opmærket (signiChar)",

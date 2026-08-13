@@ -36,6 +36,43 @@ ODA_BASE = "https://oda.ft.dk/api"
 # Lovforslagets paragraf og punkt: "§ 3, nr. 1".
 AMENDMENT_REFERENCE = re.compile(r"§\s*(\d+),\s*nr\.\s*(\d+)")
 
+# Love, hvor kæden er kørt igennem og målt.
+#
+# Et kendt holdepunkt pr. lov — ikke nødvendigvis den nyeste udgave. Både Streamlit-appen
+# og JAILA følger selv `eli:consolidated_by` frem til den seneste bekendtgørelse, så
+# listen ikke forælder, når Skatteministeriet udsender en ny. Da kontrollen blev bygget,
+# var to af posterne allerede overhalet, uden at det kunne ses.
+#
+# Stierne er fundet ved at spørge samlelovene LOV 679/2023 og LOV 1563/2023, hvilke love
+# de ændrer, ikke skrevet efter hukommelsen. Bemærk at ejendomsavancebeskatningsloven i
+# metadata hedder "lov om beskatning af fortjeneste ved afståelse af fast ejendom".
+#
+# Listen står her og ikke i brugerfladerne, fordi de to ellers kunne komme til at tilbyde
+# hver sit udvalg af love — samme grund til at søgelogikken ligger i dette modul.
+KNOWN_LAWS: dict[str, str] = {
+    "Ligningsloven": "eli/lta/2025/1500",
+    "Kildeskatteloven": "eli/lta/2024/460",
+    "Selskabsskatteloven": "eli/lta/2025/279",
+    "Personskatteloven": "eli/lta/2021/1284",
+    "Afskrivningsloven": "eli/lta/2025/1222",
+    "Aktieavancebeskatningsloven": "eli/lta/2025/1098",
+    "Kursgevinstloven": "eli/lta/2025/1176",
+    "Ejendomsavancebeskatningsloven": "eli/lta/2019/132",
+    "Pensionsbeskatningsloven": "eli/lta/2024/1243",
+    "Virksomhedsskatteloven": "eli/lta/2021/1836",
+    "Dødsboskatteloven": "eli/lta/2019/426",
+    "Fondsbeskatningsloven": "eli/lta/2025/207",
+    "Skatteforvaltningsloven": "eli/lta/2024/1053",
+    "Skattekontrolloven": "eli/lta/2024/12",
+    "Skatteindberetningsloven": "eli/lta/2025/1059",
+    "Opkrævningsloven": "eli/lta/2024/1040",
+    "Ejendomsvurderingsloven": "eli/lta/2023/1510",
+    "Tinglysningsafgiftsloven": "eli/lta/2025/27",
+    "Arbejdsmarkedsbidragsloven": "eli/lta/2020/121",
+    "Aktiesparekontoloven": "eli/lta/2025/281",
+    "Konkursskatteloven": "eli/lta/2019/353",
+}
+
 # Under denne lighed regnes to instrukser ikke for den samme. Tærsklen er høj, fordi et
 # forkert match giver en forkert bemærkning, og et forkert svar er værre end intet svar.
 MATCH_THRESHOLD = 0.90

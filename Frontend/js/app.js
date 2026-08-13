@@ -9,6 +9,12 @@ import { deleteChatLog, getChatLog, listChatLogs, saveChatLog } from "./api/chat
 import { createCase, deleteCase, getCase, listCases, updateCase } from "./api/casesApi.js";
 import { getSagsLegalBasis } from "./api/sagsbehandlingApi.js";
 import { getLegalSourceSection, getLegalSourcesCatalog } from "./api/legalSourcesApi.js";
+import {
+  getForarbejderLaws,
+  getForarbejderParagraphs,
+  getForarbejderVersions,
+  runForarbejderHistory,
+} from "./api/forarbejderApi.js";
 import { exportChatPdf, sendChat, sendChatStream } from "./api/chatApi.js";
 import {
   clearChatContextFiles,
@@ -33,6 +39,7 @@ import { getState, setState } from "./state/store.js";
 import { getInitialAnalyseState, renderAnalyse } from "./tabs/analyseTab.js";
 import { getInitialChatState, renderChat } from "./tabs/chatTab.js";
 import { getInitialTestChatState, renderTestChat } from "./tabs/testTab.js";
+import { renderForarbejder } from "./tabs/forarbejderTab.js";
 import { renderSagsbehandling } from "./tabs/sagsbehandlingTab.js";
 import { buildSagsQuestionPayload } from "./sags/sagsQuestionBuilder.js";
 
@@ -148,6 +155,19 @@ const elements = {
   tabPaneSagsbehandling: document.getElementById("tabPaneSagsbehandling"),
   tabPaneChat: document.getElementById("tabPaneChat"),
   tabPaneTest: document.getElementById("tabPaneTest"),
+  tabPaneForarbejder: document.getElementById("tabPaneForarbejder"),
+  forarbejderLaw: document.getElementById("forarbejderLaw"),
+  forarbejderVersion: document.getElementById("forarbejderVersion"),
+  forarbejderParagraph: document.getElementById("forarbejderParagraph"),
+  forarbejderSteps: document.getElementById("forarbejderSteps"),
+  forarbejderSearchBtn: document.getElementById("forarbejderSearchBtn"),
+  forarbejderAbortBtn: document.getElementById("forarbejderAbortBtn"),
+  forarbejderNotice: document.getElementById("forarbejderNotice"),
+  forarbejderProgress: document.getElementById("forarbejderProgress"),
+  forarbejderResult: document.getElementById("forarbejderResult"),
+  forarbejderSendPanel: document.getElementById("forarbejderSendPanel"),
+  forarbejderSendBtn: document.getElementById("forarbejderSendBtn"),
+  forarbejderCopyBtn: document.getElementById("forarbejderCopyBtn"),
   sagsbehandlingTitle: document.getElementById("sagsbehandlingTitle"),
   sagsbehandlingConversation: document.getElementById("sagsbehandlingConversation"),
   sagsbehandlingInput: document.getElementById("sagsbehandlingInput"),
@@ -232,7 +252,13 @@ function normalizeTabId(tabId) {
   if (normalized === "analyse" && !ENABLE_ANALYSE_TAB) {
     return "chat";
   }
-  if (normalized === "analyse" || normalized === "sagsbehandling" || normalized === "chat" || normalized === "test") {
+  if (
+    normalized === "analyse" ||
+    normalized === "sagsbehandling" ||
+    normalized === "chat" ||
+    normalized === "test" ||
+    normalized === "forarbejder"
+  ) {
     return normalized;
   }
   return "chat";
@@ -384,7 +410,216 @@ function renderAllTabs() {
   renderChat(elements, state);
   renderTestChat(elements, state);
   renderSagsbehandling(elements, state);
+  renderForarbejder(elements, state);
   updateSagsCaseSelector();
+}
+
+let forarbejderAbortController = null;
+
+function setForarbejder(patch) {
+  setState({ forarbejder: patch });
+  renderForarbejder(elements, getState());
+}
+
+/**
+ * Antal led tilbage i kæden fra den valgte udgave. Tallet gættes ikke: kæden er kendt,
+ * og vælger man en ældre udgave, falder det af sig selv, fordi alt nyere springes over.
+ */
+function forarbejderRemainingSteps(versions, selectedEli) {
+  const position = versions.findIndex((version) => version.eli === selectedEli);
+  if (position < 0) {
+    return versions.length || 1;
+  }
+  return Math.max(1, versions.length - position);
+}
+
+async function loadForarbejderLaws() {
+  const current = getState().forarbejder;
+  if ((current.laws || []).length || current.running) {
+    return;
+  }
+  try {
+    const data = await getForarbejderLaws();
+    if (!data.available) {
+      setForarbejder({
+        available: false,
+        unavailableReason: data.reason || "",
+        error: `Forarbejdsmotoren kunne ikke indlæses: ${data.reason || "ukendt grund"}`,
+      });
+      return;
+    }
+    const laws = data.laws || [];
+    setForarbejder({ laws, available: true, error: "" });
+    if (laws.length) {
+      await selectForarbejderLaw(laws[0].eli);
+    }
+  } catch (err) {
+    setForarbejder({ error: "Kunne ikke hente lovlisten: " + (err.message || "Ukendt fejl") });
+  }
+}
+
+async function selectForarbejderLaw(eli) {
+  setForarbejder({
+    selectedLawEli: eli,
+    versions: [],
+    selectedVersionEli: "",
+    paragraphs: [],
+    selectedParagraph: "",
+    history: null,
+    selectedBlocks: [],
+    error: "",
+    progressMessage: "Henter lovens udgaver …",
+  });
+  try {
+    const data = await getForarbejderVersions(eli);
+    const versions = data.versions || [];
+    const newest = versions.length ? versions[0].eli : "";
+    setForarbejder({
+      versions,
+      selectedVersionEli: newest,
+      notice: data.notice || "",
+      skippedVersions: 0,
+      remainingSteps: versions.length || 1,
+      steps: versions.length || 1,
+      progressMessage: "",
+    });
+    if (newest) {
+      await selectForarbejderVersion(newest);
+    }
+  } catch (err) {
+    setForarbejder({
+      progressMessage: "",
+      error: "Kunne ikke hente lovens udgaver: " + (err.message || "Ukendt fejl"),
+    });
+  }
+}
+
+async function selectForarbejderVersion(eli) {
+  const versions = getState().forarbejder.versions || [];
+  const remaining = forarbejderRemainingSteps(versions, eli);
+  setForarbejder({
+    selectedVersionEli: eli,
+    remainingSteps: remaining,
+    steps: remaining,
+    skippedVersions: Math.max(0, versions.length - remaining),
+    paragraphs: [],
+    selectedParagraph: "",
+    history: null,
+    selectedBlocks: [],
+    error: "",
+    progressMessage: "Henter lovens paragraffer …",
+  });
+  try {
+    const data = await getForarbejderParagraphs(eli);
+    const paragraphs = data.paragraphs || [];
+    setForarbejder({
+      paragraphs,
+      selectedParagraph: paragraphs.length ? paragraphs[0] : "",
+      progressMessage: "",
+    });
+  } catch (err) {
+    setForarbejder({
+      progressMessage: "",
+      error: "Kunne ikke hente paragraffer: " + (err.message || "Ukendt fejl"),
+    });
+  }
+}
+
+async function runForarbejderSearch() {
+  const forarbejder = getState().forarbejder;
+  if (forarbejder.running || !forarbejder.selectedVersionEli || !forarbejder.selectedParagraph) {
+    return;
+  }
+  forarbejderAbortController = new AbortController();
+  setForarbejder({
+    running: true,
+    error: "",
+    history: null,
+    selectedBlocks: [],
+    progressMessage: "Starter opslaget …",
+  });
+  if (elements.forarbejderAbortBtn) {
+    elements.forarbejderAbortBtn.disabled = false;
+  }
+
+  try {
+    await runForarbejderHistory(
+      forarbejder.selectedVersionEli,
+      forarbejder.selectedParagraph,
+      forarbejder.steps,
+      { signal: forarbejderAbortController.signal },
+      (event) => {
+        if (event.type === "progress") {
+          setForarbejder({ progressMessage: event.message || "" });
+        } else if (event.type === "error") {
+          setForarbejder({ error: event.detail || "Opslaget fejlede", progressMessage: "" });
+        } else if (event.type === "done") {
+          const history = event.history || null;
+          const count = history ? (history.changes || []).length : 0;
+          setForarbejder({
+            history,
+            progressMessage: `Færdig: ${count} ændringer`,
+          });
+        }
+      },
+    );
+  } catch (err) {
+    if (err && err.name === "AbortError") {
+      setForarbejder({ progressMessage: "Opslaget blev afbrudt." });
+    } else {
+      setForarbejder({
+        error: "Opslaget fejlede: " + (err.message || "Ukendt fejl"),
+        progressMessage: "",
+      });
+    }
+  } finally {
+    forarbejderAbortController = null;
+    if (elements.forarbejderAbortBtn) {
+      elements.forarbejderAbortBtn.disabled = true;
+    }
+    setForarbejder({ running: false });
+  }
+}
+
+/**
+ * De valgte bemærkninger som ét fortolkningsbidrag.
+ *
+ * Blokkene er formateret i backend, så chatten, en kopiering og et senere værktøjskald
+ * viser det samme — og så forbeholdene om koblingens sikkerhed følger med teksten.
+ */
+function buildForarbejderContext() {
+  const forarbejder = getState().forarbejder;
+  const history = forarbejder.history;
+  if (!history) {
+    return "";
+  }
+  const changes = history.changes || [];
+  const picked = (forarbejder.selectedBlocks || [])
+    .slice()
+    .sort((a, b) => a - b)
+    .map((index) => changes[index])
+    .filter(Boolean);
+  if (!picked.length) {
+    return "";
+  }
+  const header =
+    `Fortolkningsbidrag: forarbejder til ${history.law_name} § ${history.paragraph_id}, ` +
+    `som bestemmelsen står i ${history.start}. Nyeste ændring først.`;
+  const blocks = picked.map((change) => change.context_block).join("\n\n---\n\n");
+  return `${header}\n\n${blocks}`;
+}
+
+function sendForarbejderToChat() {
+  const context = buildForarbejderContext();
+  if (!context) {
+    return;
+  }
+  const existing = String(getState().chat.inputText || "").trim();
+  const question = existing || "Hvad menes der med denne paragraf, og hvordan skal den fortolkes?";
+  setState({ chat: { inputText: `${question}\n\n---\n${context}\n---` } });
+  switchTab("chat");
+  renderAllTabs();
+  setStatus("Fortolkningsbidraget er lagt i chatten. Tilret spørgsmålet, og send.", "ok");
 }
 
 function switchTab(tabId) {
@@ -402,6 +637,7 @@ function switchTab(tabId) {
     sagsbehandling: elements.tabPaneSagsbehandling,
     chat: elements.tabPaneChat,
     test: elements.tabPaneTest,
+    forarbejder: elements.tabPaneForarbejder,
   };
   Object.keys(paneMap).forEach((key) => {
     const pane = paneMap[key];
@@ -428,6 +664,8 @@ function switchTab(tabId) {
     loadTestChatSavedLogs();
   } else if (safeTabId === "sagsbehandling") {
     refreshSagsCases();
+  } else if (safeTabId === "forarbejder") {
+    loadForarbejderLaws();
   }
 }
 
@@ -3304,6 +3542,71 @@ function bindEvents() {
       switchTab(btn.dataset.tab || "chat");
     });
   });
+
+  if (elements.forarbejderLaw) {
+    elements.forarbejderLaw.addEventListener("change", (event) => {
+      selectForarbejderLaw(event.target.value);
+    });
+  }
+  if (elements.forarbejderVersion) {
+    elements.forarbejderVersion.addEventListener("change", (event) => {
+      selectForarbejderVersion(event.target.value);
+    });
+  }
+  if (elements.forarbejderParagraph) {
+    elements.forarbejderParagraph.addEventListener("change", (event) => {
+      setForarbejder({ selectedParagraph: event.target.value, history: null, selectedBlocks: [] });
+    });
+  }
+  if (elements.forarbejderSteps) {
+    elements.forarbejderSteps.addEventListener("change", (event) => {
+      const remaining = getState().forarbejder.remainingSteps || 1;
+      const wanted = Math.max(1, Math.min(Number(event.target.value) || 1, remaining));
+      setForarbejder({ steps: wanted });
+    });
+  }
+  if (elements.forarbejderSearchBtn) {
+    elements.forarbejderSearchBtn.addEventListener("click", runForarbejderSearch);
+  }
+  if (elements.forarbejderAbortBtn) {
+    elements.forarbejderAbortBtn.addEventListener("click", () => {
+      if (forarbejderAbortController) {
+        forarbejderAbortController.abort();
+      }
+    });
+  }
+  if (elements.forarbejderResult) {
+    elements.forarbejderResult.addEventListener("change", (event) => {
+      const index = event.target && event.target.dataset.forarbejderPick;
+      if (index === undefined) {
+        return;
+      }
+      const wanted = Number(index);
+      const picked = getState().forarbejder.selectedBlocks || [];
+      const next = event.target.checked
+        ? picked.concat([wanted])
+        : picked.filter((value) => value !== wanted);
+      setForarbejder({ selectedBlocks: next });
+    });
+  }
+  if (elements.forarbejderSendBtn) {
+    elements.forarbejderSendBtn.addEventListener("click", sendForarbejderToChat);
+  }
+  if (elements.forarbejderCopyBtn) {
+    elements.forarbejderCopyBtn.addEventListener("click", async () => {
+      const context = buildForarbejderContext();
+      if (!context) {
+        setStatus("Vælg mindst én bemærkning først.", "error");
+        return;
+      }
+      try {
+        await navigator.clipboard.writeText(context);
+        setStatus("Fortolkningsbidraget er kopieret.", "ok");
+      } catch (_err) {
+        setStatus("Kunne ikke kopiere. Markér teksten manuelt.", "error");
+      }
+    });
+  }
 
   if (elements.analyzeBtn) {
     elements.analyzeBtn.addEventListener("click", runAnalyse);

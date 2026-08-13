@@ -15,6 +15,7 @@ uden inspektion er det ikke nødvendigt.
 from __future__ import annotations
 
 import json
+import os
 import pathlib
 import re
 import ssl
@@ -42,7 +43,14 @@ DELAY_SECONDS = 1.0
 # hukommelsen vokser med dokumentet, ikke med det, vi leder efter.
 MAX_BYTES = 128_000_000
 
-CACHE_DIRECTORY = pathlib.Path(__file__).with_name(".cache")
+# Cachen ligger ved siden af koden, når motoren køres fra arbejdsmappen. På en server skal
+# den kunne ligge et andet sted: udrulningen synkroniserer applikationsmappen med
+# `rsync --delete`, så en cache derinde ville blive slettet ved hver udrulning, og hvert
+# opslag ville begynde forfra med minutters hentning. `LOVHISTORIK_CACHE_DIR` peger den
+# mod en mappe, der overlever.
+CACHE_DIRECTORY = pathlib.Path(
+    os.getenv("LOVHISTORIK_CACHE_DIR") or pathlib.Path(__file__).with_name(".cache")
+)
 
 # Verbalmønstre for ændringsinstrukser. Rækkefølgen er uden betydning; en instruks
 # kan matche flere, fordi ét nummereret punkt kan indeholde flere operationer.
@@ -179,14 +187,30 @@ def fetch_document_xml(document_path: str) -> bytes:
         # være permanent. Den kasseres i stedet, så hentningen kan forsøges på ny.
         cache_file.unlink()
 
-    CACHE_DIRECTORY.mkdir(exist_ok=True)
+    # parents=True, fordi cachen kan være peget mod en sti, hvis mellemled ikke findes endnu.
+    CACHE_DIRECTORY.mkdir(parents=True, exist_ok=True)
     time.sleep(DELAY_SECONDS)
     body, _ = fetch(f"https://retsinformation.dk/{document_path}/dan/xml")
     if not body:
         raise FetchError(f"Tomt svar for {document_path}")
     if not is_complete_document(body):
         raise FetchError(f"Ufuldstændigt dokument for {document_path} ({len(body)} bytes)")
-    cache_file.write_bytes(body)
+
+    # Skriv gennem en midlertidig fil og byt den ind. Så længe kun proben og Streamlit-
+    # appen brugte modulet, kørte der én hentning ad gangen, og en direkte skrivning var
+    # nok. Kaldes modulet fra en webserver, kan to forespørgsler hente samme dokument
+    # samtidig, og en læser ville da kunne ramme en halvskrevet fil. `os.replace` er
+    # atomisk på både Windows og Linux, så en læser ser enten den gamle fil eller den
+    # færdige — aldrig noget derimellem. Den midlertidige fil får processens id i navnet,
+    # så to skrivere ikke deler den.
+    temporary = cache_file.with_suffix(f".{os.getpid()}.part")
+    try:
+        temporary.write_bytes(body)
+        os.replace(temporary, cache_file)
+    except OSError:
+        # Cachen er en bekvemmelighed. Kan den ikke skrives — fuld disk, manglende
+        # rettigheder — skal opslaget stadig lykkes, blot uden at blive gemt.
+        temporary.unlink(missing_ok=True)
     return body
 
 

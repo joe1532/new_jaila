@@ -1015,6 +1015,71 @@ alle fra 2003-2007, hvor Lex Dania-opmærkningen endnu ikke fandtes, og udgør k
 De to nye love blev målt for første gang: ejendomsavancebeskatningsloven (14 ændringslove,
 25 punkter) og pensionsbeskatningsloven (67 ændringslove, 452 punkter), begge uden lækager.
 
+## Motoren som fane i JAILA
+
+Søgningen er lagt ind i JAILA som en selvstændig fane, "Forarbejder". Streamlit-appen
+blev *ikke* lagt i en ramme inde i JAILA, selv om det var det nærliggende. Tre forhold
+talte imod, og de er tekniske, ikke æstetiske:
+
+* Streamlit sætter selv `X-Frame-Options` og taler med sin browserflade over en
+  websocket. At vise den inde i JAILA kræver både en omvej uden om den beskyttelse og en
+  websocket-viderestilling i nginx.
+* Den ville være en proces mere at holde kørende, med sin egen session og sit eget udseende.
+* Vigtigst: svaret ville blive siddende i rammen. Formålet er at give sprogmodellen et
+  fortolkningsbidrag, og en ramme er netop det, der forhindrer data i at komme videre.
+
+I stedet kalder fanen motoren gennem fire endepunkter. `forarbejder.py` og `lex_dania.py`
+er uændrede som fagligt lag; `backend/services/forarbejder_service.py` oversætter kun
+dataklasser til JSON. Kommer der forskellige svar i JAILA og i proben, er det en fejl i
+oversættelseslaget — ikke en anden faglig vurdering.
+
+Lovlisten er flyttet fra `app.py` til `forarbejder.py` af samme grund som søgelogikken:
+to brugerflader, der hver har sin liste, kommer til at tilbyde hvert sit udvalg af love.
+
+### Et enkelt opslag er for langsomt til et almindeligt svar
+
+Et koldt opslag tager 20-140 sekunder. Svaret streames derfor, og `paragraph_history`
+melder sin fremdrift gennem det `progress`-kald, den allerede havde. Målt på
+ligningslovens § 9 C med tre led i kæden: 15 statuslinjer over 37 sekunder, 11 ændringer,
+alle med bemærkning og alle bekræftet.
+
+### Én ad gangen, og det skal siges
+
+Motoren holder en fast pause mellem kald til Retsinformation og kan bruge op mod 1,1 GB
+hukommelse på ét stort lovforslag. Kørte to opslag samtidig, ville begge dele fordobles,
+og det er kilden, der betaler. Derfor slipper kun ét tungt opslag igennem ad gangen.
+
+To forhold blev opdaget ved at prøve det frem for at antage det:
+
+* **Ventetiden må ikke være tavs.** Ventes der i ét langt spring, ser nginx en forbindelse
+  uden data og lukker den, længe før ventetiden er brugt. Der sendes derfor en linje hvert
+  femte sekund om, at der ventes på tur.
+* **En afbrudt forespørgsel afbryder ikke arbejdet.** Lukker browseren forbindelsen, kan
+  kørslen ikke standses midt i et netværkskald. Gav vi turen fri med det samme, ville
+  næste opslag ramme Retsinformation samtidig med et, vi troede var væk. Turen frigives
+  derfor først, når den forladte kørsel er løbet ud. Arbejdet er ikke spildt: det, den når
+  at hente, ligger i diskcachen bagefter.
+
+### Cachen skrives nu atomisk
+
+Så længe kun proben og Streamlit-appen brugte modulet, kørte der én hentning ad gangen, og
+`cache_file.write_bytes(body)` var nok. Kaldes modulet fra en webserver, kan to
+forespørgsler hente samme dokument samtidig, og en læser ville kunne ramme en halvskrevet
+fil. Der skrives nu gennem en midlertidig fil, som byttes ind med `os.replace`. En læser
+ser enten den gamle fil eller den færdige — aldrig noget derimellem.
+
+### Fortolkningsbidraget formateres ét sted
+
+Hver ændring får et færdigskrevet tekstafsnit med i svaret. Brugeren sætter flueben ved
+dem, der er relevante, og sender dem til chatten, hvor de lægges ind sammen med
+spørgsmålet. Formateringen sker i backend og ikke i browseren, så en kopiering, et
+chat-spørgsmål og et eventuelt senere værktøjskald skriver det samme.
+
+Forbeholdene står **inde i** teksten, ikke kun i brugerfladen: om koblingen er bekræftet,
+om bemærkningen dækker hele ændringsparagraffen frem for det enkelte nummer, og om
+ændringen kom ved et ændringsforslag, hvis bemærkning ikke kan hentes. En model, der kun
+får bemærkningen, kan ikke selv vide, hvor sikker koblingen er.
+
 ## Tabeller
 
 Rådokumenter ligger på disk. Databasen gemmer sti og hash, ikke blobs — så forbliver

@@ -423,3 +423,48 @@ class AnalyseLogGetResponse(BaseModel):
     log_pdf_url: str | None = None
     messages: list[ChatMessage] = Field(default_factory=list)
     last_response_id: str | None = None
+
+
+class ForarbejderLawEntry(BaseModel):
+    name: str = Field(..., description="Lovens almindelige navn, fx 'Ligningsloven'")
+    eli: str = Field(..., description="Kendt holdepunkt, fx 'eli/lta/2025/1500'")
+
+
+class ForarbejderLawsResponse(BaseModel):
+    laws: list[ForarbejderLawEntry] = Field(default_factory=list)
+    available: bool = Field(
+        default=True,
+        description="Kunne forarbejdsmotoren indlæses? Er den falsk, står grunden i reason",
+    )
+    reason: str = ""
+
+
+class ForarbejderVersionEntry(BaseModel):
+    eli: str
+    label: str = Field(..., description="Fx 'LBK 1500 af 6. november 2025'")
+    date: str = Field(..., description="ISO-dato for bekendtgørelsen")
+
+
+class ForarbejderVersionsResponse(BaseModel):
+    newest_eli: str = Field(..., description="Lovens seneste bekendtgørelse")
+    versions: list[ForarbejderVersionEntry] = Field(default_factory=list)
+    notice: str = Field(
+        default="",
+        description="Oplyses, hvis holdepunktet var overhalet, eller kontrollen fejlede",
+    )
+
+
+class ForarbejderParagraphsResponse(BaseModel):
+    eli: str
+    paragraphs: list[str] = Field(default_factory=list)
+
+
+class ForarbejderHistoryRequest(BaseModel):
+    eli: str = Field(..., min_length=1, description="Den udgave af loven, der spørges til")
+    paragraph: str = Field(..., min_length=1, description="Paragraffen, fx '9 C' eller '9C'")
+    steps: int = Field(
+        default=8,
+        ge=1,
+        le=40,
+        description="Led i kæden af lovbekendtgørelser, der gås bagud",
+    )

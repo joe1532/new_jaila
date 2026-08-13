@@ -38,6 +38,7 @@
           <button id="tabChat" type="button" class="tab-button tab-button-active" data-tab="chat">Chat</button>
           <button id="tabTest" type="button" class="tab-button" data-tab="test">Test</button>
           <button id="tabSagsbehandling" type="button" class="tab-button" data-tab="sagsbehandling">Sagsbehandling</button>
+          <button id="tabForarbejder" type="button" class="tab-button" data-tab="forarbejder">Forarbejder</button>
         </nav>
 
         <section id="tabPaneAnalyse" class="tab-pane hidden" aria-hidden="true">
@@ -461,6 +462,74 @@
               <div class="actions">
                 <button id="testChatSendBtn" type="button">Send</button>
                 <button id="testChatAbortBtn" type="button" class="button-secondary" disabled>Afbryd</button>
+              </div>
+            </section>
+          </div>
+        </section>
+
+        <section id="tabPaneForarbejder" class="tab-pane hidden">
+          <div class="chat-layout">
+            <aside class="chat-context-panel">
+              <h2>Forarbejder til én paragraf</h2>
+              <p class="forarbejder-intro">
+                Søgningen følger kæden af lovbekendtgørelser bagud, finder hver ændring af
+                paragraffen og henter de specielle bemærkninger fra det lovforslag,
+                ændringen stammer fra.
+              </p>
+
+              <label class="label" for="forarbejderLaw">Lov</label>
+              <select id="forarbejderLaw" class="input"></select>
+
+              <label class="label" for="forarbejderVersion">Udgave</label>
+              <select id="forarbejderVersion" class="input"></select>
+
+              <label class="label" for="forarbejderParagraph">Paragraf</label>
+              <select id="forarbejderParagraph" class="input"></select>
+
+              <label class="label" for="forarbejderSteps">Led i kæden</label>
+              <input id="forarbejderSteps" class="input" type="number" min="1" value="8" />
+
+              <div class="actions">
+                <button id="forarbejderSearchBtn" type="button">Find forarbejder</button>
+                <button id="forarbejderAbortBtn" type="button" class="button-secondary" disabled>Afbryd</button>
+              </div>
+
+              <div id="forarbejderNotice" class="forarbejder-notice hidden"></div>
+
+              <div class="side-status-block">
+                <div class="status status-compact" data-connection-status>Forbindelse til database</div>
+              </div>
+
+              <div class="analyse-divider" aria-hidden="true"></div>
+              <div class="analyse-side-log">
+                <h2>Hvad svaret ikke kan</h2>
+                <ul class="list forarbejder-limits">
+                  <li>Kæden går kun tilbage til omkring 2007, hvor Lex Dania-XML begynder.</li>
+                  <li>
+                    Kom et ændringspunkt til ved et ændringsforslag under behandlingen,
+                    står bemærkningen i betænkningen, som ikke kan hentes. Det oplyses.
+                  </li>
+                  <li>
+                    Bemærkningen dækker hele ændringspunktet og er ikke snævret ind til
+                    det stykke, der spørges om.
+                  </li>
+                </ul>
+              </div>
+            </aside>
+
+            <section class="result chat-main-panel">
+              <h2>Forarbejder</h2>
+              <div id="forarbejderProgress" class="forarbejder-progress hidden"></div>
+              <div id="forarbejderResult" class="forarbejder-result"></div>
+              <div id="forarbejderSendPanel" class="forarbejder-send-panel hidden">
+                <p class="forarbejder-send-hint">
+                  De valgte bemærkninger lægges i chatten som fortolkningsbidrag sammen med
+                  dit spørgsmål. Forbeholdene om, hvor sikker koblingen er, følger med.
+                </p>
+                <div class="actions">
+                  <button id="forarbejderSendBtn" type="button" disabled>Send til chatten</button>
+                  <button id="forarbejderCopyBtn" type="button" class="button-secondary">Kopiér</button>
+                </div>
               </div>
             </section>
           </div>

@@ -58,6 +58,12 @@ from backend.models import (
     ChatLogSaveResponse,
     ChatRequest,
     ChatResponse,
+    ForarbejderHistoryRequest,
+    ForarbejderLawEntry,
+    ForarbejderLawsResponse,
+    ForarbejderParagraphsResponse,
+    ForarbejderVersionEntry,
+    ForarbejderVersionsResponse,
     LegalSourcesCatalogResponse,
     LegalSourceSectionResponse,
     SagsLegalBasisResponse,
@@ -71,6 +77,7 @@ from backend.services.analyse_logs import (
 )
 from backend.services.chat_logs import delete_chat_log, get_chat_log, list_chat_logs, save_chat_log
 from backend.services.case_store import get_case_store
+from backend.services import forarbejder_service
 from backend.services.openai_service import (
     analyze_question,
     analyze_question_stream,
@@ -2295,6 +2302,80 @@ def get_legal_source_section(
         truncated=truncated,
         page=safe_page,
         total_pages=total_pages,
+    )
+
+
+@app.get("/api/forarbejder/laws", response_model=ForarbejderLawsResponse)
+def get_forarbejder_laws() -> ForarbejderLawsResponse:
+    """De love, forarbejdsmotoren er målt på.
+
+    Svarer også, når motoren ikke kan indlæses. Fanen kan da fortælle hvorfor i stedet
+    for at stå tom uden forklaring.
+    """
+    available, reason = forarbejder_service.engine_available()
+    if not available:
+        return ForarbejderLawsResponse(laws=[], available=False, reason=reason)
+    return ForarbejderLawsResponse(
+        laws=[ForarbejderLawEntry(**law) for law in forarbejder_service.known_laws()]
+    )
+
+
+@app.get("/api/forarbejder/versions", response_model=ForarbejderVersionsResponse)
+def get_forarbejder_versions(eli: str = Query(..., min_length=1)) -> ForarbejderVersionsResponse:
+    """Lovens udgaver, nyeste først, så man kan spørge til en bestemt retstilstand."""
+    try:
+        data = forarbejder_service.law_versions(eli)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502, detail=f"Kunne ikke hente lovens udgaver: {exc}"
+        ) from exc
+    return ForarbejderVersionsResponse(
+        newest_eli=data["newest_eli"],
+        versions=[ForarbejderVersionEntry(**version) for version in data["versions"]],
+        notice=data["notice"],
+    )
+
+
+@app.get("/api/forarbejder/paragraphs", response_model=ForarbejderParagraphsResponse)
+def get_forarbejder_paragraphs(
+    eli: str = Query(..., min_length=1),
+) -> ForarbejderParagraphsResponse:
+    """Paragrafferne i én udgave af loven, så man vælger frem for at gætte."""
+    try:
+        paragraphs = forarbejder_service.law_paragraphs(eli)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502, detail=f"Kunne ikke hente paragraffer fra {eli}: {exc}"
+        ) from exc
+    return ForarbejderParagraphsResponse(eli=eli.strip().strip("/"), paragraphs=paragraphs)
+
+
+@app.post("/api/forarbejder/history")
+def post_forarbejder_history(payload: ForarbejderHistoryRequest):
+    """Forarbejdshistorikken for én paragraf.
+
+    Svaret streames altid. Et koldt opslag tager 20-140 sekunder, fordi hvert led i
+    kæden kræver flere skånsomme kald til Retsinformation og Folketingets Åbne Data, og
+    en flade, der står tom så længe, ligner en, der er gået i stå.
+    """
+
+    def gen():
+        try:
+            for event in forarbejder_service.history_events(
+                payload.eli, payload.paragraph, payload.steps
+            ):
+                yield _sse_line(event)
+        except forarbejder_service.EngineBusy as busy:
+            yield _sse_line({"type": "error", "detail": str(busy)})
+        except Exception as exc:  # noqa: BLE001
+            yield _sse_line({"type": "error", "detail": f"Opslaget fejlede: {exc}"})
+
+    return StreamingResponse(
+        gen(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
 
