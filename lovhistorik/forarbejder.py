@@ -384,6 +384,59 @@ def normalise_paragraph(paragraph_id: str) -> str:
     return paragraph_id.upper().replace(" ", "").lstrip("§").strip()
 
 
+DANISH_MONTHS = (
+    "januar", "februar", "marts", "april", "maj", "juni",
+    "juli", "august", "september", "oktober", "november", "december",
+)
+
+
+@dataclass
+class Consolidation:
+    """En lovbekendtgørelse — én udgave af loven, som den så ud på en bestemt dag."""
+
+    eli: str
+    date: str  # ISO, fx "2015-09-07"
+
+    @property
+    def number(self) -> str:
+        return self.eli.rsplit("/", 1)[-1]
+
+    @property
+    def label(self) -> str:
+        try:
+            year, month, day = (int(part) for part in self.date.split("-"))
+            when = f"{day}. {DANISH_MONTHS[month - 1]} {year}"
+        except (ValueError, IndexError):
+            when = self.date or "ukendt dato"
+        return f"LBK {self.number} af {when}"
+
+
+def consolidation_chain(newest_eli: str, max_steps: int = 40) -> list[Consolidation]:
+    """Lovens udgaver, nyeste først, så langt tilbage materialet rækker.
+
+    Kæden findes ved at følge hver bekendtgørelses henvisning til sin forgænger. Det
+    koster ét kald pr. led første gang — omkring 13 for ligningsloven, der når tilbage
+    til 2006 — og svares derefter af diskcachen.
+
+    Formålet er at kunne spørge til retstilstanden på en bestemt dato i stedet for i
+    dag. Vil man vide, hvad der gjaldt i 2015, er ændringer fra 2016 og frem ikke bare
+    overflødige, de er vildledende.
+    """
+    chain: list[Consolidation] = []
+    current = newest_eli.strip("/")
+    for _ in range(max_steps):
+        try:
+            xml = lex_dania.fetch_document_xml(current)
+        except Exception:  # noqa: BLE001 - et manglende led afslutter kæden
+            break
+        chain.append(Consolidation(eli=current, date=lex_dania.document_date(xml)))
+        earlier = lex_dania.previous_consolidation(xml)
+        if not earlier or earlier in {step.eli for step in chain}:
+            break
+        current = earlier
+    return chain
+
+
 def paragraph_history(
     lbk_eli: str,
     paragraph_id: str,

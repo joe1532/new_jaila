@@ -306,6 +306,28 @@ ville være netop den slags fejl, vi leder efter.
 Det lukkede den sidste uforklarede lækage: ligningsloven står nu med 228 ændringslove og
 771 punkter mod 227 og 768, og alle tre love har nul uforklarede love i lækagetesten.
 
+### Ældre lovforslag skriver overskriften anderledes
+
+At kunne vælge en gammel udgave af loven afslørede med det samme, at dækningen faldt
+længere tilbage: § 9 C fik kun 3 af 13 bemærkninger bekræftet fra 2015-udgaven mod 18 af
+23 fra 2025-udgaven. To mønstre var for snævre.
+
+**Overskriften uden "Til".** L 199 (2008-09) skriver bare "§ 1" som overskrift over de
+specielle bemærkninger, ikke "Til § 1". Afsnittets 43 "Til nr."-overskrifter mistede
+dermed deres paragraf, og hele afsnittet forsvandt: udtrækket fandt 4 bemærkninger i et
+dokument med 64 ændringspunkter mod ligningsloven alene. Den bare form accepteres nu,
+men kun efter overskriften "Bemærkninger til lovforslagets enkelte bestemmelser", hvor
+en paragrafhenvisning ikke kan forveksles med lovtekst.
+
+**Kolonet efter nummeret.** Samme dokument skriver både "Til nr. 1" og "Til nr. 2:".
+Mønsteret krævede, at linjen sluttede efter tallet, så hver overskrift med kolon faldt
+ud. Kolonet er nu valgfrit.
+
+Efter rettelsen giver L 199 68 bemærkninger mod 4, og § 9 C i 2015-udgaven 8 af 13 mod 3.
+Nyere materiale er uændret, hvilket er ventet: fejlen ramte kun den ældre skrivemåde.
+Det illustrerer, hvorfor målingerne skal spænde over hele tidsrummet — en måling, der kun
+rammer de seneste år, ville have vist grønt hele vejen.
+
 ### Lovforslagets paragrafnumre er ikke lovens
 
 Den alvorligste fejl gav ikke for få svar, men forkerte. Bemærkningerne slås op på

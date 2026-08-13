@@ -142,11 +142,22 @@ python lovhistorik/probe.py motiver eli/lta/2025/1500 alle
 python lovhistorik/probe.py motiver eli/lta/2024/15 alle
 ```
 
-Forventet: 23 ændringer af § 9 C ved otte led, hvoraf 18 nævner bestemmelsen; 12 af 12 på
+Forventet: 23 ændringer af § 9 C ved otte led, hvoraf 19 nævner bestemmelsen; 12 af 12 på
 § 7 P; 3 af 3 på § 33 A. Bredt: 97 af 104 punkter med bemærkning på ligningsloven
 (95,9 % bekræftet) og 40 af 40 på skatteindberetningsloven. En bestemmelse kan sagtens
 være uændret gennem flere lovbekendtgørelser, og "ikke ændret" må aldrig forveksles med
 "ingen forarbejder".
+
+**Mål også på ældre materiale.** Skrivemåden har ændret sig, og en måling, der kun rammer
+de seneste år, viser grønt, selv om ældre lovforslag læses forkert. Et opslag i en gammel
+udgave af loven afslører det:
+
+```bash
+python lovhistorik/probe.py motiver eli/lta/2015/1081 9C 7
+```
+
+Forventet: 13 ændringer, hvoraf 8 nævner § 9 C. Falder tallet, er et overskriftsmønster
+blevet for snævert igen.
 
 **Søgelogikken ligger i `forarbejder.py`, ikke i `probe.py`.** Både proben og
 Streamlit-appen kalder `paragraph_history`, så de ikke kan nå frem til forskellige svar

@@ -54,6 +54,11 @@ def load_history(eli: str, paragraph: str, steps: int, _progress=None) -> forarb
 
 
 @st.cache_data(show_spinner=False)
+def load_chain(eli: str) -> list[forarbejder.Consolidation]:
+    return forarbejder.consolidation_chain(eli)
+
+
+@st.cache_data(show_spinner=False)
 def load_paragraph_list(eli: str) -> list[str]:
     """Lovens paragraffer, så man kan vælge frem for at gætte en betegnelse."""
     provisions = lex_dania.extract_provisions(lex_dania.fetch_document_xml(eli))
@@ -73,13 +78,33 @@ def render_history_tab() -> None:
     )
 
     choice = st.selectbox("Lov", list(KNOWN_LAWS), index=0)
-    eli = KNOWN_LAWS[choice] or st.text_input(
+    newest = KNOWN_LAWS[choice] or st.text_input(
         "Lovbekendtgørelsens ELI-sti", DEFAULT_ELI, help="Fx eli/lta/2025/1500"
     )
-    if not eli.strip():
+    if not newest.strip():
         st.info("Angiv en ELI-sti.")
         return
-    eli = eli.strip().strip("/")
+    newest = newest.strip().strip("/")
+
+    try:
+        chain = load_chain(newest)
+    except (lex_dania.FetchError, ElementTree.ParseError) as error:
+        st.error(f"Kunne ikke hente {newest}: {error}")
+        return
+    if not chain:
+        st.error(f"Fandt ingen udgaver af loven fra {newest}.")
+        return
+
+    version = st.selectbox(
+        "Udgave", chain, index=0, format_func=lambda step: step.label,
+        help="Vælg den udgave, spørgsmålet handler om. Søgningen går bagud herfra, så "
+        "en ældre udgave viser retstilstanden dengang og springer alt nyere over.",
+    )
+    eli = version.eli
+    # Antallet af led skal ikke gættes: kæden er kendt, og fra den valgte udgave er der
+    # præcis så mange tilbage. Vælger man en ældre udgave, falder tallet af sig selv.
+    position = next(i for i, step in enumerate(chain) if step.eli == eli)
+    remaining = len(chain) - position
 
     try:
         paragraphs = load_paragraph_list(eli)
@@ -94,15 +119,30 @@ def render_history_tab() -> None:
             paragraphs,
             index=paragraphs.index("9C") if "9C" in paragraphs else 0,
             format_func=lambda value: f"§ {value}",
+            help="Paragrafferne er dem, der findes i den valgte udgave. En bestemmelse, "
+            "der først kom til senere, står derfor ikke på listen.",
         )
     with right:
-        # Otte led rækker typisk tilbage til 2014, fjorten til 2006, hvor Lex
-        # Dania-opmærkningen begynder. Flere led koster tid ved første opslag.
-        steps = st.number_input("Led i kæden", min_value=1, max_value=20, value=8)
+        steps = st.number_input(
+            "Led i kæden", min_value=1, max_value=remaining, value=remaining,
+            help=f"Fra denne udgave er der {remaining} udgaver tilbage, ned til "
+            f"{chain[-1].label}. Sænk tallet for et hurtigere, men kortere svar.",
+        )
+
+    # Sammenlign på ELI, ikke på objektet: udgaven kommer gennem cachen og er derfor
+    # ikke det samme objekt som det i kæden, selv når den er det samme led.
+    skipped = len(chain) - remaining
+    if skipped:
+        st.info(
+            f"Du ser loven, som den var den {version.label.split(' af ')[-1]}. "
+            f"Ændringer efter den dato er ikke med, og {skipped} nyere "
+            f"{'udgave springes' if skipped == 1 else 'udgaver springes'} over, "
+            "så søgningen er hurtigere."
+        )
 
     if not st.button("Find forarbejder", type="primary"):
-        st.info("Vælg en paragraf og tryk på knappen. Første opslag tager typisk "
-                "20-45 sekunder; derefter svarer diskcachen.")
+        st.caption("Vælg en paragraf og tryk på knappen. Første opslag tager typisk "
+                   "20-45 sekunder; derefter svarer diskcachen.")
         return
 
     status = st.status("Søger …", expanded=True)

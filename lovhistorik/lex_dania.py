@@ -348,9 +348,18 @@ def inserted_paragraphs(new_text: str) -> list[str]:
 
 
 NOTE_PARAGRAPH = re.compile(r"^Til\s+§+\s*(\d+)\s*$")
+# Ældre lovforslag skriver overskriften uden "Til". L 199 (2008-09) har bare "§ 1", og
+# uden dette mønster mistede afsnittets 43 "Til nr."-overskrifter deres paragraf og
+# dermed hele bemærkningen. Formen er kun sikker inde i bemærkningsafsnittet, hvor en
+# bar paragrafhenvisning ikke kan forveksles med lovtekst.
+BARE_NOTE_PARAGRAPH = re.compile(r"^§+\s*(\d+)\s*$")
+SPECIAL_NOTES_HEADING = re.compile(
+    r"^Bemærkninger til lovforslagets enkelte bestemmelser", re.IGNORECASE
+)
 # "Til nr. 7", "Til nr. 7 og 8", "Til nr. 2-5" og "Til nr. 1, 3 og 4" er alle
-# almindelige. Én bemærkning kan altså dække flere ændringspunkter.
-NOTE_ITEM = re.compile(r"^Til\s+nr\.\s*([\d\s,ogå-]+?)\s*$", re.IGNORECASE)
+# almindelige. Én bemærkning kan altså dække flere ændringspunkter. Kolonet til sidst
+# er valgfrit: samme dokument kan skrive både "Til nr. 1" og "Til nr. 2:".
+NOTE_ITEM = re.compile(r"^Til\s+nr\.\s*([\d\s,ogå-]+?)\s*:?\s*$", re.IGNORECASE)
 
 
 def note_item_numbers(text: str) -> list[int]:
@@ -398,13 +407,20 @@ def extract_explanatory_notes(xml_bytes: bytes) -> dict[tuple[int, int], str]:
     notes: dict[tuple[int, int], list[str]] = {}
     paragraph: int | None = None
     items: list[int] = []
+    in_special_notes = False
 
     for linea in root.iter("Linea"):
         text = element_text(linea)
         if not text:
             continue
 
-        heading = NOTE_PARAGRAPH.match(text)
+        if SPECIAL_NOTES_HEADING.match(text):
+            in_special_notes = True
+            continue
+
+        heading = NOTE_PARAGRAPH.match(text) or (
+            BARE_NOTE_PARAGRAPH.match(text) if in_special_notes else None
+        )
         if heading:
             paragraph = int(heading.group(1))
             items = [0]
