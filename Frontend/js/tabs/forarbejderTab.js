@@ -93,7 +93,9 @@ function renderSummary(parent, history) {
 
   const chain = document.createElement("p");
   chain.className = "forarbejder-chain";
-  const steps = (history.chain || []).map((step) => step.eli).join(" → ");
+  // label falder tilbage til ELI'en, hvis navnet ikke kunne hentes — så står der noget
+  // entydigt frem for ingenting.
+  const steps = (history.chain || []).map((step) => step.label || step.eli).join(" → ");
   chain.textContent =
     `Kæden: ${steps}` +
     (history.reached_end
@@ -131,7 +133,7 @@ function renderChange(parent, change, index, selectedBlocks) {
 
   const consolidation = document.createElement("p");
   consolidation.className = "forarbejder-consolidation";
-  consolidation.textContent = `Indarbejdet i ${change.consolidation}`;
+  consolidation.textContent = `Indarbejdet i ${change.consolidation_label || change.consolidation}`;
   details.appendChild(consolidation);
 
   const instructionLabel = document.createElement("h4");

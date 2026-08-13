@@ -604,7 +604,7 @@ function buildForarbejderContext() {
   }
   const header =
     `Fortolkningsbidrag: forarbejder til ${history.law_name} § ${history.paragraph_id}, ` +
-    `som bestemmelsen står i ${history.start}. Nyeste ændring først.`;
+    `som bestemmelsen står i ${history.start_label || history.start}. Nyeste ændring først.`;
   const blocks = picked.map((change) => change.context_block).join("\n\n---\n\n");
   return `${header}\n\n${blocks}`;
 }

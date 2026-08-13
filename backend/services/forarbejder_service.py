@@ -20,6 +20,7 @@ Kendte begrænsninger, som fladen selv oplyser om:
 from __future__ import annotations
 
 import queue
+import re
 import sys
 import threading
 import time
@@ -63,6 +64,13 @@ NEWEST_TTL_SECONDS = 21600
 _newest_cache: dict[str, tuple[float, tuple[str, list[str]]]] = {}
 _chain_cache: dict[str, list[dict[str, str]]] = {}
 _paragraph_cache: dict[str, list[str]] = {}
+
+# ELI → "LBK 1500 af 6. november 2025". En ELI er en maskinnøgle, ikke et navn nogen
+# kan genkende, og den siger hverken hvilket nummer bekendtgørelsen har eller hvornår
+# den er udstedt. Navnet skal med både på skærmen og i teksten til sprogmodellen: en
+# model, der får "eli/lta/2019/806", kan ikke selv se, at det er en bekendtgørelse fra
+# 2019. Opslaget fyldes, når kæden hentes, og deles på tværs af love — ELI'er er unikke.
+_label_cache: dict[str, str] = {}
 
 
 class EngineBusy(RuntimeError):
@@ -146,8 +154,45 @@ def law_versions(eli: str) -> dict[str, Any]:
     versions = [
         {"eli": step.eli, "label": step.label, "date": step.date} for step in chain
     ]
+    for step in chain:
+        _label_cache[step.eli] = step.label
     _chain_cache[newest] = versions
     return {"newest_eli": newest, "versions": versions, "notice": notice}
+
+
+def _ensure_labels(start: str) -> None:
+    """Sørg for, at kædens bekendtgørelser har et navn, der kan læses.
+
+    I fladen hentes udgaverne, før der søges, så navnene er der allerede. Kaldes
+    historikken direkte — eller er backend genstartet imellem de to kald — er de væk.
+    Kæden bygges da forfra, men dokumenterne ligger i diskcachen efter selve opslaget,
+    så det koster ingen netværkskald. Fejler det, beholdes ELI'en; et manglende navn er
+    en ringere visning, ikke et forkert svar.
+    """
+    if start in _label_cache:
+        return
+    forarbejder, _ = _engine()
+    try:
+        for step in forarbejder.consolidation_chain(start):
+            _label_cache[step.eli] = step.label
+    except Exception:  # noqa: BLE001 - navnet er pynt, svaret står uden det
+        return
+
+
+def _label_of(eli: str) -> str:
+    """Bekendtgørelsens navn, eller ELI'en hvis navnet ikke er hentet."""
+    return _label_cache.get(eli, eli)
+
+
+# Motoren melder sin fremdrift med ELI'er, fordi det er dem, den arbejder med. På skærmen
+# skal der stå et navn. Substitutionen sker her frem for i motoren, saa dens meldinger
+# forbliver entydige for proben og loggen.
+_ELI_PATTERN = re.compile(r"eli/[a-z]+/\d+/\d+")
+
+
+def _readable(message: str) -> str:
+    """Byt ELI'er i en statuslinje ud med bekendtgørelsens navn, hvor det kendes."""
+    return _ELI_PATTERN.sub(lambda match: _label_of(match.group(0)), message)
 
 
 def law_paragraphs(eli: str) -> list[str]:
@@ -180,7 +225,7 @@ def _context_block(change, law_name: str, paragraph_id: str) -> str:
     where = ", ".join(place for place, _ in change.places) or "hele paragraffen"
     lines = [
         f"{law_name} § {paragraph_id} — {change.label} ({where})",
-        f"Indarbejdet i {change.consolidation}.",
+        f"Indarbejdet i {_label_of(change.consolidation)}.",
         "",
         "Ændringen:",
         change.text.strip(),
@@ -228,6 +273,7 @@ def _serialise_change(change, law_name: str, paragraph_id: str) -> dict[str, Any
     return {
         "label": change.label,
         "consolidation": change.consolidation,
+        "consolidation_label": _label_of(change.consolidation),
         "places": [place for place, _ in change.places],
         "sentences": [sentences for _, sentences in change.places if sentences],
         "inserted": change.inserted,
@@ -249,6 +295,8 @@ def _serialise_change(change, law_name: str, paragraph_id: str) -> dict[str, Any
 
 
 def _serialise_history(history) -> dict[str, Any]:
+    # Navnene hentes før blokkene skrives ud, så også teksten til sprogmodellen får dem.
+    _ensure_labels(history.start)
     changes = [
         _serialise_change(change, history.law_name, history.paragraph_id)
         for change in history.changes
@@ -257,11 +305,18 @@ def _serialise_history(history) -> dict[str, Any]:
         "law_name": history.law_name,
         "paragraph_id": history.paragraph_id,
         "start": history.start,
-        "chain": [{"eli": step, "found": found} for step, found in history.chain],
+        "start_label": _label_of(history.start),
+        "chain": [
+            {"eli": step, "label": _label_of(step), "found": found}
+            for step, found in history.chain
+        ],
         "reached_end": history.reached_end,
         "paragraph_exists": history.paragraph_exists,
-        "problems": history.problems,
-        "notices": history.notices,
+        # Også advarslerne nævner bekendtgørelser. Ændringslove har samme ELI-form, men
+        # står ikke i opslaget og bliver derfor stående — hvad de skal, for de er ikke
+        # lovbekendtgørelser.
+        "problems": [_readable(text) for text in history.problems],
+        "notices": [_readable(text) for text in history.notices],
         "with_note": history.with_note,
         "confirmed": history.confirmed,
         "changes": changes,
@@ -299,6 +354,11 @@ def history_events(eli: str, paragraph: str, steps: int) -> Iterator[dict[str, A
             "message": f"Venter på, at et andet opslag bliver færdigt ({waited} s) …",
         }
 
+    # Navnene skal være hentet, før statuslinjerne begynder at nævne bekendtgørelser.
+    # Kommer kaldet fra fladen, ligger de der efter udgavevalget, og dette er et opslag
+    # i en dict.
+    _ensure_labels(eli.strip().strip("/"))
+
     updates: queue.Queue = queue.Queue()
     outcome: dict[str, Any] = {}
 
@@ -322,7 +382,7 @@ def history_events(eli: str, paragraph: str, steps: int) -> Iterator[dict[str, A
             message = updates.get()
             if message is None:
                 break
-            yield {"type": "progress", "message": message}
+            yield {"type": "progress", "message": _readable(message)}
         worker.join()
     finally:
         if worker.is_alive():

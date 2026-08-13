@@ -1434,6 +1434,12 @@ a {
   color: var(--muted);
 }
 
+/* Kæden skriver hver bekendtgørelse ud med nummer og dato og fylder derfor flere
+   linjer, når der gås langt tilbage. */
+.forarbejder-chain {
+  line-height: 1.6;
+}
+
 .forarbejder-subheading {
   margin: 14px 0 6px;
   font-size: 0.95rem;
