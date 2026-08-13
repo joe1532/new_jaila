@@ -788,45 +788,11 @@ def _instructions_of(amendment, law_name: str) -> list:
     return kept
 
 
-def _fingerprint(text: str) -> str:
-    """Instruksens indhold uden det ledende punktnummer, til sammenligning.
-
-    Nummeret udelades netop, fordi det er dét, der kan vaere forskudt mellem
-    lovforslag og vedtaget lov.
-    """
-    return re.sub(r"\s+", "", re.sub(r"^\s*\d+\.\s*", "", text)).lower()
-
-
 def _realign(proposed: list, instruction_text: str) -> tuple[int, int] | None:
-    """Genfind et aendringspunkt i lovforslaget, og giv forslagets egne numre.
+    """Genfind et aendringspunkt i lovforslaget. Selve logikken ligger i forarbejder.py."""
+    import forarbejder
 
-    Returnerer None, hvis punktet ikke kan genfindes. Da er det formentlig kommet til
-    ved et aendringsforslag under behandlingen, og bemaerkningen findes i betaenkningen
-    i stedet — den henter vi ikke.
-    """
-    wanted = _fingerprint(instruction_text)
-    # autojunk=False er noedvendigt: for strenge over 200 tegn behandler difflib
-    # ellers hyppige tegn som stoej, og to naesten ens instrukser fik lighed 0,74,
-    # hvor den rigtige vaerdi var 0,97. Forskellen var "el.lign." mod "eller lignende".
-    best, best_ratio = None, 0.0
-    for candidate in proposed:
-        matcher = difflib.SequenceMatcher(
-            None, _fingerprint(candidate.text), wanted, autojunk=False
-        )
-        if matcher.quick_ratio() <= best_ratio:
-            continue
-        ratio = matcher.ratio()
-        if ratio > best_ratio:
-            best, best_ratio = candidate, ratio
-
-    # Taersklen er hoej, for et forkert match giver en forkert bemaerkning, og et
-    # forkert svar er vaerre end intet svar.
-    if best is None or best_ratio < 0.90:
-        return None
-    try:
-        return (int(best.act_number), int(best.item_number.rstrip(".")))
-    except ValueError:
-        return None
+    return forarbejder.realign(proposed, instruction_text)
 
 
 def _note_for(
@@ -882,130 +848,61 @@ def _note_for(
     return ("", False, f"L {bill_number}: ingen bemaerkning til § {law_paragraph}, nr. {item}")
 
 
-def _paragraph_history(
-    lex_dania, start: str, start_xml: bytes, amendments: list, law_name: str,
-    wanted: str, paragraph_id: str, max_steps: int,
-) -> int:
-    """Hele forarbejdshistorikken for én paragraf, grupperet efter hvad der blev aendret.
+def _paragraph_history(lbk_eli: str, paragraph_id: str, max_steps: int) -> int:
+    """Udskriv hele forarbejdshistorikken for én paragraf.
 
-    Vandrer kaeden af lovbekendtgoerelser bagud og samler alle aendringer af
-    paragraffen undervejs, ikke kun den seneste.
+    Selve soegningen ligger i forarbejder.py, saa proben og Streamlit-appen ikke kan
+    naa frem til forskellige svar paa samme spoergsmaal. Her printes kun resultatet.
     """
-    print(f"=== {law_name} § {paragraph_id}: foelger kaeden bagud fra {start}")
+    import forarbejder
 
-    found: list[tuple[str, str, object, int]] = []  # (lbk, dokument, instruks, nr)
-    seen: set[str] = set()
-    current, current_xml, current_amendments = start, start_xml, amendments
+    history = forarbejder.paragraph_history(lbk_eli, paragraph_id, max_steps)
+    label = history.paragraph_id
+    print(f"=== {history.law_name} § {label}: foelger kaeden bagud fra {history.start}")
+    for step, count in history.chain:
+        print(f"--- {step}: {count} aendringer af § {label}")
+    if history.reached_end:
+        print(f"--- kaeden stopper ved {history.chain[-1][0]}")
+    for problem in history.problems:
+        print(f"--- ADVARSEL: {problem}")
 
-    for _ in range(max_steps):
-        touched = 0
-        for amendment in current_amendments:
-            if amendment.document_path in seen:
-                continue
-            for instruction in _instructions_of(amendment, law_name):
-                targets = [
-                    lex_dania.parse_target(raw) for raw in instruction.probable_targets
-                ]
-                hit = any(t.paragraph_id.upper() == wanted for t in targets)
-                # Indsaettes paragraffen, er maalet den foregaaende paragraf, saa
-                # den skal ogsaa soeges i den nye tekst.
-                if not hit and wanted not in lex_dania.inserted_paragraphs(instruction.new_text):
-                    continue
-                reference = AMENDMENT_REFERENCE.search(instruction.amendment_path)
-                item = int(reference.group(2)) if reference else 0
-                found.append((current, amendment.document_path, instruction, item))
-                touched += 1
-            seen.add(amendment.document_path)
-
-        print(f"--- {current}: {touched} aendringer af § {paragraph_id}")
-
-        earlier = lex_dania.previous_consolidation(current_xml)
-        if not earlier or earlier == current:
-            print(f"--- kaeden stopper ved {current}")
-            break
-        try:
-            current_xml = lex_dania.fetch_document_xml(earlier)
-            current_amendments = lex_dania.consolidated_amendments(current_xml)
-        except Exception as error:  # noqa: BLE001
-            print(f"--- kunne ikke hente {earlier}: {error}")
-            break
-        current = earlier
-
-    if not found:
+    if not history.changes:
         print()
-        print(f"=== § {paragraph_id} er ikke aendret i den del af kaeden, vi kan naa.")
+        print(f"=== § {label} er ikke aendret i den del af kaeden, vi kan naa.")
         print("    Bestemmelsens forarbejder ligger foer 2007, hvor Lex Dania-XML begynder.")
         return 0
 
-    # Kronologi, nyeste foerst. Lovnumre stiger inden for et aar, saa (aar, nummer)
-    # er en korrekt datoorden uden at hente hver lov igen. Raekkefoelgen i
-    # lovbekendtgoerelsens egen liste er ikke kronologisk, og for § 33 A afgoer
-    # forskellen, om ophaevelsen eller genindfoerelsen ser ud til at komme sidst.
-    found.sort(key=lambda row: (int(row[1].split("/")[-2]), int(row[1].split("/")[-1])), reverse=True)
-
-    # Oversigt pr. stykke. Det er den form, spoergsmaalet stilles i: "hvilke
-    # forarbejder gaelder for § 9 C, stk. 3?"
     print()
-    print(f"=== {len(found)} aendringer af § {paragraph_id}, fordelt paa stykker")
-    by_stk: dict[str, list[str]] = {}
-    for lbk, document, instruction, item in found:
-        places: list[tuple[str, str]] = []  # (hvor, punktumangivelse)
-        for raw in instruction.probable_targets:
-            target = lex_dania.parse_target(raw)
-            if target.paragraph_id.upper() != wanted:
-                continue
-            places.append((
-                f"stk. {target.stk_number}" if target.stk_number else "hele paragraffen",
-                ", ".join(f"{n}. pkt." for n in target.sentence_numbers)
-                if target.sentence_numbers else "",
-            ))
-        if not places:
-            places = [("hele paragraffen — indsat", "")]
-        for where, sentences in places:
-            entry = f"{document.rsplit('/', 1)[-1]}/{document.split('/')[-2]} {instruction.amendment_path}"
-            by_stk.setdefault(where, []).append(f"{entry}{' — ' + sentences if sentences else ''}")
-    for where in sorted(by_stk, key=lambda key: (key != "hele paragraffen", key)):
+    print(f"=== {len(history.changes)} aendringer af § {label}, fordelt paa stykker")
+    grouped = history.by_place
+    for where in sorted(grouped, key=lambda key: (not key.startswith("hele"), key)):
         print(f"    {where}:")
-        for entry in by_stk[where]:
-            print(f"        {entry}")
+        for change in grouped[where]:
+            sentences = next(
+                (pkt for place, pkt in change.places if place == where and pkt), ""
+            )
+            print(f"        {change.label}{' — ' + sentences if sentences else ''}")
 
     print()
-    print(f"=== bemaerkninger, nyeste foerst")
+    print("=== bemaerkninger, nyeste foerst")
     print()
-
-    confirmed = 0
-    for lbk, document, instruction, item in found:
-        # Bemaerkningen slaas op paa aendringslovens egen paragraf, ikke lovens.
-        reference = AMENDMENT_REFERENCE.search(instruction.amendment_path)
-        law_paragraph = int(reference.group(1)) if reference else 0
-        note, precise, source = _note_for(
-            lex_dania, document, law_paragraph, item, law_name, instruction.text
-        )
-
-        # Tomme maal opstaar, naar den nye betegnelse er kursiveret ("indsaettes som
-        # stk. 6"), og de skal ikke vises som var de selvstaendige maal.
-        targets = ", ".join(
-            target.label
-            for target in (lex_dania.parse_target(raw) for raw in instruction.probable_targets)
-            if target.paragraph_id
-        ) or f"§ {paragraph_id} (indsat her)"
-        print(f"--- {document} {instruction.amendment_path}  (indarbejdet i {lbk})")
-        print(f"    rammer: {targets}")
-        print(f"    {instruction.text[:150]}")
-        if not note:
-            print(f"    INGEN bemaerkning: {source}")
+    for change in history.changes:
+        rammer = ", ".join(place for place, _ in change.places)
+        print(f"--- {change.document_path} {change.amendment_path}"
+              f"  (indarbejdet i {change.consolidation})")
+        print(f"    rammer: § {label}, {rammer}")
+        print(f"    {change.text[:150]}")
+        if not change.note.found:
+            print(f"    INGEN bemaerkning: {change.note.source}")
             print()
             continue
-
-        flat = re.sub(r"\s+", "", note).upper()
-        confirms = f"§{wanted}" in flat
-        confirmed += 1 if confirms else 0
-        kind = "til dette nummer" if precise else "til hele aendringsparagraffen"
-        print(f"    bemaerkning: {source}, {len(note)} tegn, {kind}, naevner § {paragraph_id}: {confirms}")
-        print(f"    {note[:700]}")
+        kind = "til dette nummer" if change.note.precise else "til hele aendringsparagraffen"
+        print(f"    bemaerkning: {change.note.source}, {len(change.note.text)} tegn, {kind}, "
+              f"naevner § {label}: {change.mentions(label)}")
+        print(f"    {change.note.text[:700]}")
         print()
 
-    print(f"=== {confirmed} af {len(found)} bemaerkninger naevner § {paragraph_id}")
+    print(f"=== {history.confirmed} af {len(history.changes)} bemaerkninger naevner § {label}")
     return 0
 
 
@@ -1026,6 +923,13 @@ def step_motiver(lbk_eli: str, paragraph_id: str, max_steps: str = "6") -> int:
     wanted = "" if paragraph_id.lower() == "alle" else paragraph_id.upper().replace(" ", "").lstrip("§")
     survey = not wanted
 
+    # For én paragraf foelges hele kaeden af lovbekendtgoerelser bagud, og alle
+    # aendringer samles. Stopper man ved den foerste, faar man kun den seneste
+    # aendring, mens de aeldre — som ofte baerer fortolkningen af den oprindelige
+    # regel — falder ud.
+    if not survey:
+        return _paragraph_history(facit, paragraph_id, int(max_steps))
+
     try:
         target_xml = lex_dania.fetch_document_xml(facit)
         amendments = lex_dania.consolidated_amendments(target_xml)
@@ -1033,16 +937,6 @@ def step_motiver(lbk_eli: str, paragraph_id: str, max_steps: str = "6") -> int:
     except (lex_dania.FetchError, ElementTree.ParseError) as error:
         print(f"Kunne ikke forberede: {error}")
         return 1
-
-    # For én paragraf foelges hele kaeden af lovbekendtgoerelser bagud, og alle
-    # aendringer samles. Stopper man ved den foerste, faar man kun den seneste
-    # aendring, mens de aeldre — som ofte baerer fortolkningen af den oprindelige
-    # regel — falder ud.
-    if not survey:
-        return _paragraph_history(
-            lex_dania, facit, target_xml, amendments, law_name, wanted, paragraph_id,
-            int(max_steps),
-        )
 
     scope = "alle paragraffer" if survey else f"§ {paragraph_id}"
     print(f"=== {law_name}, {scope}: soeger i {len(amendments)} aendringslove fra {facit}")

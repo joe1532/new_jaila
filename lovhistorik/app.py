@@ -1,14 +1,12 @@
-"""Inspektionsværktøj til ændringsinstrukser i Retsinformations Lex Dania-XML.
+"""Slå forarbejder op til en enkelt lovparagraf.
 
-Formålet er at kunne se materialet med egne øjne, før parseren bygges: hvilke
-konstruktioner findes, hvor godt er målene opmærket, og hvordan ser de svære
-tilfælde ud. Værktøjet klassificerer kun — det anvender ikke operationerne på
-lovteksten, så en instruks kan sagtens være klassificeret uden at kunne udføres.
+To faner: forarbejdssøgningen, som er formålet, og en inspektion af ændringsinstrukser,
+som blev bygget for at kunne se materialet med egne øjne.
 
 Kør med:  streamlit run lovhistorik/app.py
 
-Udtrækket ligger i lex_dania.py, som proben bruger samme vej, så de to aldrig kan
-komme til at vise forskellige tal.
+Al søgelogik ligger i forarbejder.py og lex_dania.py, som proben bruger samme vej, så de
+to aldrig kan komme til at vise forskellige tal.
 """
 
 from __future__ import annotations
@@ -23,10 +21,19 @@ import streamlit as st
 # Streamlit kører filen som script, ikke som pakke, så mappen skal med i sys.path.
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
 
+import forarbejder  # noqa: E402
 import lex_dania  # noqa: E402
 
 DEFAULT_ELI = "eli/lta/2025/1500"
 DEFAULT_LAW = "ligningslov"
+
+# Love, hvor kæden er kørt igennem og målt. Andre kan indtastes frit.
+KNOWN_LAWS = {
+    "Ligningsloven (LBK 1500/2025)": "eli/lta/2025/1500",
+    "Afskrivningsloven (LBK 1222/2025)": "eli/lta/2025/1222",
+    "Skatteindberetningsloven (LBK 1059/2025)": "eli/lta/2025/1059",
+    "Anden lov — indtast selv": "",
+}
 
 MARKUP_LABELS = {
     "signi_char": "opmærket (signiChar)",
@@ -40,16 +47,157 @@ def load_metadata(eli: str) -> dict[str, object]:
     return lex_dania.fetch_metadata(eli)
 
 
+@st.cache_data(show_spinner=False, ttl=3600)
+def load_history(eli: str, paragraph: str, steps: int, _progress=None) -> forarbejder.History:
+    """Hent hele historikken. Argumenter med underscore indgår ikke i cachenøglen."""
+    return forarbejder.paragraph_history(eli, paragraph, steps, _progress)
+
+
+@st.cache_data(show_spinner=False)
+def load_paragraph_list(eli: str) -> list[str]:
+    """Lovens paragraffer, så man kan vælge frem for at gætte en betegnelse."""
+    provisions = lex_dania.extract_provisions(lex_dania.fetch_document_xml(eli))
+    seen: list[str] = []
+    for provision in provisions:
+        if provision.paragraph_id and provision.paragraph_id not in seen:
+            seen.append(provision.paragraph_id)
+    return seen
+
+
+def render_history_tab() -> None:
+    st.subheader("Forarbejder til én paragraf")
+    st.caption(
+        "Søgningen følger kæden af lovbekendtgørelser bagud, finder hver ændring af "
+        "paragraffen og henter de specielle bemærkninger fra det lovforslag, ændringen "
+        "stammer fra."
+    )
+
+    choice = st.selectbox("Lov", list(KNOWN_LAWS), index=0)
+    eli = KNOWN_LAWS[choice] or st.text_input(
+        "Lovbekendtgørelsens ELI-sti", DEFAULT_ELI, help="Fx eli/lta/2025/1500"
+    )
+    if not eli.strip():
+        st.info("Angiv en ELI-sti.")
+        return
+    eli = eli.strip().strip("/")
+
+    try:
+        paragraphs = load_paragraph_list(eli)
+    except (lex_dania.FetchError, ElementTree.ParseError) as error:
+        st.error(f"Kunne ikke hente {eli}: {error}")
+        return
+
+    left, right = st.columns([3, 1])
+    with left:
+        paragraph = st.selectbox(
+            "Paragraf",
+            paragraphs,
+            index=paragraphs.index("9C") if "9C" in paragraphs else 0,
+            format_func=lambda value: f"§ {value}",
+        )
+    with right:
+        # Otte led rækker typisk tilbage til 2014, fjorten til 2006, hvor Lex
+        # Dania-opmærkningen begynder. Flere led koster tid ved første opslag.
+        steps = st.number_input("Led i kæden", min_value=1, max_value=20, value=8)
+
+    if not st.button("Find forarbejder", type="primary"):
+        st.info("Vælg en paragraf og tryk på knappen. Første opslag tager typisk "
+                "20-45 sekunder; derefter svarer diskcachen.")
+        return
+
+    status = st.status("Søger …", expanded=True)
+    try:
+        # st.status.update tager kun nøgleordsargumenter, så kaldet pakkes ind.
+        history = load_history(
+            eli, paragraph, int(steps), lambda message: status.update(label=message)
+        )
+    except (lex_dania.FetchError, ElementTree.ParseError) as error:
+        status.update(label="Søgningen fejlede", state="error")
+        st.error(f"Kunne ikke hente materialet: {error}")
+        return
+    status.update(label=f"Færdig: {len(history.changes)} ændringer", state="complete",
+                  expanded=False)
+
+    st.markdown(f"### {history.law_name} § {history.paragraph_id}")
+
+    chain = " → ".join(step for step, _ in history.chain)
+    st.caption(
+        f"Kæden: {chain}"
+        + ("  ·  nåede enden af det maskinlæsbare materiale" if history.reached_end else
+           "  ·  standsede efter det valgte antal led — hæv det for at gå længere tilbage")
+    )
+    for problem in history.problems:
+        st.warning(problem)
+
+    if not history.changes:
+        st.info(
+            f"§ {history.paragraph_id} er ikke ændret i den del af kæden, vi kan nå. "
+            "Det betyder ikke, at bestemmelsen er uden forarbejder — de ligger da før "
+            "2007, hvor Lex Dania-XML begynder. Prøv med flere led i kæden."
+        )
+        return
+
+    first, second, third = st.columns(3)
+    first.metric("Ændringer", len(history.changes))
+    second.metric("Med bemærkning", f"{history.with_note} af {len(history.changes)}")
+    third.metric(
+        "Bekræftet af teksten",
+        f"{history.confirmed} af {history.with_note}",
+        help="Bemærkningen citerer normalt selv den bestemmelse, den forklarer. Nævner "
+        "den ikke paragraffen, er koblingen mindre sikker — men ikke nødvendigvis "
+        "forkert: handler hele ændringsloven om én bestemmelse, er nummeret overflødigt.",
+    )
+
+    grouped = history.by_place
+    places = sorted(grouped, key=lambda key: (not key.startswith("hele"), key))
+    chosen = st.multiselect(
+        "Vis kun ændringer af", places, placeholder="Alle stykker",
+        help="Grupperingen efter stykke er den form, spørgsmålet stilles i.",
+    )
+
+    shown = history.changes
+    if chosen:
+        wanted = {id(change) for place in chosen for change in grouped[place]}
+        shown = [change for change in history.changes if id(change) in wanted]
+
+    st.markdown(f"**{len(shown)} ændringer, nyeste først**")
+    for change in shown:
+        where = ", ".join(place for place, _ in change.places)
+        header = f"{change.label} — {where}"
+        if not change.note.found:
+            header += "  ·  ingen bemærkning"
+        with st.expander(header, expanded=len(shown) <= 3):
+            st.markdown(f"*Indarbejdet i {change.consolidation}*")
+            st.markdown("**Ændringen**")
+            st.write(change.text)
+
+            if not change.note.found:
+                st.warning(f"Ingen bemærkning: {change.note.source}")
+            else:
+                kind = ("bemærkning til netop dette nummer" if change.note.precise
+                        else "bemærkning til hele ændringsparagraffen — intet 'Til nr.'")
+                st.markdown(f"**Specielle bemærkninger** · {change.note.source} · {kind}")
+                if not change.mentions(history.paragraph_id):
+                    st.caption(
+                        f"Bemærkningen nævner ikke § {history.paragraph_id} ordret. "
+                        "Det er ofte fint, når hele ændringsloven handler om denne ene "
+                        "bestemmelse, men koblingen er mindre sikker."
+                    )
+                st.write(change.note.text)
+
+            links = st.columns(2)
+            links[0].link_button(
+                "Ændringsloven", f"https://www.retsinformation.dk/{change.document_path}"
+            )
+            if change.note.url:
+                links[1].link_button(f"Lovforslag L {change.note.bill_number}", change.note.url)
+
+
 @st.cache_data(show_spinner=False)
 def load_instructions(
     eli: str, law_name: str, max_acts: int
 ) -> tuple[list[dict[str, object]], list[str], int]:
-    """Hent og udtræk instrukser. Returnerer (rækker, fejl, antal undersøgte love).
-
-    Dokumenterne hentes højst én gang: lex_dania cacher dem på disk, og Streamlit
-    cacher resultatet i hukommelsen. Første kørsel for en ny lov tager omkring et
-    sekund pr. dokument, fordi vi bevidst går langsomt mod kilden.
-    """
+    """Hent og udtræk instrukser. Returnerer (rækker, fejl, antal undersøgte love)."""
     documents = lex_dania.amending_documents(eli)[:max_acts]
     rows: list[dict[str, object]] = []
     failures: list[str] = []
@@ -82,48 +230,35 @@ def load_instructions(
     return rows, failures, len(documents)
 
 
-def main() -> None:
-    st.set_page_config(page_title="Lovhistorik: ændringsinstrukser", layout="wide")
-    st.title("Ændringsinstrukser i Lex Dania")
+def render_instruction_tab() -> None:
+    st.subheader("Ændringsinstrukser i Lex Dania")
     st.caption(
         "Værktøjet klassificerer instrukser. Det anvender dem ikke på lovteksten, "
         "så en klassificeret instruks er ikke det samme som en, vi kan udføre."
     )
 
-    with st.sidebar:
-        st.header("Kilde")
-        eli = st.text_input("Lovens ELI-sti", DEFAULT_ELI, help="Fx eli/lta/2025/1500")
-        law_name = st.text_input(
-            "Mållov",
-            DEFAULT_LAW,
-            help="Matches mod ændringsparagraffens indledning. En samlelov ændrer "
-            "flere love, så filtreringen er nødvendig.",
-        )
-        max_acts = st.slider("Højst antal ændringslove", 1, 100, 40)
-        st.divider()
-        st.caption(
-            "Dokumenter caches i lovhistorik/.cache/. Første kørsel for en ny lov tager "
-            "omkring et sekund pr. dokument."
-        )
+    top = st.columns([2, 2, 1])
+    eli = top[0].text_input("Lovens ELI-sti", DEFAULT_ELI, key="instr_eli")
+    law_name = top[1].text_input(
+        "Mållov", DEFAULT_LAW, key="instr_law",
+        help="Matches mod ændringsparagraffens indledning. En samlelov ændrer flere love.",
+    )
+    max_acts = top[2].number_input("Højst antal love", 1, 100, 40)
 
     if not eli.strip() or not law_name.strip():
-        st.info("Angiv både ELI-sti og mållov i sidepanelet.")
+        st.info("Angiv både ELI-sti og mållov.")
         return
 
     try:
         metadata = load_metadata(eli.strip())
+        rows, failures, document_count = load_instructions(
+            eli.strip(), law_name.strip(), int(max_acts)
+        )
     except lex_dania.FetchError as error:
-        st.error(f"Kunne ikke hente metadata for {eli}: {error}")
+        st.error(f"Kunne ikke hente: {error}")
         return
 
-    st.subheader(str(metadata["title_short"]) or eli)
     st.write(metadata["title"])
-
-    try:
-        rows, failures, document_count = load_instructions(eli.strip(), law_name.strip(), max_acts)
-    except lex_dania.FetchError as error:
-        st.error(f"Kunne ikke hente ændringslovene: {error}")
-        return
 
     if not rows:
         st.warning(
@@ -133,7 +268,6 @@ def main() -> None:
         return
 
     frame = pd.DataFrame(rows)
-
     total = len(frame)
     signi = int((frame["opmærkning"] == MARKUP_LABELS["signi_char"]).sum())
     italic = int((frame["opmærkning"] == MARKUP_LABELS["italic"]).sum())
@@ -182,42 +316,38 @@ def main() -> None:
         hide_index=True,
     )
 
-    st.markdown("### Enkelt punkt")
-    if filtered.empty:
-        st.info("Ingen punkter matcher filtrene.")
-        return
-
-    labels = [
-        f"{row['dokument']} {row['punkt']} — {str(row['instruks'])[:70]}"
-        for _, row in filtered.iterrows()
-    ]
-    choice = st.selectbox("Vælg et punkt", range(len(labels)), format_func=lambda i: labels[i])
-    selected = filtered.iloc[choice]
-
-    st.markdown(f"**{selected['dokument']} · {selected['punkt']}**")
-    st.link_button(
-        "Åbn i Retsinformation", f"https://www.retsinformation.dk/{selected['dokument']}"
-    )
-    st.markdown("**Instruks**")
-    st.write(selected["instruks"])
-    if selected["ny tekst"]:
-        st.markdown("**Ny tekst (AendringNyTekst)**")
-        st.write(selected["ny tekst"])
-    detail_left, detail_right = st.columns(2)
-    detail_left.markdown(f"**Mål:** {selected['mål'] or '—'}")
-    detail_left.markdown(f"**Opmærkning:** {selected['opmærkning']}")
-    detail_right.markdown(f"**Konstruktion:** {selected['konstruktion']}")
-    # pandas gør None til NaN, og NaN er sand i en boolsk test, så vi spørger eksplicit.
-    occurrences = selected["forekomster"]
-    detail_right.markdown(
-        f"**Forekomster:** {'ikke angivet' if pd.isna(occurrences) else int(occurrences)}"
-    )
-
     if failures:
-        st.divider()
         st.warning(f"{len(failures)} dokumenter kunne ikke behandles")
         for failure in failures:
             st.text(failure)
+
+
+def main() -> None:
+    st.set_page_config(page_title="Lovhistorik", layout="wide")
+    st.title("Lovhistorik")
+
+    history_tab, instruction_tab = st.tabs(["Forarbejder", "Ændringsinstrukser"])
+    with history_tab:
+        render_history_tab()
+    with instruction_tab:
+        render_instruction_tab()
+
+    with st.sidebar:
+        st.header("Om værktøjet")
+        st.markdown(
+            "Materialet hentes fra Retsinformation og Folketingets Åbne Data og "
+            "gemmes i `lovhistorik/.cache/`. Første opslag på en ny lov er langsomt, "
+            "fordi vi bevidst går skånsomt mod kilderne."
+        )
+        st.divider()
+        st.subheader("Hvad svaret ikke kan")
+        st.markdown(
+            "- Kæden går kun tilbage til omkring 2007, hvor Lex Dania-XML begynder.\n"
+            "- Kom et ændringspunkt til ved et ændringsforslag under behandlingen, "
+            "står bemærkningen i betænkningen, som ikke hentes. Det oplyses.\n"
+            "- Bemærkningen dækker hele ændringspunktet og er ikke snævret ind til "
+            "det stykke, der spørges om."
+        )
 
 
 if __name__ == "__main__":

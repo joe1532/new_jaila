@@ -142,10 +142,16 @@ python lovhistorik/probe.py motiver eli/lta/2025/1500 alle
 python lovhistorik/probe.py motiver eli/lta/2024/15 alle
 ```
 
-Forventet: 18 ændringer af § 9 C, hvoraf 17 nævner bestemmelsen; 12 af 12 på § 7 P; 3 af 3
-på § 33 A. Bredt: 96 af 104 punkter med bemærkning på ligningsloven (95,8 % bekræftet) og
-38 af 40 på skatteindberetningsloven. En bestemmelse kan sagtens være uændret gennem flere
+Forventet: 18 ændringer af § 9 C ved seks led, hvoraf 17 nævner bestemmelsen, og 23 ved
+otte led, hvoraf 18 nævner den; 12 af 12 på § 7 P; 3 af 3 på § 33 A. Bredt: 96 af 104
+punkter med bemærkning på ligningsloven (95,8 % bekræftet) og 38 af 40 på
+skatteindberetningsloven. En bestemmelse kan sagtens være uændret gennem flere
 lovbekendtgørelser, og "ikke ændret" må aldrig forveksles med "ingen forarbejder".
+
+**Søgelogikken ligger i `forarbejder.py`, ikke i `probe.py`.** Både proben og
+Streamlit-appen kalder `paragraph_history`, så de ikke kan nå frem til forskellige svar
+på samme spørgsmål. Lægger man ny logik i proben, opstår netop den forskel. Efter en
+ændring skal begge veje give samme tal — sammenlign `probe.py motiver` med appen.
 
 Dækning og lækage måles med:
 

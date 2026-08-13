@@ -9,9 +9,10 @@ Komponenten er selvstændig. Den kan udvikles og køres uden resten af JAILA.
 
 ## Status
 
-Empirisk afklaring er færdig, og datamodellen er beskrevet. Der er endnu ingen database
-og ingen replay-motor. Det næste skridt er at oversætte ændringsinstrukser til
-operationer og forsøge at anvende dem på lovteksten.
+Opslag fra en lovparagraf til dens specielle bemærkninger virker og kan bruges. På
+ligningsloven findes der en bemærkning til 96 af 104 ændringspunkter, og 95,8 % af dem
+citerer selv målbestemmelsen. Replay-motoren, som afspiller ændringer på selve
+lovteksten, er derimod stadig under arbejde.
 
 Det, der er målt indtil nu, står i [DATAMODEL.md](DATAMODEL.md). Kort fortalt:
 
@@ -22,6 +23,8 @@ Det, der er målt indtil nu, står i [DATAMODEL.md](DATAMODEL.md). Kort fortalt:
 - 151 ændringspunkter mod ligningsloven fordelt på 39 love dækkes af otte verbalmønstre.
 - Koblingen til lovforslaget går via Folketingets Åbne Data på lovnummer plus dato, og
   accessionsnummeret til lovforslagets XML kan udledes deterministisk.
+- Lovforslagets paragrafnumre er ikke den vedtagne lovs. Bemærkningen findes derfor ved
+  at genkende instruksens tekst, ikke ved at slå nummeret op.
 
 ## Kom i gang
 
@@ -29,21 +32,25 @@ Det, der er målt indtil nu, står i [DATAMODEL.md](DATAMODEL.md). Kort fortalt:
 pip install -r lovhistorik/requirements.txt
 ```
 
-Optæl konstruktionstyperne i testmængden:
-
-```bash
-python lovhistorik/probe.py mine eli/lta/2025/1500
-```
-
-Gennemse instrukserne enkeltvis i browseren:
+Slå forarbejder op i browseren — vælg lov og paragraf, og få de specielle bemærkninger
+til hver ændring, nyeste først:
 
 ```bash
 streamlit run lovhistorik/app.py
 ```
 
-Første kørsel henter omkring 40 dokumenter og tager cirka et minut, fordi vi bevidst
-venter et sekund mellem kald. Dokumenterne caches i `lovhistorik/.cache/`, som ikke er
-i git, så efterfølgende kørsler tager få sekunder.
+Det samme fra kommandolinjen, hvis man vil se hele udskriften:
+
+```bash
+python lovhistorik/probe.py motiver eli/lta/2025/1500 9C 8
+```
+
+Sidste tal er antallet af led i kæden af lovbekendtgørelser. Otte led rækker typisk til
+2014, fjorten til 2006, hvor Lex Dania-opmærkningen begynder.
+
+Første opslag på en ny paragraf tager 20-45 sekunder, fordi vi bevidst venter et sekund
+mellem kald til kilderne. Dokumenterne caches i `lovhistorik/.cache/`, som ikke er i
+git, så efterfølgende opslag er hurtigere.
 
 ## Filer
 
@@ -51,13 +58,16 @@ i git, så efterfølgende kørsler tager få sekunder.
 | --- | --- |
 | `DATAMODEL.md` | Datamodel, invarianter, teststrategi og alle empiriske fund |
 | `lex_dania.py` | Hentning, cache og udtræk af ændringsinstrukser fra Lex Dania-XML |
-| `app.py` | Streamlit-værktøj til at gennemse instrukser, mål og klassifikationer |
+| `forarbejder.py` | Fra en lovparagraf til dens specielle bemærkninger |
+| `replay.py` | Afspilning af ændringer på lovteksten (under arbejde) |
+| `app.py` | Streamlit-flade: forarbejdsopslag og inspektion af instrukser |
 | `probe.py` | Udforskende kommandolinjeprobe mod Retsinformation og Folketingets data |
 | `tls_check.py` | Diagnostik, hvis TLS-verifikation fejler lokalt |
 
-`lex_dania.py` er den eneste implementering af udtræk og klassifikation. Både `app.py`
-og `probe.py mine` bruger den, så de to ikke kan komme til at vise forskellige tal. Det
-meste af `probe.py` er derimod udforskning, som skal smides væk.
+`lex_dania.py` er den eneste implementering af udtræk og klassifikation, og
+`forarbejder.py` den eneste af forarbejdssøgningen. Både `app.py` og `probe.py` bruger
+dem, så de to ikke kan komme til at vise forskellige tal. Det meste af `probe.py` er
+derimod udforskning, som skal smides væk.
 
 ## Vigtige forbehold
 
