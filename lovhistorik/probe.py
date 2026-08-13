@@ -858,6 +858,12 @@ def _paragraph_history(lbk_eli: str, paragraph_id: str, max_steps: int) -> int:
 
     if not history.changes:
         print()
+        if not history.paragraph_exists:
+            print(f"=== § {label} blev ikke fundet i {history.start}.")
+            print("    Det tomme svar betyder, at paragraffen ikke findes — ikke at den")
+            print("    har staaet uaendret. Kontrollér nummeret, eller vaelg en udgave,")
+            print("    hvor bestemmelsen fandtes.")
+            return 1
         print(f"=== § {label} er ikke aendret i den del af kaeden, vi kan naa.")
         print("    Bestemmelsens forarbejder ligger foer 2007, hvor Lex Dania-XML begynder.")
         return 0
@@ -887,12 +893,18 @@ def _paragraph_history(lbk_eli: str, paragraph_id: str, max_steps: int) -> int:
             print()
             continue
         kind = "til dette nummer" if change.note.precise else "til hele aendringsparagraffen"
-        print(f"    bemaerkning: {change.note.source}, {len(change.note.text)} tegn, {kind}, "
-              f"naevner § {label}: {change.mentions(label)}")
+        check = change.confirm(label)
+        status = check.how or ("MISTAENKELIG - burde kunne bekraeftes" if check.suspect
+                               else "kan ikke efterproeves - aendringen indsaetter ingen tekst")
+        print(f"    bemaerkning: {change.note.source}, {len(change.note.text)} tegn, {kind}")
+        print(f"    kobling: {status}")
         print(f"    {change.note.text[:700]}")
         print()
 
-    print(f"=== {history.confirmed} af {len(history.changes)} bemaerkninger naevner § {label}")
+    with_note = sum(1 for change in history.changes if change.note.found)
+    suspect = sum(1 for change in history.changes if change.confirm(label).suspect)
+    print(f"=== {history.confirmed} af {with_note} bemaerkninger bekraeftet, "
+          f"{suspect} mistaenkelige")
     return 0
 
 
@@ -1087,11 +1099,15 @@ def step_daekning(lbk_eli: str, max_steps: str = "8") -> int:
 
     for _ in range(int(max_steps)):
         chain.append(current)
-        # En lovbekendtgoerelse uden indarbejdede aendringer findes stort set ikke.
-        # Er listen tom, er indledningen naesten altid ikke blevet laest, og saa
-        # forsvinder hele perioden lydloest.
+        # En lovbekendtgoerelse uden indarbejdede aendringer er sjaelden, men findes: en
+        # ren genudsendelse retter den forrige uden at tilfoeje noget. Kun naar listen
+        # mangler uden den forklaring, er hele perioden forsvundet lydloest.
         if not current_amendments:
-            print(f"--- ADVARSEL: {current} har ingen laeselig liste over aendringer")
+            if lex_dania.restates_only(current_xml):
+                print(f"--- BEMAERK: {current} indarbejder ingen nye aendringslove "
+                      "(genudsendt for at rette den forrige)")
+            else:
+                print(f"--- ADVARSEL: {current} har ingen laeselig liste over aendringer")
 
         # Listen opregner aendringer af den forrige bekendtgoerelse, hvis changed_by
         # kan afgoere et aarstal, listen har skrevet forkert.

@@ -674,6 +674,347 @@ efter ikrafttrædelsesbestemmelse. Det er forkert for delvis ikrafttræden, hvor
 lov virker på forskellige tidspunkter, og en del af afvigelserne skyldes formentlig det.
 Ikrafttrædelsesbestemmelserne skal læses, før tallene kan tages for pålydende.
 
+## Målt uden for skatteområdet
+
+Alle tre testlove var skattelove. Det er en snæver base, og målingerne sagde derfor mere
+om, hvordan Skatteministeriet skriver, end om motoren. Færdselsloven (LBK 118/2026,
+transportområdet, 224 paragraffer, kæde tilbage til 2006) blev valgt som modprøve.
+
+Første kørsel: **9 uforklarede lækager mod 0 på skattelovene**, og fire
+lovbekendtgørelser, hvis liste over indarbejdede ændringer slet ikke kunne læses. Hver af
+dem slugte en hel periode uden at noget fejlede.
+
+Årsagen var den samme i alle fire: **indledningen er brudt over flere tekstblokke.**
+
+    [3] "… med de ændringer, der følger af lov nr."
+    [4] "1241 af 18. december 2012, § 1 i lov nr."
+    [5] "1246 af 18. december 2012, lov nr. 1389 af 23. december 2012, …"
+    [6] "De ændringer, der følger af § 1, nr. 5, … er ikke indarbejdet …"
+
+Bruddet falder vilkårligt — midt i en dato, midt i "lov nr." — og læses blokkene hver
+for sig, standser opremsningen ved det falske punktum. Skattelovene har indledningen i
+én blok, så fejlen kunne ikke ses dér.
+
+Blokkene sammenkædes nu, men kun så længe de tydeligt fortsætter opremsningen. Grænsen er
+afgørende: umiddelbart efter listen står sætningerne om ændringer, der udtrykkeligt
+*ikke* er indarbejdet, og de må aldrig havne i listen. Det ville være den værre fejl.
+
+To detaljer kostede hver sin runde:
+
+- **Det afsluttende punktum er ikke garanteret.** LBK 1320/2010 slutter opremsningen uden
+  punktum, og kravet kostede hele listen.
+- **Sammenkædningen ødelagde selv "lov nr."** Punktummet efter "af" er en artefakt af
+  ombrydningen og skal væk; punktummet i "nr." er en del af henvisningen og skal blive.
+  Første forsøg fjernede begge, og netop de to love, der var brudt over "lov nr.",
+  forblev usynlige.
+
+Efter rettelsen: **0 uforklarede lækager** på færdselsloven, 85 ændringslove mod 76 før.
+Skattelovene er uændrede — samme antal love, samme bemærkninger, samme afspilning.
+
+Tilbage står ét dokument fra 2006, hvis indledning ikke kan læses. Det samme gælder
+ligningsloven (LBK 1061/2006) og afskrivningsloven (LBK 856/2006). Mønstret er
+konsistent: 2006-årgangen er mærket op anderledes, og dér ender kæden.
+
+Fundet siger noget generelt: **en måling på ét ressortområde måler ressortet, ikke
+motoren.** Fejlen havde ligget der hele tiden og var usynlig på tre love i træk.
+
+## Retsinformations egen tidslinje
+
+Under hver forskrift viser Retsinformation en tidslinje. Den hentes fra
+
+    /api/document/{UniqueDocumentId}/timeline
+
+og `<UniqueDocumentId>` står i den XML, vi allerede henter. Endpointet svarer JSON uden
+særlige headere. Ligningsloven har 633 poster tilbage til LBK 399/1979.
+
+Hver post har `signatureDate`, `isOutOfOrder` og `errorsBeforeItem`, hvor Retsinformation
+selv oplyser om huller — for ligningsloven at tidslinjen begynder i 1979, fordi ældre
+dokumenter ikke er indlagt.
+
+**Tidslinjen forklarer ikke afvigelserne i afspilningen.** For testintervallet LBK
+42/2023 → LBK 1500/2025 er tidslinjens segment identisk med lovbekendtgørelsens egen
+liste: samme 32 love, samme rækkefølge. Formodningen om, at en del af afvigelserne
+skyldtes rækkefølgen, er dermed afkræftet for ligningsloven.
+
+Tidslinjen kan heller ikke erstatte indledningen. For afskrivningsloven rummer segmentet
+LOV 749/2025 og for skatteindberetningsloven yderligere LOV 198 og 409 — love, der ligger
+i perioden, men ikke er indarbejdet. Indledningen er fortsat den eneste kilde til, *hvad
+der er indarbejdet*.
+
+Værdien er som **uafhængig krydskontrol**: vores liste skal være en delmængde af
+tidslinjens segment. Den ville have fanget færdselslovsfejlen med det samme.
+
+Alt før 2007 er tomme skaller. LBK 1061/2006 fylder 11 KB og giver 0 bestemmelser; det
+samme gælder alle ældre. 2006-grænsen er altså kildens, ikke vores, og de 633 poster
+giver ikke adgang til ældre lovtekst.
+
+**Hvad afvigelserne så skyldes.** Af de 12 enheder, der afviger trods lykkedes
+operationer, er 2 fejl i facit: noter som "Den bekendtgjorte lovtekst vedrørende § 8 X,
+stk. 4, 3. pkt., har virkning fra …" læses som lovtekst. Resten er forkert valgt
+forekomst — § 7 O får "stk. 7" hvor facit har "stk. 8", og § 12 B, stk. 4 får "efter stk.
+10" hvor facit har "efter afskrivningslovens § 40, stk. 7". Endepunktet `reprintNotes`
+kunne se ud til at løse det første, men er tomt for ligningsloven.
+
+## Forarbejdssøgningens kvalitet, målt
+
+Målt på 105 ændringer fordelt på syv paragraffer i ligningsloven (§§ 7, 7 P, 8 A, 9 C,
+15, 16, 33 A):
+
+| | antal | andel |
+|---|---|---|
+| ændringer fundet | 105 | |
+| med bemærkning | 95 | 90,5 % |
+| bekræftet ved at bemærkningen nævner paragraffen | 87 | 82,9 % |
+| bemærkning dækker hele ændringsparagraffen, ikke punktet | 16 | 16,8 % af de fundne |
+
+**De 10 manglende har alle samme årsag.** Punktet findes ikke i lovforslaget, fordi det
+kom ved et ændringsforslag under behandlingen. Bemærkningen står da i betænkningen, som
+vi ikke henter. Det er ikke spredte fejl, men én manglende funktion.
+
+**Bekræftelsesmålet var for strengt.** Alle fire ubekræftede bemærkninger til § 9 C blev
+efterprøvet, og alle fire er rigtige: de handler om befordringsfradrag, men nævner ikke
+"§ 9 C", fordi hele ændringsparagraffen handler om den bestemmelse, så nummeret er
+overflødigt. Målet talte dem som mistænkelige, og 19 af 23 underdrev kvaliteten.
+
+### Bekræftelse ved ordoverlap
+
+Bemærkningen citerer som regel den ordlyd, ændringen indsætter, så et langt fælles
+ordforløb er et selvstændigt tegn på, at de hører sammen. Tærsklen blev valgt på en
+måling af 49 bemærkninger, der nævner målparagraffen og derfor er sikkert koblet:
+
+| længste fælles ordforløb | andel af de sikkert koblede |
+|---|---|
+| mindst 5 ord | 100 % |
+| mindst 6 ord | 94 % |
+| mindst 8 ord | 65 % |
+| mindst 10 ord | 53 % |
+
+Ingen af de sikkert koblede deler under 5 ord, og medianen er 10. Tærsklen blev sat til
+**8 ord** — over minimum, fordi et kort forløb kan være almindeligt lovsprog frem for et
+citat. En falsk bekræftelse er værre end en falsk alarm, da den får en forkert kobling
+til at se efterprøvet ud.
+
+Blandt de bemærkninger, der ikke nævner paragraffen, skiller tærsklen skarpt: de tydeligt
+rigtige delte 9, 10 og 22 ord med ændringen, mens resten delte 0-2.
+
+**Manglende overlap er kun mistænkeligt, hvis der var noget at genfinde.** En ophævelse
+("§ 16, stk. 14, 2. pkt., ophæves") citerer ingen tekst, og en henvisningsændring citerer
+kun »3. pkt.«. I begge tilfælde kan bemærkningen ikke gengive noget, og fraværet siger
+intet. Længde alene dur ikke som kriterium — »3. eller 4. pkt.« fylder 16 tegn uden at
+være lovtekst — så et citat regnes først for ordlyd, når det rummer mindst tre ord på tre
+bogstaver eller mere.
+
+Målt på de samme syv paragraffer, 94 bemærkninger:
+
+| | antal | andel |
+|---|---|---|
+| bekræftet | 89 | 95 % |
+| kan ikke efterprøves (ingen ordlyd at genfinde) | 4 | |
+| mistænkelig — burde kunne bekræftes, men kan ikke | 1 | |
+
+Antallet af koblinger, et menneske skal se efter, faldt fra 8 til 1. Den tilbageværende
+er en grænsesag: LOV 1539/2014 § 9, nr. 1 deler 6 ord med sin bemærkning, som klart
+handler om samme navneskifte, men falder under tærsklen. Den er markeret til eftersyn,
+og det er den rigtige side at fejle til.
+
+## Betænkninger kan ikke hentes
+
+Alle ti manglende bemærkninger havde samme årsag: punktet stod ikke i det fremsatte
+lovforslag, fordi det kom ved et ændringsforslag under udvalgsbehandlingen. Bemærkningen
+står da i betænkningen. Vejen dertil blev undersøgt og er lukket.
+
+Betænkningen findes i Folketingets åbne data, men kun som metadata. På sag 102023 (L 178)
+ligger den som `Dokument` med typeid 12 — altså "Bilag", ikke en egen dokumenttype — og
+kendes på titlen "Betænkning afgivet den 7. maj 2025". Selve teksten står ikke i
+datamodellen. `Dokument` har intet tekstfelt, og `Fil` peger på
+
+    https://www.ft.dk/samling/20241/lovforslag/l178/bilag/6/3019075.pdf
+
+To forhold spærrer:
+
+- **Formatet er PDF.** Af de undersøgte betænkninger findes ingen i XML, HTML, DOC eller
+  andet. Lovforslagene er mærket op i Lex Dania; betænkningerne er det ikke.
+- **www.ft.dk er beskyttet af Cloudflare.** Alle forespørgsler svarer HTTP 403, også på
+  almindelige HTML-sider og uanset User-Agent, Accept eller Referer. En browser slipper
+  igennem efter en JavaScript-udfordring med teksten "This website uses a security service
+  to protect against malicious bots". Beskyttelsen er tilsigtet og omgås ikke. Bemærk at
+  `oda.ft.dk` ikke er omfattet — det er kun filerne, der er utilgængelige.
+
+Retsinformation har heller ikke betænkningen: `eli/ft/202412L00178` er det fremsatte
+forslag og indeholder nul forekomster af "ændringsforslag", og et `…B`-opslag giver 404.
+
+**Hvad der så blev gjort.** Svaret sagde tidligere "kom formentlig ved ændringsforslag" —
+en formodning, ingen havde efterprøvet. Den slås nu op i Folketingets data, og svaret
+oplyser betænkningens fulde titel og et link til den. Brugeren kan læse den selv; vi
+foregiver ikke at have gjort det.
+
+Vigtigere er, hvad opslaget kan afsløre. Findes der *ikke* et ændringsforslag på sagen,
+er forklaringen forkert, og der gemmer sig en anden fejl. Svaret siger da "årsagen er
+ukendt" i stedet for at gentage en formodning, der ikke holder. For alle ti undersøgte
+punkter blev formodningen bekræftet, men det vides nu, i stedet for at være antaget.
+
+Titlerne matches på begyndelsen, ikke som delstreng. "1. udkast til betænkning" er ikke
+den afgivne, og et spørgsmål *om*, hvorfor der ikke blev stillet ændringsforslag, er ikke
+et ændringsforslag. En delstrengssøgning forvekslede netop de to på L 129.
+
+## Målt bredt på skatteretten
+
+Motoren skal bruges til skatteret, og tre love er ikke skatteretten. De centrale love blev
+derfor fundet ved at spørge en samlelov, hvad den ændrer: `probe.py laws eli/lta/2023/679`
+opregner 49 love med deres nyeste lovbekendtgørelse, og `eli/lta/2023/1563` gav resten.
+Det er hurtigere og mere pålideligt end at skrive listen selv.
+
+Lækagetesten på 19 skattelove — 834 ændringslove, 3.638 ændringspunkter — fandt **25
+uforklarede lækager**, altså ændringslove som ingen lovbekendtgørelse påtager sig. Tre
+fejl stod bag dem, alle i den samme sætning: den indledning, hvor bekendtgørelsen opregner,
+hvad den har indarbejdet.
+
+| Formulering | Hvor | Kostede |
+| --- | --- | --- |
+| "med de ændringer **og tilføjelser**, der følger af" | personskattelovens LBK 143/2011 | 21 love |
+| "med **den ændring**, der følger af" (ental) | fondsbeskatningslovens LBK 1192/2007 | 1 lov |
+| Indledningen afbrudt af indskudte bemærkninger | kursgevinstlovens LBK 140/2008 | 3 love |
+
+Den sidste er den mest lærerige. Sætningen begynder "Herved bekendtgøres … (kursgevinstloven)",
+brydes af to blokke om ændringer, der *ikke* er indarbejdet, og tages op igen med ", jf.
+lovbekendtgørelse nr. 978 …". Sammenkædning af nabolinjer hjælper ikke, når der står noget
+imellem, så fortsættelsen genkendes på sin egen form: indledende komma efterfulgt af "jf.
+lovbekendtgørelse". Kravet er ikke pynt. De indskudte blokke lyder "Lovbekendtgørelsen
+indeholder ikke de ændringer, der følger af § 6 i lov nr. 1534 …", og en løsere søgning
+ville føje netop den lov til listen. At mangle en lov er slemt; at tilføje en, der
+udtrykkeligt ikke er indarbejdet, er værre.
+
+Efter rettelserne står **2 lækager tilbage af 3.638 punkter**, begge samme lov, og de er
+ikke vores. Lov 1052/2020 ændrer selskabsskattelovens § 23, stk. 1, fra "15,24 pct." til
+"14,24 pct.". LBK 251/2021 siger 15,24; LBK 1241/2022 siger 14,24. Ændringen *er* altså
+indarbejdet, men ingen bekendtgørelse i kæden nævner loven i sin indledning. Det er en
+udeladelse i kilden, og den bør ikke skjules ved at udvide listen med gæt.
+
+## Et plausibelt årstal er farligere end et umuligt
+
+Opkrævningslovens LBK 569/2014 skriver "§ 8 i lov nr. 1634 af 26. december **2012**". Loven
+er fra 2013. Det tidligere kendte tilfælde — "19. december 2207" — var ufarligt, netop
+fordi året var umuligt: det kunne ikke slås op, og fejlen meldte sig selv. Her består
+årstallet enhver rimelighedsprøve. Uden kontrol henter vi forarbejder til en anden lov,
+eller til ingen, og intet ser forkert ud.
+
+Derfor efterprøves nu hvert årstal mod `eli:changed_by` for den bekendtgørelse, der blev
+konsolideret, ikke kun de umulige. Men rettelsen må ikke være automatisk: lovnumre genbruges
+hvert år, og både lov 753/2023 og lov 753/2025 findes. Er en lov fraværende fra listen, kan
+listen være ufuldstændig — det beviser ikke, at årstallet er forkert. Rettelsen kræver
+derfor to ting: præcis én lov med samme nummer i listen, **og** at den angivne sti giver
+404. Kun et bevist fravær gør omskrivningen forsvarlig. Derfor bærer `FetchError` nu sin
+HTTP-status: 404 betyder "findes ikke", mens en afbrudt forbindelse intet betyder.
+
+## Uden genforsøg er svaret ikke deterministisk
+
+To ens opslag på ligningslovens § 16 gav 49, 48 og 49 bemærkninger. Forskellen var ikke
+tilfældig støj i optællingen, men en hentning, der faldt undervejs og blev til "kunne ikke
+hentes". Fejlen blev rapporteret — den var ikke tavs — men resultatet afhang af netværkets
+luner, og det er uacceptabelt, når to jurister skal kunne stille samme spørgsmål og få
+samme svar.
+
+Med varm cache er systemet deterministisk: to fulde kørsler af § 16 gav byte for byte
+samme output. Variationen opstår kun, mens cachen bygges. `fetch` genforsøger derfor tre
+gange med voksende ventetid, men kun det, der kan gå over: 5xx og netværksfejl. 4xx
+gentages ikke, for et 404 bliver ikke et andet svar af at blive spurgt igen — og et
+manglende led er normalt i en kæde, så ventetid dér ville koste på hvert eneste opslag.
+
+## "Ingen ændringer" må ikke betyde "fandt ikke paragraffen"
+
+Et opslag på en paragraf, der ikke findes, svarede præcis som et opslag på en paragraf, der
+aldrig er ændret: med ingenting. For en jurist er de to svar modsatte. Det ene siger
+"bestemmelsen har stået uændret siden 2007", det andet "du har slået noget op, der ikke er
+der". Motoren kontrollerer nu, om paragraffen står i den valgte bekendtgørelse, og siger
+det ligeud, når den ikke gør.
+
+Sammenligningen skal være uafhængig af versaler. Lex Danias `localId` staves ikke ens fra
+lov til lov: ligningsloven skriver `9C`, personskatteloven `8a`. Et versalfølsomt opslag
+ville melde "findes ikke" om en paragraf, der står der.
+
+Undervejs blev det efterprøvet, at nul ændringer af personskattelovens § 8 a faktisk er
+rigtigt: af 51 ændringslove i kæden rammer ingen § 8 a, kun § 8. Et tomt svar er altså ikke
+i sig selv mistænkeligt — det skal bare kunne skelnes fra et fejlslagent opslag.
+
+## Forarbejdskvaliteten målt bredt
+
+258 ændringspunkter fordelt på 16 paragraffer i 10 skattelove:
+
+| Mål | Antal | Andel |
+| --- | --- | --- |
+| Ændringspunkter | 258 | |
+| Med bemærkning | 231 | 89,5 % |
+| Bekræftet kobling | 196 | 84,8 % af dem med bemærkning |
+| Mistænkelige | 6 | 2,3 % |
+
+Af de 27 punkter uden bemærkning kom **26 ved ændringsforslag i en betænkning** — den
+kendte, lukkede vej beskrevet ovenfor. Det sidste er L 43, som ikke har nogen bemærkning
+til § 1, nr. 12. Manglerne er altså forklarede, ikke tavse, og det er den egenskab, der
+afgør, om motoren kan bruges fagligt.
+
+De 12 rapporterede problemer er alle kædens ende: en lovbekendtgørelse fra 2003-2007, hvis
+indledning ikke kan læses, fordi Lex Dania-opmærkningen først begynder omkring 2007.
+
+Tidsforbruget med kold cache er 2-141 sekunder pr. paragraf, gennemsnitligt omkring 48.
+Det skaleres med kædens længde og antallet af ændringer, ikke med lovens størrelse. Med
+varm cache svarer opslaget på under et sekund. ODA-opslag caches ikke og koster 0,58
+sekunder hver.
+
+## En håndholdt liste over lovbekendtgørelser forælder
+
+Applisten pegede på faste lovbekendtgørelser, og to af dem var allerede overhalet, uden at
+det kunne ses: skatteforvaltningsloven havde fået LBK 1228/2025 og tinglysningsafgiftsloven
+LBK 307/2025. Den, der slog op, ville have fået svar om en forældet retstilstand uden
+nogen antydning af, at der fandtes en nyere udgave.
+
+Listen indeholder derfor nu kun et *holdepunkt* pr. lov, og `newest_consolidation` følger
+`eli:consolidated_by` fremad til den seneste udgave. Det virker, fordi `fetch_metadata`
+ikke har diskcache: en ny bekendtgørelse opdages med det samme. I appen caches opslaget i
+seks timer, så det ikke gentages ved hvert klik.
+
+Kun bekendtgørelser af *samme* lov må følges. På en ændringslov peger `consolidated_by`
+nemlig på enhver bekendtgørelse, der har indarbejdet den — LOV 871/2022 peger blandt andet
+på ligningslovens LBK 1500/2025 — så uden navnekontrollen ville et opslag ende i en helt
+anden lov. Kontrollen er efterprøvet: to ændringslove føres ikke videre.
+
+Ejendomsavancebeskatningsloven kunne ikke findes ved at søge på sit navn. Den hedder i
+metadata "lov om beskatning af fortjeneste ved afståelse af fast ejendom", og kortformen
+optræder ikke. Kortnavne er ikke en pålidelig nøgle.
+
+## En bekendtgørelse uden ændringer er ikke altid en fejl
+
+Tinglysningsafgiftslovens LBK 307/2025 har ingen opremsning af indarbejdede ændringer.
+Indledningen slutter ved "jf. lovbekendtgørelse nr. 27 af 13. januar 2025." og fortsætter:
+"De ændringer, der følger af § 1, nr. 11, i lov nr. 168 … var ved en fejl ikke indarbejdet
+korrekt i lovbekendtgørelse nr. 27 … Disse fejl er nu rettet med denne lovbekendtgørelse."
+
+Den er altså udsendt for at rette den forrige, ikke for at indarbejde noget nyt. Den tomme
+liste er korrekt, og advarslen "ingen læselig liste over ændringer" var en falsk alarm.
+Det er ikke en bagatel: falske alarmer lærer den, der læser svaret, at se bort fra
+advarsler, og så overses den ægte. `restates_only` skelner nu de to, efterprøvet mod syv
+bekendtgørelser — herunder kædens ende fra 2006, som stadig skal give en ægte advarsel.
+
+## Grænsen for dokumentstørrelse ramte igen
+
+LOV 1489/2024 fylder 85,4 MB og faldt uden for grænsen på 64 MB. Den ændrer
+skatteforvaltningslovens § 32 a to steder, og begge bemærkninger var utilgængelige. Fejlen
+var synlig — den blev rapporteret som et problem, ikke slugt — men den kostede indhold.
+
+Prisen for at læse dokumentet blev målt før grænsen blev hævet: 3 sekunder at parse, spids
+**1,1 GB hukommelse** under udtrækket, for at finde to ændringspunkter. Grænsen er nu 128
+MB. Skal den længere op, bør `extract_instructions` skrives om til `iterparse`, for
+hukommelsen vokser med dokumentets størrelse, ikke med det, vi leder efter.
+
+## Målt på hele applisten
+
+21 skattelove, 923 ændringslove, 4.126 ændringspunkter: **2 uforklarede lækager**, begge
+den dokumenterede udeladelse af lov 1052/2020 i selskabsskattelovens indledninger, og
+**ingen ulæselige indledninger efter 2007**. De resterende ulæselige bekendtgørelser er
+alle fra 2003-2007, hvor Lex Dania-opmærkningen endnu ikke fandtes, og udgør kædens ende.
+
+De to nye love blev målt for første gang: ejendomsavancebeskatningsloven (14 ændringslove,
+25 punkter) og pensionsbeskatningsloven (67 ændringslove, 452 punkter), begge uden lækager.
+
 ## Tabeller
 
 Rådokumenter ligger på disk. Databasen gemmer sti og hash, ikke blobs — så forbliver

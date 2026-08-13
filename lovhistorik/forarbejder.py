@@ -139,6 +139,22 @@ def plausible_year(document_path: str) -> bool:
     return year.isdigit() and 1849 <= int(year) <= date.today().year
 
 
+def missing(document_path: str) -> bool:
+    """Er dokumentet beviseligt fraværende hos Retsinformation?
+
+    Kun et 404 tæller. En netværksfejl eller en tidsudløben forbindelse siger intet om,
+    hvorvidt dokumentet findes, og må ikke bruges som argument for at læse en henvisning
+    om til en anden lov.
+    """
+    try:
+        lex_dania.fetch_document_xml(document_path)
+    except lex_dania.FetchError as error:
+        return error.status == 404
+    except Exception:  # noqa: BLE001
+        return False
+    return False
+
+
 def resolve_path(document_path: str, consolidates: str) -> tuple[str | None, str]:
     """Find den lov, en bekendtgørelse peger på, også når årstallet er en trykfejl.
 
@@ -151,33 +167,60 @@ def resolve_path(document_path: str, consolidates: str) -> tuple[str | None, str
     eller ingen, rapporteres det i stedet, for et gæt ville være netop den slags tavse
     fejl, vi leder efter.
 
+    Et umuligt årstal er den nemme sag. Den farlige er trykfejlen, der ser rigtig ud:
+    opkrævningslovens LBK 569/2014 skriver "§ 8 i lov nr. 1634 af 26. december 2012", men
+    loven er fra 2013. Året består enhver rimelighedsprøve, så uden opslag ville vi hente
+    forarbejder til en helt anden lov — eller til ingen — og intet ville se forkert ud.
+    Derfor efterprøves hvert årstal mod listen, ikke kun de umulige.
+
     Returnerer (sti, note). Sti er None, når loven ikke kan findes.
     """
-    if plausible_year(document_path):
-        return (document_path, "")
-
     number = document_path.rsplit("/", 1)[-1]
     stated_year = document_path.split("/")[-2]
+    impossible = not plausible_year(document_path)
+
     if not consolidates:
-        return (None, f"{document_path}: årstallet {stated_year} kan ikke passe, og der "
-                      "er ingen liste at slå det rigtige op i.")
+        if impossible:
+            return (None, f"{document_path}: årstallet {stated_year} kan ikke passe, og "
+                          "der er ingen liste at slå det rigtige op i.")
+        return (document_path, "")
 
     try:
-        candidates = [
-            path for path in lex_dania.amending_documents(consolidates)
-            if path.rsplit("/", 1)[-1] == number and plausible_year(path)
-        ]
+        listed = lex_dania.amending_documents(consolidates)
     except Exception as error:  # noqa: BLE001
-        return (None, f"{document_path}: årstallet {stated_year} kan ikke passe, og "
-                      f"{consolidates} kunne ikke slås op: {error}")
+        if impossible:
+            return (None, f"{document_path}: årstallet {stated_year} kan ikke passe, og "
+                          f"{consolidates} kunne ikke slås op: {error}")
+        # Årstallet er plausibelt, så det bruges. Kontrollen var en ekstra sikkerhed, ikke
+        # en forudsætning, og et opslag der fejler må ikke koste den normale vej.
+        return (document_path, "")
 
+    if not impossible and document_path in listed:
+        return (document_path, "")
+
+    candidates = [
+        path for path in listed
+        if path.rsplit("/", 1)[-1] == number and plausible_year(path)
+    ]
     if len(candidates) != 1:
-        return (None, f"{document_path}: årstallet {stated_year} kan ikke passe. "
-                      f"{len(candidates)} love med nummer {number} ændrer {consolidates}, "
-                      "så det rigtige år kan ikke afgøres.")
+        if impossible:
+            return (None, f"{document_path}: årstallet {stated_year} kan ikke passe. "
+                          f"{len(candidates)} love med nummer {number} ændrer "
+                          f"{consolidates}, så det rigtige år kan ikke afgøres.")
+        # Listen kan være ufuldstændig, så et fravær beviser ikke en fejl. Stien bruges
+        # som skrevet, og et forkert år vil vise sig som en manglende bemærkning.
+        return (document_path, "")
+    if candidates[0] == document_path:
+        return (document_path, "")
+    if not impossible and not missing(document_path):
+        # Lovnumre genbruges hvert år, så to love kan hedde nr. 753. Er den angivne lov
+        # rigtig nok til at findes, må vi ikke rette den om til en anden, blot fordi den
+        # mangler i listen. Kun et bevist fravær — 404 — gør rettelsen forsvarlig.
+        return (document_path, "")
     return (candidates[0], f"{document_path}: årstallet {stated_year} er en trykfejl i "
                            f"lovbekendtgørelsen. Læst som {candidates[0]}, bekræftet af "
-                           f"listen over love, der ændrer {consolidates}.")
+                           f"listen over love, der ændrer {consolidates}, og af at "
+                           f"{document_path} ikke findes.")
 
 
 def instructions_of(
@@ -217,6 +260,73 @@ def instructions_of(
 
 
 @dataclass
+class CommitteeStage:
+    """Hvad der skete med lovforslaget under udvalgsbehandlingen.
+
+    Bruges kun, når et ændringspunkt ikke kan genfindes i det fremsatte lovforslag. Vi
+    svarede tidligere "kom formentlig ved ændringsforslag" uden at se efter. Formodningen
+    holder oftest, men ikke altid, og et gæt, der er rigtigt syv ud af otte gange, er
+    værre end et opslag, fordi den ottende ikke kan skelnes fra de andre.
+    """
+
+    amendment_titles: list[str] = field(default_factory=list)
+    report_title: str = ""
+    report_url: str = ""  # PDF på ft.dk
+    problem: str = ""  # opslaget kunne ikke gennemføres
+
+    @property
+    def explains(self) -> bool:
+        """Er der faktisk stillet ændringsforslag?"""
+        return bool(self.amendment_titles)
+
+
+# Betænkningens titel begynder sådan. "1. udkast til betænkning" må ikke forveksles med
+# den afgivne, og et spørgsmål *om* ændringsforslag er ikke et ændringsforslag — derfor
+# matches begyndelsen og ikke blot et ord i titlen.
+REPORT_TITLE = re.compile(r"^betænkning afgivet\b", re.IGNORECASE)
+AMENDMENT_TITLE = re.compile(r"^ændringsforslag\b", re.IGNORECASE)
+
+
+def committee_stage(case_id: str) -> CommitteeStage:
+    """Slå op, om sagen har ændringsforslag og en afgivet betænkning.
+
+    Koster to kald til Folketingets data og foretages kun for de punkter, der ikke kunne
+    genfindes i lovforslaget — i praksis omkring hvert tiende.
+    """
+    from urllib.parse import quote
+
+    try:
+        rows = oda_json(
+            f"SagDokument?$filter={quote(f'sagid eq {case_id}', safe='(),')}"
+            "&$expand=Dokument&$top=90&$format=json"
+        ).get("value", [])
+    except LookupFailed as error:
+        return CommitteeStage(problem=str(error))
+
+    stage = CommitteeStage()
+    report_id = None
+    for row in rows:
+        document = row.get("Dokument") or {}
+        title = str(document.get("titel") or "").strip()
+        if AMENDMENT_TITLE.match(title):
+            stage.amendment_titles.append(title)
+        elif REPORT_TITLE.match(title) and not stage.report_title:
+            stage.report_title = title
+            report_id = document.get("id")
+
+    if report_id:
+        try:
+            files = oda_json(
+                f"Fil?$filter={quote(f'dokumentid eq {report_id}', safe='(),')}&$format=json"
+            ).get("value", [])
+            if files:
+                stage.report_url = str(files[0].get("filurl") or "")
+        except LookupFailed:
+            pass  # Titlen alene er nok til at finde betænkningen.
+    return stage
+
+
+@dataclass
 class Note:
     """Den specielle bemærkning til ét ændringspunkt."""
 
@@ -229,6 +339,9 @@ class Note:
     precise: bool = False
     realigned: str = ""  # forslagets egne numre, når de afviger fra lovens
     problem: str = ""  # hvorfor der ingen bemærkning er
+    # Sat, når punktet ikke stod i det fremsatte lovforslag. Bemærkningen findes da i
+    # betænkningen, som kun udgives som PDF bag botbeskyttelse og derfor ikke kan hentes.
+    committee: CommitteeStage | None = None
 
     @property
     def found(self) -> bool:
@@ -276,12 +389,33 @@ def note_for(
 
     aligned = realign(proposed, instruction_text)
     if aligned is None:
+        # Punktet stod ikke i det fremsatte forslag. Den nærliggende forklaring er et
+        # ændringsforslag under udvalgsbehandlingen, men den efterprøves frem for at
+        # antages: holder den ikke, er der en anden fejl, og den skal kunne ses.
+        stage = committee_stage(case_id)
+        if stage.problem:
+            explanation = (
+                f"punktet findes ikke i L {bill_number}, og udvalgsbehandlingen kunne "
+                f"ikke slås op: {stage.problem}"
+            )
+        elif stage.explains:
+            explanation = (
+                f"punktet findes ikke i L {bill_number} som fremsat, men der blev stillet "
+                f"ændringsforslag ({stage.amendment_titles[0]}). Bemærkningen står i "
+                f"{stage.report_title or 'betænkningen'}, som Folketinget kun udgiver som "
+                "PDF, vi ikke kan hente"
+            )
+        else:
+            explanation = (
+                f"punktet findes ikke i L {bill_number}, og der blev ikke stillet "
+                "ændringsforslag på sagen. Årsagen er ukendt"
+            )
         return Note(
             bill_number=bill_number,
             case_id=case_id,
             accession=accession,
-            problem=f"punktet findes ikke i L {bill_number} — kom formentlig ved "
-            "ændringsforslag, og bemærkningen står da i betænkningen",
+            problem=explanation,
+            committee=stage,
         )
 
     realigned = ""
@@ -312,6 +446,67 @@ def note_for(
 
 
 @dataclass
+class Confirmation:
+    """Hvorfor koblingen mellem en ændring og dens bemærkning holder."""
+
+    how: str = ""  # tom betyder, at intet tegn blev fundet
+    # Falsk, når ændringen ikke rummer tekst, en bemærkning kunne gengive — en ophævelse
+    # eller en ren henvisningsændring. Så siger et manglende overlap intet.
+    checkable: bool = True
+
+    @property
+    def ok(self) -> bool:
+        return bool(self.how)
+
+    @property
+    def suspect(self) -> bool:
+        """Burde koblingen kunne bekræftes, men kan ikke?"""
+        return not self.ok and self.checkable
+
+
+WORD = re.compile(r"[0-9a-zæøå]+", re.IGNORECASE)
+
+# Målt på 49 bemærkninger, der nævner målparagraffen og derfor er sikkert koblet: alle
+# deler mindst 5 ord i træk med ændringen, medianen er 10. Tærsklen sættes over minimum,
+# fordi et kort forløb kan være almindeligt lovsprog frem for et citat. Blandt de
+# bemærkninger, der ikke nævner paragraffen, skiller det de tydeligt rigtige (9-22 ord)
+# fra dem, der ikke kan bekræftes (0-2 ord).
+SHARED_RUN_WORDS = 8
+
+QUOTED_PHRASE = re.compile(r"»([^«»]+)«")
+REAL_WORD = re.compile(r"[a-zæøå]{3,}", re.IGNORECASE)
+
+# Så mange egentlige ord skal et citat rumme, før bemærkningen kan ventes at gengive det.
+# Længde alene rækker ikke: »3. eller 4. pkt.« fylder 16 tegn, men er en henvisning, ikke
+# lovtekst. En ophævelse citerer slet intet. I begge tilfælde er der intet at genfinde,
+# og fraværet af overlap siger da intet om koblingen.
+QUOTE_WORDS = 3
+
+
+def quotes_real_text(instruction: str) -> bool:
+    """Indsætter ændringen ordlyd, som en bemærkning kunne gengive?"""
+    return any(
+        len(REAL_WORD.findall(quote)) >= QUOTE_WORDS
+        for quote in QUOTED_PHRASE.findall(instruction)
+    )
+
+
+def longest_shared_run(first: str, second: str) -> int:
+    """Længste sammenhængende ordforløb, som to tekster deler.
+
+    Bemærkningen citerer som regel den tekst, ændringen indsætter, så et langt fælles
+    forløb er et stærkt tegn på, at de hører sammen. Sammenligningen sker på ord og ikke
+    på tegn: det er både hurtigere og mindre følsomt over for tegnsætning.
+    """
+    a = [w.lower() for w in WORD.findall(first)]
+    b = [w.lower() for w in WORD.findall(second)]
+    if not a or not b:
+        return 0
+    matcher = difflib.SequenceMatcher(None, a, b, autojunk=False)
+    return matcher.find_longest_match(0, len(a), 0, len(b)).size
+
+
+@dataclass
 class Change:
     """Én ændring af den søgte paragraf, med dens forarbejde."""
 
@@ -335,17 +530,31 @@ class Change:
         parts = self.document_path.split("/")
         return (int(parts[-2]), int(parts[-1]))
 
-    def mentions(self, paragraph_id: str) -> bool:
-        """Nævner bemærkningen selv målbestemmelsen?
+    def confirm(self, paragraph_id: str) -> Confirmation:
+        """Holder koblingen mellem denne ændring og bemærkningen?
 
-        Bemærkningen citerer normalt den bestemmelse, den forklarer, så det er et godt
-        tegn på, at koblingen holder. Fraværet er dog ikke bevis for det modsatte:
-        handler hele ændringsloven om én bestemmelse, er paragrafnummeret overflødigt.
+        Kontrollen er sekundær. Punktet er allerede genfundet i lovforslaget ved
+        tekstsammenligning, og kun instrukser, der ændrer den rigtige lov, indgår. Det,
+        der efterprøves her, er, om selve *bemærkningen* handler om ændringen — den
+        hentes ved et opslag på nummer, og et forskudt opslag ville ellers ikke ses.
         """
         if not self.note.found:
-            return False
+            # Uden bemærkning er der ingen kobling at efterprøve. Manglen er allerede
+            # oplyst gennem `note.problem` og skal ikke tælles med som mistanke.
+            return Confirmation(checkable=False)
+
         flat = re.sub(r"\s+", "", self.note.text).upper()
-        return f"§{paragraph_id.upper()}" in flat
+        if f"§{paragraph_id.upper()}" in flat:
+            return Confirmation(f"bemærkningen nævner § {paragraph_id}")
+
+        run = longest_shared_run(self.text, self.note.text)
+        if run >= SHARED_RUN_WORDS:
+            return Confirmation(f"bemærkningen gengiver {run} ord i træk fra ændringen")
+        return Confirmation(checkable=quotes_real_text(self.text))
+
+    def mentions(self, paragraph_id: str) -> bool:
+        """Bevaret navn for den samlede kontrol."""
+        return self.confirm(paragraph_id).ok
 
 
 @dataclass
@@ -360,6 +569,9 @@ class History:
     reached_end: bool = False  # kæden løb tør for led, ikke for skridt
     problems: list[str] = field(default_factory=list)  # svaret mangler noget
     notices: list[str] = field(default_factory=list)  # noget usædvanligt blev håndteret
+    # Står paragraffen i den valgte lovbekendtgørelse? Uden dette svarer en paragraf,
+    # der ikke findes, præcis som en paragraf, der aldrig er ændret: med ingenting.
+    paragraph_exists: bool = True
 
     @property
     def by_place(self) -> dict[str, list[Change]]:
@@ -460,6 +672,21 @@ def paragraph_history(
     law_name = lex_dania.law_name_of(lex_dania.fetch_metadata(start))
     history = History(law_name=law_name, paragraph_id=wanted, start=start)
 
+    # Lex Danias localId staves ikke ens fra lov til lov: ligningsloven skriver "9C",
+    # personskatteloven "8a". Sammenligningen må derfor være uafhængig af versaler.
+    present = {
+        provision.paragraph_id.upper()
+        for provision in lex_dania.extract_provisions(target_xml)
+    }
+    if wanted not in present:
+        history.paragraph_exists = False
+        history.problems.append(
+            f"§ {paragraph_id.strip()} står ikke i {start}. Findes der alligevel "
+            "ændringer nedenfor, er bestemmelsen ophævet undervejs; er der ingen, er "
+            "det tomme svar udtryk for, at paragraffen ikke blev fundet — ikke for at "
+            "den har stået uændret."
+        )
+
     seen: set[str] = set()
     current, current_xml = start, target_xml
     current_amendments = lex_dania.consolidated_amendments(target_xml)
@@ -467,9 +694,16 @@ def paragraph_history(
     for _ in range(max_steps):
         announce(f"Gennemgår {current} ({len(current_amendments)} ændringslove)")
         if not current_amendments:
-            # En lovbekendtgørelse uden indarbejdede ændringer findes stort set ikke.
-            # Er listen tom, kunne indledningen ikke læses, og hele perioden forsvinder.
-            history.problems.append(f"{current}: ingen læselig liste over ændringer")
+            # En lovbekendtgørelse uden indarbejdede ændringer er sjælden, men findes:
+            # en ren genudsendelse retter en fejl i den forrige uden at tilføje noget.
+            # Kun når listen mangler *uden* den forklaring, er perioden gået tabt.
+            if lex_dania.restates_only(current_xml):
+                history.notices.append(
+                    f"{current} indarbejder ingen nye ændringslove. Den er udsendt for at "
+                    "rette den forrige bekendtgørelse, og der mangler derfor intet."
+                )
+            else:
+                history.problems.append(f"{current}: ingen læselig liste over ændringer")
 
         # Bekendtgørelsens liste opregner ændringer af den forrige bekendtgørelse, så
         # det er dennes changed_by, der kan afgøre et årstal, listen har skrevet forkert.

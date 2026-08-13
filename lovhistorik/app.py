@@ -28,10 +28,36 @@ DEFAULT_ELI = "eli/lta/2025/1500"
 DEFAULT_LAW = "ligningslov"
 
 # Love, hvor kæden er kørt igennem og målt. Andre kan indtastes frit.
+# Et kendt holdepunkt pr. lov — ikke nødvendigvis den nyeste udgave. Appen følger selv
+# `eli:consolidated_by` frem til den seneste bekendtgørelse, så listen ikke forælder, når
+# Skatteministeriet udsender en ny. Da kontrollen blev bygget, var to af posterne allerede
+# overhalet, uden at det kunne ses.
+#
+# Stierne er fundet ved at spørge samlelovene LOV 679/2023 og LOV 1563/2023, hvilke love de
+# ændrer, ikke skrevet efter hukommelsen. Bemærk at ejendomsavancebeskatningsloven i
+# metadata hedder "lov om beskatning af fortjeneste ved afståelse af fast ejendom".
 KNOWN_LAWS = {
-    "Ligningsloven (LBK 1500/2025)": "eli/lta/2025/1500",
-    "Afskrivningsloven (LBK 1222/2025)": "eli/lta/2025/1222",
-    "Skatteindberetningsloven (LBK 1059/2025)": "eli/lta/2025/1059",
+    "Ligningsloven": "eli/lta/2025/1500",
+    "Kildeskatteloven": "eli/lta/2024/460",
+    "Selskabsskatteloven": "eli/lta/2025/279",
+    "Personskatteloven": "eli/lta/2021/1284",
+    "Afskrivningsloven": "eli/lta/2025/1222",
+    "Aktieavancebeskatningsloven": "eli/lta/2025/1098",
+    "Kursgevinstloven": "eli/lta/2025/1176",
+    "Ejendomsavancebeskatningsloven": "eli/lta/2019/132",
+    "Pensionsbeskatningsloven": "eli/lta/2024/1243",
+    "Virksomhedsskatteloven": "eli/lta/2021/1836",
+    "Dødsboskatteloven": "eli/lta/2019/426",
+    "Fondsbeskatningsloven": "eli/lta/2025/207",
+    "Skatteforvaltningsloven": "eli/lta/2024/1053",
+    "Skattekontrolloven": "eli/lta/2024/12",
+    "Skatteindberetningsloven": "eli/lta/2025/1059",
+    "Opkrævningsloven": "eli/lta/2024/1040",
+    "Ejendomsvurderingsloven": "eli/lta/2023/1510",
+    "Tinglysningsafgiftsloven": "eli/lta/2025/27",
+    "Arbejdsmarkedsbidragsloven": "eli/lta/2020/121",
+    "Aktiesparekontoloven": "eli/lta/2025/281",
+    "Konkursskatteloven": "eli/lta/2019/353",
     "Anden lov — indtast selv": "",
 }
 
@@ -56,6 +82,13 @@ def load_history(eli: str, paragraph: str, steps: int, _progress=None) -> forarb
 @st.cache_data(show_spinner=False)
 def load_chain(eli: str) -> list[forarbejder.Consolidation]:
     return forarbejder.consolidation_chain(eli)
+
+
+# Kort levetid, ikke ubegrænset: en ny lovbekendtgørelse skal slå igennem i en kørende
+# app, men opslaget koster netværkskald og skal ikke gentages ved hvert klik.
+@st.cache_data(show_spinner="Kontrollerer, om der er kommet en nyere udgave …", ttl=21600)
+def load_newest(eli: str) -> tuple[str, list[str]]:
+    return lex_dania.newest_consolidation(eli)
 
 
 @st.cache_data(show_spinner=False)
@@ -85,6 +118,23 @@ def render_history_tab() -> None:
         st.info("Angiv en ELI-sti.")
         return
     newest = newest.strip().strip("/")
+
+    # Holdepunktet i listen er ikke nødvendigvis lovens seneste udgave. Kommer der en ny
+    # bekendtgørelse, ville et fast opslag tavst svare om en forældet retstilstand.
+    try:
+        latest, skipped_forward = load_newest(newest)
+    except lex_dania.FetchError as error:
+        st.warning(
+            f"Kunne ikke kontrollere, om der findes en nyere udgave end {newest}: {error}. "
+            "Svaret bygger på den kendte udgave og kan være forældet."
+        )
+        latest, skipped_forward = newest, []
+    if skipped_forward:
+        st.caption(
+            f"Der er kommet {len(skipped_forward)} nyere udgave"
+            f"{'r' if len(skipped_forward) > 1 else ''} siden {newest}. Bruger {latest}."
+        )
+    newest = latest
 
     try:
         chain = load_chain(newest)
@@ -182,6 +232,15 @@ def render_history_tab() -> None:
                 st.info(notice)
 
     if not history.changes:
+        if not history.paragraph_exists:
+            # Det tomme svar må ikke læses som "bestemmelsen har stået uændret".
+            st.error(
+                f"§ {history.paragraph_id} blev ikke fundet i {history.start}, og der er "
+                "heller ingen ændringer. Svaret er altså tomt, fordi paragraffen ikke "
+                "findes — ikke fordi den er uændret. Kontrollér nummeret, eller vælg en "
+                "udgave, hvor bestemmelsen fandtes."
+            )
+            return
         st.info(
             f"§ {history.paragraph_id} er ikke ændret i den del af kæden, vi kan nå. "
             "Det betyder ikke, at bestemmelsen er uden forarbejder — de ligger da før "
@@ -225,15 +284,30 @@ def render_history_tab() -> None:
 
             if not change.note.found:
                 st.warning(f"Ingen bemærkning: {change.note.source}")
+                # Kom punktet ved ændringsforslag, ved vi præcis hvor bemærkningen står,
+                # selv om vi ikke kan hente den. Henvisningen er langt mere værd end
+                # beskeden om, at der intet er.
+                stage = change.note.committee
+                if stage and stage.report_url:
+                    st.link_button(f"Åbn {stage.report_title}", stage.report_url)
             else:
                 kind = ("bemærkning til netop dette nummer" if change.note.precise
                         else "bemærkning til hele ændringsparagraffen — intet 'Til nr.'")
                 st.markdown(f"**Specielle bemærkninger** · {change.note.source} · {kind}")
-                if not change.mentions(history.paragraph_id):
+                confirmation = change.confirm(history.paragraph_id)
+                if confirmation.ok:
+                    st.caption(f"Koblingen er bekræftet: {confirmation.how}.")
+                elif confirmation.suspect:
+                    st.warning(
+                        f"Koblingen kunne ikke bekræftes. Ændringen indsætter tekst, som "
+                        f"bemærkningen burde gengive, men den nævner hverken "
+                        f"§ {history.paragraph_id} eller ændringens ordlyd. Bør efterses."
+                    )
+                else:
                     st.caption(
-                        f"Bemærkningen nævner ikke § {history.paragraph_id} ordret. "
-                        "Det er ofte fint, når hele ændringsloven handler om denne ene "
-                        "bestemmelse, men koblingen er mindre sikker."
+                        "Koblingen kan ikke efterprøves: ændringen ophæver eller "
+                        "omnummererer uden at indsætte tekst, så der er intet at genfinde "
+                        "i bemærkningen."
                     )
                 st.write(change.note.text)
 

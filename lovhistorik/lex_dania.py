@@ -34,7 +34,13 @@ DELAY_SECONDS = 1.0
 # store dokumenter. Den var 8 MB, hvilket huggede lovforslag L 88 (2022-23) over midt i
 # et element; den afkortede fil blev gemt i cachen og gjorde forslagets bemærkninger
 # permanent utilgængelige. Størstedelen af det, der fylder, er indlejret formatering.
-MAX_BYTES = 64_000_000
+#
+# 64 MB var stadig for lidt: LOV 1489/2024 fylder 85,4 MB og ændrer skatteforvaltningsloven
+# to steder, så to bemærkninger forsvandt. Prisen for at læse den er målt og er høj — 3
+# sekunder at parse, spids 1,1 GB hukommelse under udtrækket — men den betales sjældent.
+# Hæves grænsen yderligere, bør `extract_instructions` skrives om til `iterparse`, for
+# hukommelsen vokser med dokumentet, ikke med det, vi leder efter.
+MAX_BYTES = 128_000_000
 
 CACHE_DIRECTORY = pathlib.Path(__file__).with_name(".cache")
 
@@ -89,11 +95,47 @@ CONTEXT = build_context()
 
 
 class FetchError(RuntimeError):
-    """Netværks-, TLS- eller HTTP-fejl ved hentning fra Retsinformation."""
+    """Netværks-, TLS- eller HTTP-fejl ved hentning fra Retsinformation.
+
+    `status` er HTTP-koden, når der kom et svar, ellers None. Forskellen har betydning:
+    404 betyder, at dokumentet ikke findes, mens en afbrudt forbindelse intet siger om,
+    hvad der ligger i den anden ende. Kun det første må bruges som bevis.
+    """
+
+    def __init__(self, message: str, status: int | None = None):
+        super().__init__(message)
+        self.status = status
+
+
+# Et forbigående svigt må ikke blive til et fagligt svar. Uden genforsøg gav to ens
+# opslag på ligningslovens § 16 henholdsvis 48 og 49 bemærkninger, fordi én hentning
+# faldt undervejs og blev til "kunne ikke hentes". Ventetiden fordobles mellem forsøgene.
+RETRY_ATTEMPTS = 3
+RETRY_PAUSE_SECONDS = 1.5
+
+# 5xx er serverens eget svigt og kan gå over. 4xx er et svar om, at forespørgslen er
+# forkert, og den bliver ikke rigtigere af at blive gentaget.
+def _worth_retrying(error: "FetchError") -> bool:
+    return error.status is None or error.status >= 500
 
 
 def fetch(url: str, accept: str | None = None) -> tuple[bytes, str]:
-    """Hent en URL. Returnerer (indhold, content-type) eller kaster FetchError."""
+    """Hent en URL. Returnerer (indhold, content-type) eller kaster FetchError.
+
+    Forbigående fejl genforsøges. Det er ikke en bekvemmelighed: uden genforsøg afhænger
+    svaret af netværkets luner, og to ens spørgsmål kan give forskellige svar.
+    """
+    for attempt in range(RETRY_ATTEMPTS):
+        try:
+            return _fetch_once(url, accept)
+        except FetchError as error:
+            if attempt == RETRY_ATTEMPTS - 1 or not _worth_retrying(error):
+                raise
+            time.sleep(RETRY_PAUSE_SECONDS * (2**attempt))
+    raise AssertionError("uopnåelig")  # løkken vender altid tilbage eller kaster
+
+
+def _fetch_once(url: str, accept: str | None = None) -> tuple[bytes, str]:
     headers = {"User-Agent": USER_AGENT}
     if accept:
         headers["Accept"] = accept
@@ -105,10 +147,13 @@ def fetch(url: str, accept: str | None = None) -> tuple[bytes, str]:
             # et helt dokument og forsvinder ellers ind i cachen.
             body = response.read(MAX_BYTES + 1)
             if len(body) > MAX_BYTES:
-                raise FetchError(f"Svaret overstiger {MAX_BYTES} bytes for {url}")
+                # Et for stort svar bliver ikke mindre af at blive hentet igen.
+                raise FetchError(f"Svaret overstiger {MAX_BYTES} bytes for {url}", status=413)
             return body, response.headers.get("Content-Type", "")
     except urllib.error.HTTPError as http_error:
-        raise FetchError(f"HTTP {http_error.code} for {url}") from http_error
+        raise FetchError(
+            f"HTTP {http_error.code} for {url}", status=http_error.code
+        ) from http_error
     except (urllib.error.URLError, ssl.SSLError, TimeoutError, OSError) as error:
         raise FetchError(f"{type(error).__name__}: {error}") from error
 
@@ -217,8 +262,18 @@ CONSOLIDATED_AMENDMENT = re.compile(
 # bekendtgørelse. LBK 42/2023 skriver "med de ændringer der følger af" uden komma, og
 # et krav om kommaet gjorde hele perioden juni 2021 – oktober 2022 usynlig, uden at
 # noget fejlede.
+# Det afsluttende punktum er valgfrit. Færdselslovens LBK 1320/2010 slutter opremsningen
+# uden punktum, og kravet kostede hele listen. Alternativet med punktum står først, så
+# en opremsning, der efterfølges af mere tekst, stadig standser det rigtige sted.
+# Indledningen varierer mere end ventet. Ud over komma og valget mellem "der" og "som"
+# skrives den i ental, når kun én lov er indarbejdet ("med den ændring, der følger af §
+# 6 i lov nr. 540", LBK 1192/2007), og personskattelovens LBK 143/2011 skyder et led ind:
+# "med de ændringer og tilføjelser, der følger af". Hver af de tre varianter kostede hele
+# bekendtgørelsens liste — for LBK 143/2011 var det 21 ændringslove.
 CONSOLIDATION_CLAUSE = re.compile(
-    r"med de ændringer,?\s+(?:der|som)\s+følger af(.*?)(?:\.\s*$|\.\s+[A-ZÆØÅ])", re.DOTALL
+    r"med de[nt]?\s+ændring(?:er)?(?:\s+og\s+tilføjelser)?,?\s+(?:der|som)\s+følger\s+af"
+    r"(.*?)(?:\.\s*$|\.\s+[A-ZÆØÅ]|\s*$)",
+    re.DOTALL,
 )
 
 
@@ -289,6 +344,62 @@ def _preamble_lineas(xml_bytes: bytes) -> list[ElementTree.Element]:
     return blocks
 
 
+# En fortsættelse af opremsningen begynder, hvor sætningen blev brudt: med resten af en
+# dato, med den næste lovhenvisning, eller med bindeordet foran den sidste.
+CONTINUES_LIST = re.compile(r"^\s*(?:\d|§|og\s+§|og\s+lov\s+nr\.|lov\s+nr\.)")
+
+# Et punktum, der hører til en forkortelse, må ikke fjernes ved sammenkædningen.
+# Ombrydningen falder både efter "af." (hvor punktummet er en artefakt) og efter "lov
+# nr." (hvor det er en del af henvisningen), og de to skal behandles forskelligt.
+ABBREVIATION_END = re.compile(r"\b(?:nr|jf|stk|pkt|litra|kap)\.$")
+
+
+def _join_continuations(texts: list[str], start: int, limit: int = 4) -> str:
+    """Saml en indledning, der er brudt over flere tekstblokke.
+
+    Færdselslovens LBK 1047/2011 bryder opremsningen midt i en dato: første blok slutter
+    med "§ 2 i lov nr. 1338 af.", og den næste begynder "19. december 2008, § 106 i lov
+    nr. 1537 …". Læses blokkene hver for sig, standser opremsningen ved det falske
+    punktum, og hele listen går tabt uden at noget fejler.
+
+    Kun blokke, der tydeligt fortsætter opremsningen, føjes til. Det er afgørende: efter
+    opremsningen står som regel sætninger om ændringer, der udtrykkeligt *ikke* er
+    indarbejdet, og de må under ingen omstændigheder havne i listen.
+    """
+    joined = texts[start]
+    for text in texts[start + 1 : start + 1 + limit]:
+        if not CONTINUES_LIST.match(text):
+            break
+        tail = joined.rstrip()
+        if tail.endswith(".") and not ABBREVIATION_END.search(tail):
+            tail = tail[:-1]
+        joined = f"{tail} {text.lstrip()}"
+    return joined
+
+
+# En afbrudt indledning tages op igen med et komma: kursgevinstlovens LBK 140/2008 slutter
+# blokken ved lovens navn og fortsætter to bemærkningsblokke senere med ", jf.
+# lovbekendtgørelse nr. 978 …, med de ændringer, der følger af …".
+RESUMED_CLAUSE = re.compile(r"^\s*,\s*jf\.\s*lovbekendtgørelse", re.IGNORECASE)
+
+
+def _clause_after_interruption(texts: list[str], start: int, limit: int = 5):
+    """Find opremsningen, når indledningen er afbrudt af indskudte bemærkninger.
+
+    Sammenkædning virker kun på blokke, der følger umiddelbart efter hinanden. Her står
+    der andet imellem, så fortsættelsen må genkendes på sin egen form.
+
+    Kravet om det indledende komma og "jf. lovbekendtgørelse" er ikke pynt. De indskudte
+    blokke handler netop om ændringer, der *ikke* er indarbejdet — "Lovbekendtgørelsen
+    indeholder ikke de ændringer, der følger af § 6 i lov nr. 1534 …" — og en løsere
+    søgning ville føje netop de love til listen. Det ville være værre end at mangle dem.
+    """
+    for text in texts[start + 1 : start + 1 + limit]:
+        if RESUMED_CLAUSE.match(text):
+            return CONSOLIDATION_CLAUSE.search(text)
+    return None
+
+
 def consolidated_amendments(xml_bytes: bytes) -> list[ConsolidatedAmendment]:
     """Læs, hvilke ændringer en lovbekendtgørelse selv siger den indeholder.
 
@@ -303,11 +414,14 @@ def consolidated_amendments(xml_bytes: bytes) -> list[ConsolidatedAmendment]:
     Returnerer en tom liste, hvis sætningen ikke findes. Kalderen må da selv afgøre,
     hvad der skal afspilles — vi opfinder ikke en liste.
     """
-    for element in _preamble_lineas(xml_bytes):
-        text = element_text(element)
+    texts = [element_text(element) for element in _preamble_lineas(xml_bytes)]
+    for index, text in enumerate(texts):
         if "bekendtgøres" not in text.lower():
             continue
+        text = _join_continuations(texts, index)
         clause = CONSOLIDATION_CLAUSE.search(text)
+        if not clause:
+            clause = _clause_after_interruption(texts, index)
         if not clause:
             continue
 
@@ -888,6 +1002,79 @@ def parse_target(text: str) -> Target:
     target.sentence_numbers = sorted(set(numbers))
 
     return target
+
+
+# "… jf. lovbekendtgørelse nr. 27 af 13. januar 2025." — sætningen slutter ved
+# henvisningen, uden at der følger en opremsning af indarbejdede ændringer.
+RESTATEMENT_ONLY = re.compile(
+    r"jf\.\s*lovbekendtgørelse\s+nr\.\s*\d+\s+af\s+\d+\.?\s*\w+\s+\d{4}\s*\.\s*$",
+    re.IGNORECASE,
+)
+
+
+def restates_only(xml_bytes: bytes) -> bool:
+    """Er bekendtgørelsen en ren genudsendelse uden nye ændringslove?
+
+    Tinglysningsafgiftslovens LBK 307/2025 indarbejder ingen ændringer. Den er udsendt,
+    fordi to ændringer "ved en fejl ikke [var] indarbejdet korrekt" i LBK 27/2025, og
+    indledningen slutter derfor ved henvisningen til den forrige bekendtgørelse.
+
+    Sondringen er nødvendig, fordi en tom liste ellers rapporteres som en indledning, vi
+    ikke kunne læse. Det er en falsk alarm, og falske alarmer er ikke harmløse: de lærer
+    den, der læser svaret, at se bort fra advarsler, og så overses den ægte.
+    """
+    for element in _preamble_lineas(xml_bytes):
+        text = element_text(element)
+        if "bekendtgøres" not in text.lower():
+            continue
+        if CONSOLIDATION_CLAUSE.search(text):
+            return False
+        return bool(RESTATEMENT_ONLY.search(text.strip()))
+    return False
+
+
+def newest_consolidation(document_path: str, max_steps: int = 12) -> tuple[str, list[str]]:
+    """Følg en lov frem til dens nyeste lovbekendtgørelse.
+
+    En håndholdt liste over lovbekendtgørelser forælder, så snart Skatteministeriet
+    udsender en ny, og den, der slår op, får svar om en forældet udgave uden at vide det.
+    Ved at følge `eli:consolidated_by` fremad behøver kun ét kendt holdepunkt at stå fast.
+
+    Kun bekendtgørelser af *samme* lov tæller. Det er ikke en formalitet: på en
+    ændringslov peger `consolidated_by` på enhver bekendtgørelse, der har indarbejdet den,
+    og de er bekendtgørelser af helt andre love. Uden navnekontrollen ville et opslag på
+    en ændringslov ende i en tilfældig anden lov.
+
+    `fetch_metadata` har ingen diskcache, så en ny udgave opdages med det samme.
+
+    Returnerer (nyeste sti, mellemliggende skridt). Er stien allerede den nyeste, er
+    listen tom. Fejler et opslag undervejs, returneres det, vi nåede — et netværkssvigt
+    må ikke forhindre opslaget, kun gøre det mindre aktuelt.
+    """
+    current = document_path.strip("/")
+    steps: list[str] = []
+    for _ in range(max_steps):
+        try:
+            metadata = fetch_metadata(current)
+        except FetchError:
+            return (current, steps)
+        wanted_name = law_name_of(metadata)
+        newer: list[str] = []
+        for uri in metadata["consolidated_by"]:
+            path = document_path_of(str(uri))
+            if path in steps or path == current:
+                continue
+            try:
+                other = fetch_metadata(path)
+            except FetchError:
+                continue
+            if law_name_of(other) == wanted_name:
+                newer.append(path)
+        if not newer:
+            return (current, steps)
+        current = newer[-1]
+        steps.append(current)
+    return (current, steps)
 
 
 def amending_documents(eli_uri: str) -> list[str]:

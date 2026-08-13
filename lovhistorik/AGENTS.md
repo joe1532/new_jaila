@@ -50,6 +50,33 @@ Disse punkter er målt og har kostet tid at finde ud af. De må ikke gættes om 
   ændringer i indledningen ("med de ændringer, der følger af § 10 i lov nr. 1454 …"), og
   den angiver tilmed hvilken paragraf i hver ændringslov. Brug `consolidated_amendments`.
   Uden den ramte skatteindberetningsloven kun 1 af 10 enheder; med den 1 af 1.
+- **Indledningen står ikke nødvendigvis i én tekstblok.** Færdselslovens bekendtgørelser
+  bryder opremsningen vilkårligt — midt i en dato, midt i "lov nr." — og læses blokkene
+  hver for sig, standser listen ved det falske punktum, og hele perioden forsvinder
+  lydløst. `_join_continuations` samler dem. Grænsen for sammenkædningen er ikke til
+  forhandling: lige efter listen står de ændringer, der udtrykkeligt *ikke* er
+  indarbejdet, og de må aldrig med. Hverken det afsluttende punktum eller "§ N i" kan
+  antages at være der.
+- **En måling på ét ressortområde måler ressortet, ikke motoren.** De tre første testlove
+  var alle skattelove, og de viste 0 lækager. Den første lov uden for området viste 9.
+  Nye målinger skal derfor tages på tværs af ressort, ikke på flere love af samme slags.
+- **Betænkninger kan ikke hentes, og der skal ikke bygges omgåelser.** De udgives kun som
+  PDF på www.ft.dk, som er beskyttet af Cloudflare og svarer 403 på alt programmatisk —
+  også HTML-sider. Beskyttelsen er tilsigtet. Kom et ændringspunkt ved ændringsforslag,
+  oplyses betænkningens titel og link, så brugeren kan læse den selv.
+- **En formodning skal slås op, ikke gentages.** Svaret sagde "kom formentlig ved
+  ændringsforslag" uden at se efter. Findes der intet ændringsforslag på sagen, er
+  forklaringen forkert, og svaret skal sige, at årsagen er ukendt. Et gæt, der rammer syv
+  ud af otte gange, er værre end et opslag, for den ottende kan ikke skelnes fra de andre.
+- **"Ubekræftet" og "mistænkelig" er ikke det samme.** En ophævelse eller en ren
+  henvisningsændring indsætter ingen ordlyd, som bemærkningen kunne gengive, så et
+  manglende overlap siger intet om koblingen. Kun når ændringen indsætter rigtig tekst,
+  er et manglende overlap en grund til at se efter. Blandes de to, drukner de ægte fejl
+  i forventelige tilfælde — det var netop derfor, målet før pegede på 8 og nu på 1.
+- **Tærskler vælges på en måling, ikke på fornemmelse.** Grænsen på 8 fælles ord bygger
+  på, at ingen af 49 sikkert koblede bemærkninger deler under 5 ord med deres ændring.
+  Ændres tærsklen, skal målingen tages om. En falsk bekræftelse er værre end en falsk
+  alarm: den får en forkert kobling til at se efterprøvet ud.
 
 ## Ufravigelige regler for motoren
 
@@ -221,6 +248,49 @@ forsvinder sådanne love lydløst. Paragraf `0` betyder hele loven.
 Den sidste linje er den vigtige. Bemærkningen citerer selv den bestemmelse, den
 forklarer, så nævner den ikke målet, er koblingen sandsynligvis forkert. Stiger det tal,
 er noget gået galt i koblingen — undersøg det frem for at sænke kravet.
+
+**Et tomt svar skal kunne skelnes fra et fejlslagent opslag.** "Paragraffen er ikke
+ændret" og "paragraffen findes ikke" er modsatte svar for en jurist, og de så ens ud.
+Kontrollér, at bestemmelsen står i den valgte bekendtgørelse, og sig det, når den ikke gør.
+Sammenlign uden hensyn til versaler: `localId` er `9C` i ligningsloven og `8a` i
+personskatteloven.
+
+**Et forkert årstal er farligst, når det ser rigtigt ud.** "af 26. december 2012" om en lov
+fra 2013 består enhver rimelighedsprøve og henter forarbejder til en anden lov. Efterprøv
+derfor alle årstal mod listen, ikke kun de umulige. Men ret kun, når rettelsen er bevist:
+lovnumre genbruges hvert år, så der kræves både præcis én kandidat i listen og et 404 på
+den angivne sti. Et fravær fra listen beviser intet — listen kan være ufuldstændig.
+
+**Uden genforsøg afhænger svaret af netværket.** Samme opslag gav 48 og 49 bemærkninger,
+fordi én hentning faldt. Genforsøg det, der kan gå over (5xx, netværksfejl), og kun det:
+et 404 bliver ikke et andet svar, og et manglende led er normalt i en kæde, så ventetid dér
+koster på hvert opslag.
+
+**Indledningen kan være afbrudt, ikke bare ombrudt.** Kursgevinstlovens LBK 140/2008 skyder
+to blokke ind midt i sætningen og tager den op igen med ", jf. lovbekendtgørelse …". Når du
+leder efter fortsættelsen, så husk, at de indskudte blokke handler om ændringer, der
+*ikke* er indarbejdet. En løs søgning føjer dem til listen, og det er værre end at mangle
+dem. Sætningen varierer også i tal og indskud: "med den ændring", "med de ændringer og
+tilføjelser".
+
+**Mål på ressortet, ikke på tre love.** Find lovene ved at spørge en samlelov, hvad den
+ændrer (`probe.py laws eli/lta/2023/679`), frem for at skrive listen selv. Målingen på 19
+skattelove afslørede 25 lækager, som tre love aldrig ville have vist.
+
+**Hardkod aldrig, hvad der er lovens nyeste udgave.** To poster i applisten var overhalet
+af nye lovbekendtgørelser, uden at det kunne ses. Gem et holdepunkt, og følg
+`eli:consolidated_by` fremad. Følg kun bekendtgørelser af *samme* lov: på en ændringslov
+peger relationen på enhver bekendtgørelse, der har indarbejdet den, og fører ellers ud i en
+tilfældig anden lov.
+
+**Kortnavne er ikke en pålidelig nøgle.** Ejendomsavancebeskatningsloven hedder i metadata
+"lov om beskatning af fortjeneste ved afståelse af fast ejendom", og kortformen findes
+ikke. Søg på titlen, eller find loven gennem `eli:changes` på en lov, der ændrer den.
+
+**En tom liste over ændringer er ikke altid en fejl.** En bekendtgørelse kan være udsendt
+alene for at rette den forrige; så slutter indledningen ved henvisningen, og der *er*
+ingen nye ændringer. Rapportér det som en oplysning, ikke som en advarsel. Falske alarmer
+er ikke harmløse — de lærer læseren at se bort fra advarsler, og så overses den ægte.
 
 ## Om TLS
 
