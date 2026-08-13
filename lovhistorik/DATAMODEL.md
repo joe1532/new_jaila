@@ -228,6 +228,80 @@ fra 90 kr. til 110 kr." Den nævner aldrig "§ 9 C", fordi hele ændringsloven k
 den ene bestemmelse, og paragrafnummeret derfor er overflødigt. Et lavt tal skal
 undersøges, ikke bortforklares — men enkelttilfælde skal læses, før de tælles som fejl.
 
+### At lede efter tavse fejl
+
+Fejlene i forarbejdssøgningen larmer ikke. Der kommer bare færre eller forkerte
+resultater, og uden en facitliste ser et mangelfuldt svar ud som et fuldstændigt. At
+§ 33 A manglede sin vigtigste forarbejde blev kun opdaget, fordi nogen tilfældigvis
+vidste det. Det er ikke en holdbar kvalitetssikring.
+
+`probe.py daekning <lbk> [led]` måler derfor bredden i stedet for enkelttilfælde. Hele
+kæden gennemløbes én gang, alle ændringspunkter indekseres efter hvilken paragraf de
+rammer, og lovens paragraffer bedømmes samlet. Tre kontroller falder ud af det:
+
+1. **Paragraffer uden fund.** En bogstavparagraf ("§ 8 X") kan ikke stamme fra lovens
+   oprindelige tekst — bogstavet opstår netop, fordi bestemmelsen er skudt ind mellem to
+   eksisterende. Findes den ikke i kæden, er den enten indsat før 2007 eller overset.
+2. **Paragraffer der kun findes via indsat tekst.** For ligningsloven er det 10 af 171,
+   altså 6 %. Alle er ægte ("Efter § 16 J indsættes: § 16 K …"), og alle var usynlige,
+   før indsættelser blev læst med.
+3. **Lækagetest mod `eli:changed_by`.** Kæden bygger alene på lovbekendtgørelsernes egne
+   lister. `changed_by` er en uafhængig kilde til, hvilke love der ændrede hvert led, og
+   de burde alle dukke op senere i kæden.
+
+Lækagetesten fandt straks noget. Ligningsloven: 28 love uden for kæden. To slags
+udeladelser er legitime og kan afgøres af data — loven er nyere end bekendtgørelsen, eller
+bekendtgørelsen oplyser selv, at den ikke er indarbejdet ("da ændringen efterfølgende er
+ophævet"). Resten var fejl.
+
+### Tre tavse fejl, fundet af målingen
+
+**Kommaet i indledningen.** Mønsteret krævede "med de ændringer, der følger af". LBK
+42/2023 skriver "med de ændringer der følger af" uden komma. Konsekvens: hele perioden
+juni 2021 til oktober 2022 var usynlig for forarbejdssøgningen — 16 ændringslove og 35
+ændringspunkter — uden at noget fejlede. Nu accepteres både med og uden komma, og både
+"der" og "som".
+
+**Punktummet i datoen.** Samme bekendtgørelse skriver "lov nr. 2194 af 30 november 2021"
+uden punktum efter dagen. Mønsteret krævede det, så den ene lov faldt ud. En manglende
+tegnsætning må ikke koste en lovs ændringer.
+
+Begge er nu dækket af en advarsel: et led i kæden uden læselig liste er næsten altid en
+ulæst indledning, ikke en bekendtgørelse uden ændringer. Efter rettelserne står
+ligningsloven med 227 ændringslove mod 211, og af 11 love uden for kæden er 10 forklaret
+af data. Den sidste rammer 2006, hvor Lex Dania-opmærkningen slipper op. Afskrivningsloven
+og skatteindberetningsloven har nul uforklarede.
+
+### Lovforslagets paragrafnumre er ikke lovens
+
+Den alvorligste fejl gav ikke for få svar, men forkerte. Bemærkningerne slås op på
+"Til § N, Til nr. M", og vi brugte den vedtagne lovs numre. De er ikke de samme som
+lovforslagets: ligningsloven er § 6 i LOV 84/2019, men § 5 i lovforslag L 114.
+Bemærkningerne til § 7 P handlede derfor om personskatteloven og aktieavancebeskatnings-
+loven. Et forkert svar, der ser rigtigt ud, er værre end intet svar.
+
+Punktet genfindes nu i lovforslaget på sin egen tekst, og forslagets numre bruges til
+opslaget. Teksten redigeres let undervejs — forslaget skriver "som nyt stk. 7", loven "som
+nyt stykke" — så der måles lighed med tærskel 0,90 i stedet for at kræve identitet.
+
+En faldgrube undervejs er værd at huske: `difflib.SequenceMatcher` har som standard
+`autojunk=True`, som for strenge over 200 tegn behandler hyppige tegn som støj. To
+instrukser, der kun adskilte sig ved "el.lign." mod "eller lignende", fik lighed 0,74 i
+stedet for 0,97. Sammenligner man lange tekster, skal `autojunk=False` sættes.
+
+| Måling | Før | Efter |
+| --- | --- | --- |
+| Ligningsloven, punkter med bemærkning | 99 af 104 | 96 af 104 |
+| — heraf bekræftet af teksten | 92,9 % | 95,8 % |
+| Skatteindberetningsloven (LBK 15/2024) | 36 af 40 | 38 af 40 |
+| § 7 P, bemærkninger der nævner § 7 P | 4 af 12 | 12 af 12 |
+| § 9 C | 14 af 14 | 17 af 18 |
+
+Tallet for ligningsloven **falder** med tre, og det er meningen: de tre var forkerte
+koblinger, som nu afvises. Kan et punkt ikke genfindes i lovforslaget, er det formentlig
+kommet til ved et ændringsforslag under behandlingen, og bemærkningen står da i
+betænkningen, som vi ikke henter.
+
 ### En indsat paragraf står ikke som mål for sin egen indsættelse
 
 § 33 A så længe ud til kun at være ændret én gang, tilbage til 2016. Det var forkert, og

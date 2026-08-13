@@ -136,15 +136,39 @@ Forarbejdskoblingen måles med:
 
 ```bash
 python lovhistorik/probe.py motiver eli/lta/2025/1500 9C
-python lovhistorik/probe.py motiver eli/lta/2025/1500 33A
+python lovhistorik/probe.py motiver eli/lta/2025/1500 7P 8
+python lovhistorik/probe.py motiver eli/lta/2025/1500 33A 14
+python lovhistorik/probe.py motiver eli/lta/2025/1500 alle
 python lovhistorik/probe.py motiver eli/lta/2024/15 alle
 ```
 
-Forventet: 14 ændringer af § 9 C i kæden tilbage til 2019, alle med bemærkning og alle
-bekræftet. For § 33 A findes kun én, i LOV 871/2020 — en bestemmelse kan sagtens være
-uændret gennem flere lovbekendtgørelser, og "ikke ændret" må aldrig forveksles med
-"ingen forarbejder". Den brede måling giver 99 af 104 punkter med bemærkning på
-ligningsloven og 36 af 40 på skatteindberetningsloven.
+Forventet: 18 ændringer af § 9 C, hvoraf 17 nævner bestemmelsen; 12 af 12 på § 7 P; 3 af 3
+på § 33 A. Bredt: 96 af 104 punkter med bemærkning på ligningsloven (95,8 % bekræftet) og
+38 af 40 på skatteindberetningsloven. En bestemmelse kan sagtens være uændret gennem flere
+lovbekendtgørelser, og "ikke ændret" må aldrig forveksles med "ingen forarbejder".
+
+Dækning og lækage måles med:
+
+```bash
+python lovhistorik/probe.py daekning eli/lta/2025/1500 14
+python lovhistorik/probe.py daekning eli/lta/2025/1222 14
+python lovhistorik/probe.py daekning eli/lta/2025/1059 14
+```
+
+Forventet: 227 ændringslove og 768 punkter på ligningsloven, og **nul uforklarede** love i
+lækagetesten på alle tre — bortset fra den ene, der rammer 2006, hvor XML'en slipper op.
+Stiger tallet, taber kæden love, og det viser sig ikke andre steder. Advarslen "har ingen
+laeselig liste over aendringer" skal kun optræde for det ældste led.
+
+**Lovforslagets paragrafnumre er ikke lovens.** Ligningsloven er § 6 i LOV 84/2019, men
+§ 5 i lovforslag L 114. Slår man bemærkningen op på lovens numre, får man en anden
+bestemmelses bemærkning — et forkert svar, der ser rigtigt ud. Punktet skal genfindes i
+lovforslaget på sin tekst. Kan det ikke, er det formentlig kommet til ved et
+ændringsforslag, og så skal der ikke svares.
+
+**Sammenlign aldrig lange tekster med `difflib` uden `autojunk=False`.** Over 200 tegn
+behandles hyppige tegn som støj, og to næsten ens instrukser fik lighed 0,74 i stedet for
+0,97.
 
 Søgningen for én paragraf skal gå hele kæden igennem, ikke stoppe ved første ændring.
 Ældre ændringer bærer ofte fortolkningen af den oprindelige regel.

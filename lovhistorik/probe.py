@@ -15,6 +15,7 @@ inspektion er det ikke nødvendigt.
 
 from __future__ import annotations
 
+import difflib
 import json
 import re
 import ssl
@@ -787,8 +788,58 @@ def _instructions_of(amendment, law_name: str) -> list:
     return kept
 
 
-def _note_for(lex_dania, document_path: str, law_paragraph: int, item: int) -> tuple[str, bool, str]:
-    """Hent bemaerkningen til ét aendringspunkt. Returnerer (tekst, praecis, kilde)."""
+def _fingerprint(text: str) -> str:
+    """Instruksens indhold uden det ledende punktnummer, til sammenligning.
+
+    Nummeret udelades netop, fordi det er dét, der kan vaere forskudt mellem
+    lovforslag og vedtaget lov.
+    """
+    return re.sub(r"\s+", "", re.sub(r"^\s*\d+\.\s*", "", text)).lower()
+
+
+def _realign(proposed: list, instruction_text: str) -> tuple[int, int] | None:
+    """Genfind et aendringspunkt i lovforslaget, og giv forslagets egne numre.
+
+    Returnerer None, hvis punktet ikke kan genfindes. Da er det formentlig kommet til
+    ved et aendringsforslag under behandlingen, og bemaerkningen findes i betaenkningen
+    i stedet — den henter vi ikke.
+    """
+    wanted = _fingerprint(instruction_text)
+    # autojunk=False er noedvendigt: for strenge over 200 tegn behandler difflib
+    # ellers hyppige tegn som stoej, og to naesten ens instrukser fik lighed 0,74,
+    # hvor den rigtige vaerdi var 0,97. Forskellen var "el.lign." mod "eller lignende".
+    best, best_ratio = None, 0.0
+    for candidate in proposed:
+        matcher = difflib.SequenceMatcher(
+            None, _fingerprint(candidate.text), wanted, autojunk=False
+        )
+        if matcher.quick_ratio() <= best_ratio:
+            continue
+        ratio = matcher.ratio()
+        if ratio > best_ratio:
+            best, best_ratio = candidate, ratio
+
+    # Taersklen er hoej, for et forkert match giver en forkert bemaerkning, og et
+    # forkert svar er vaerre end intet svar.
+    if best is None or best_ratio < 0.90:
+        return None
+    try:
+        return (int(best.act_number), int(best.item_number.rstrip(".")))
+    except ValueError:
+        return None
+
+
+def _note_for(
+    lex_dania, document_path: str, law_paragraph: int, item: int,
+    law_name: str = "", instruction_text: str = "",
+) -> tuple[str, bool, str]:
+    """Hent bemaerkningen til ét aendringspunkt. Returnerer (tekst, praecis, kilde).
+
+    Paragrafnumrene i lovforslaget er ikke de samme som i den vedtagne lov. Slaar man
+    op paa lovens numre, faar man en tilfaeldig anden bestemmelses bemaerkning — et
+    forkert svar, der ser rigtigt ud. Punktet genfindes derfor i lovforslaget paa sin
+    tekst, og forslagets egne numre bruges til opslaget.
+    """
     number = document_path.rsplit("/", 1)[-1]
     try:
         date = lex_dania.document_date(lex_dania.fetch_document_xml(document_path))
@@ -802,18 +853,32 @@ def _note_for(lex_dania, document_path: str, law_paragraph: int, item: int) -> t
     accession = f"{period}2L{int(bill_number):05d}"
 
     try:
-        notes = lex_dania.extract_explanatory_notes(
-            lex_dania.fetch_document_xml(f"eli/ft/{accession}")
-        )
+        bill_xml = lex_dania.fetch_document_xml(f"eli/ft/{accession}")
+        notes = lex_dania.extract_explanatory_notes(bill_xml)
     except Exception:  # noqa: BLE001
         return ("", False, f"L {bill_number} kunne ikke hentes (eli/ft/{accession})")
 
+    realigned = ""
+    if law_name and instruction_text:
+        try:
+            proposed = lex_dania.extract_instructions(
+                bill_xml, f"eli/ft/{accession}", law_name
+            )
+        except Exception:  # noqa: BLE001
+            proposed = []
+        aligned = _realign(proposed, instruction_text)
+        if aligned is None:
+            return ("", False, f"L {bill_number}: punktet findes ikke i lovforslaget")
+        if aligned != (law_paragraph, item):
+            realigned = f", forslagets § {aligned[0]}, nr. {aligned[1]}"
+        law_paragraph, item = aligned
+
     note = notes.get((law_paragraph, item))
     if note is not None:
-        return (note, True, f"L {bill_number}, sag {sag_id}")
+        return (note, True, f"L {bill_number}, sag {sag_id}{realigned}")
     note = notes.get((law_paragraph, 0))
     if note is not None:
-        return (note, False, f"L {bill_number}, sag {sag_id}")
+        return (note, False, f"L {bill_number}, sag {sag_id}{realigned}")
     return ("", False, f"L {bill_number}: ingen bemaerkning til § {law_paragraph}, nr. {item}")
 
 
@@ -913,7 +978,9 @@ def _paragraph_history(
         # Bemaerkningen slaas op paa aendringslovens egen paragraf, ikke lovens.
         reference = AMENDMENT_REFERENCE.search(instruction.amendment_path)
         law_paragraph = int(reference.group(1)) if reference else 0
-        note, precise, source = _note_for(lex_dania, document, law_paragraph, item)
+        note, precise, source = _note_for(
+            lex_dania, document, law_paragraph, item, law_name, instruction.text
+        )
 
         # Tomme maal opstaar, naar den nye betegnelse er kursiveret ("indsaettes som
         # stk. 6"), og de skal ikke vises som var de selvstaendige maal.
@@ -1026,19 +1093,32 @@ def step_motiver(lbk_eli: str, paragraph_id: str, max_steps: str = "6") -> int:
         try:
             bill_xml = lex_dania.fetch_document_xml(f"eli/ft/{accession}")
             notes = lex_dania.extract_explanatory_notes(bill_xml)
+            proposed = lex_dania.extract_instructions(
+                bill_xml, f"eli/ft/{accession}", law_name
+            )
         except (lex_dania.FetchError, ElementTree.ParseError) as error:
             print(f"        lovforslaget kunne ikke hentes: {error}")
             no_bill += len(relevant)
             continue
 
         for instruction, item in relevant:
+            # Lovforslagets paragrafnumre er ikke lovens, saa punktet genfindes paa sin
+            # tekst. Uden det henter man en anden bestemmelses bemaerkning.
+            aligned = _realign(proposed, instruction.text)
+            if aligned is None:
+                no_note += 1
+                if not survey:
+                    print(f"        {instruction.amendment_path}: findes ikke i lovforslaget")
+                continue
+            bill_paragraph, item = aligned
+
             # Har paragraffen kun ét aendringspunkt, udelades "Til nr. 1" ofte, og
             # bemaerkningen staar direkte under "Til § N". Tilbagefaldet markeres, for
             # det er mindre praecist: teksten kan daekke hele paragraffen.
-            note = notes.get((amendment.paragraph, item))
+            note = notes.get((bill_paragraph, item))
             precise = note is not None
             if note is None:
-                note = notes.get((amendment.paragraph, 0))
+                note = notes.get((bill_paragraph, 0))
             if not note:
                 no_note += 1
                 if not survey:
@@ -1073,6 +1153,161 @@ def step_motiver(lbk_eli: str, paragraph_id: str, max_steps: str = "6") -> int:
         print(f"    {len(unconfirmed)} bemaerkninger naevner ikke maalbestemmelsen ({share:.1f}% bekraeftet)")
     for label in unconfirmed[:10]:
         print(f"        {label}")
+    return 0
+
+
+# En paragraf med bogstav ("§ 8 X") kan ikke stamme fra lovens oprindelige tekst.
+# Bogstavet opstaar netop, fordi bestemmelsen er skudt ind mellem to eksisterende
+# paragraffer. Findes den ikke i kaeden, er den enten indsat foer 2007, eller ogsaa
+# overser vi den — og det sidste er en tavs fejl.
+LETTERED_PARAGRAPH = re.compile(r"^\d+[A-ZÆØÅ]+$")
+
+
+def step_daekning(lbk_eli: str, max_steps: str = "8") -> int:
+    """Hvor mange af lovens paragraffer kan vi overhovedet finde forarbejder til?
+
+    Maaler bredden i stedet for at se paa én paragraf ad gangen. Hele kaeden
+    gennemloebes én gang, og alle aendringspunkter indekseres efter hvilken paragraf
+    de rammer, saa alle lovens paragraffer kan bedoemmes samtidig. Formaalet er at
+    finde tavse fejl: paragraffer, hvor soegningen svarer "ingen aendringer", uden at
+    det er sandt.
+    """
+    import xml.etree.ElementTree as ElementTree
+
+    import lex_dania
+
+    facit = lbk_eli.strip("/")
+    try:
+        target_xml = lex_dania.fetch_document_xml(facit)
+        amendments = lex_dania.consolidated_amendments(target_xml)
+        law_name = lex_dania.law_name_of(lex_dania.fetch_metadata(facit))
+        provisions = lex_dania.extract_provisions(target_xml)
+    except (lex_dania.FetchError, ElementTree.ParseError) as error:
+        print(f"Kunne ikke forberede: {error}")
+        return 1
+
+    paragraphs: list[str] = []
+    for provision in provisions:
+        if provision.paragraph_id and provision.paragraph_id not in paragraphs:
+            paragraphs.append(provision.paragraph_id)
+
+    print(f"=== {law_name} fra {facit}: {len(paragraphs)} paragraffer")
+    print(f"=== gennemloeber kaeden bagud, hoejst {max_steps} led")
+
+    # Indeks: paragraf -> liste af (lbk, dokument, instruks, ramt_som_maal).
+    touched: dict[str, list[tuple[str, str, object, bool]]] = {}
+    chain: list[str] = []
+    seen: set[str] = set()
+    current, current_xml, current_amendments = facit, target_xml, amendments
+
+    for _ in range(int(max_steps)):
+        chain.append(current)
+        # En lovbekendtgoerelse uden indarbejdede aendringer findes stort set ikke.
+        # Er listen tom, er indledningen naesten altid ikke blevet laest, og saa
+        # forsvinder hele perioden lydloest.
+        if not current_amendments:
+            print(f"--- ADVARSEL: {current} har ingen laeselig liste over aendringer")
+        for amendment in current_amendments:
+            if amendment.document_path in seen:
+                continue
+            seen.add(amendment.document_path)
+            for instruction in _instructions_of(amendment, law_name):
+                hit: set[str] = set()
+                for raw in instruction.probable_targets:
+                    label = lex_dania.parse_target(raw).paragraph_id.upper()
+                    if label:
+                        hit.add(label)
+                inserted = set(lex_dania.inserted_paragraphs(instruction.new_text))
+                for label in hit | inserted:
+                    touched.setdefault(label, []).append(
+                        (current, amendment.document_path, instruction, label in hit)
+                    )
+
+        earlier = lex_dania.previous_consolidation(current_xml)
+        if not earlier or earlier in chain:
+            break
+        try:
+            current_xml = lex_dania.fetch_document_xml(earlier)
+            current_amendments = lex_dania.consolidated_amendments(current_xml)
+        except Exception as error:  # noqa: BLE001
+            print(f"--- kunne ikke hente {earlier}: {error}")
+            break
+        current = earlier
+
+    print(f"--- kaeden: {' -> '.join(chain)}")
+    print(f"--- {len(seen)} aendringslove gennemgaaet, {sum(map(len, touched.values()))} punkter")
+    print()
+
+    found = [p for p in paragraphs if p in touched]
+    missing = [p for p in paragraphs if p not in touched]
+    share = 100.0 * len(found) / len(paragraphs) if paragraphs else 0.0
+    print(f"=== {len(found)} af {len(paragraphs)} paragraffer har mindst én aendring ({share:.1f}%)")
+
+    # Bogstavparagraffer uden fund er de mistaenkelige. En ren talparagraf kan
+    # stamme fra lovens oprindelige tekst og aldrig vaere roert siden.
+    suspect = [p for p in missing if LETTERED_PARAGRAPH.match(p)]
+    plain = [p for p in missing if not LETTERED_PARAGRAPH.match(p)]
+    print(f"    {len(plain)} uden fund er rene talparagraffer — kan vaere oprindelige")
+    print(f"    {len(suspect)} uden fund har bogstav — maa vaere indsat, saa de skal ses efter")
+    if suspect:
+        print(f"        {', '.join('§ ' + p for p in suspect)}")
+
+    # Rammer vi paragraffen kun via indsat tekst, er det praecis den fejlklasse,
+    # § 33 A afsloerede. Tallet siger, hvor meget den rettelse betyder i bredden.
+    only_inserted = [
+        p for p in found if not any(as_target for _, _, _, as_target in touched[p])
+    ]
+    print(f"    {len(only_inserted)} paragraffer findes kun via indsat tekst, ikke via maal")
+    # Instruksen vises, for moensteret kan tage fejl: en henvisning "jf. § 9 C." i ny
+    # tekst ligner en indsat paragraf. Kun teksten afgoer, om fundet er aegte.
+    for label in only_inserted:
+        _, document, instruction, _ = touched[label][0]
+        print(f"        § {label}  {document} {instruction.amendment_path}")
+        print(f"            {instruction.text[:110]}")
+
+    # Laekagetest mod en uafhaengig kilde. Kaeden bygger alene paa lovbekendtgoerelsernes
+    # egne lister; er en liste ufuldstaendig, eller peger et led forkert, taber vi love
+    # uden at opdage det. `eli:changed_by` paa hvert led siger, hvilke love der aendrede
+    # netop den bekendtgoerelse, og de burde alle vaere indarbejdet senere i kaeden.
+    print()
+    print("=== laekagetest: love i eli:changed_by, som kaeden aldrig naaede")
+
+    # To slags udeladelser er legitime, og de kan begge afgoeres af data.
+    # Lovnumre og bekendtgoerelsesnumre deler nummerserie i Lovtidende A, saa
+    # (aar, nummer) afgoer, om en lov er nyere end den nyeste bekendtgoerelse.
+    newest = (int(facit.split("/")[-2]), int(facit.split("/")[-1]))
+    excused: set[str] = set()
+    for step in chain:
+        try:
+            excused.update(
+                lex_dania.unincorporated_amendments(lex_dania.fetch_document_xml(step))
+            )
+        except Exception:  # noqa: BLE001
+            continue
+
+    leaked: list[tuple[str, str, str]] = []  # (led, dokument, forklaring)
+    for step in chain:
+        try:
+            metadata = lex_dania.fetch_metadata(step)
+        except Exception:  # noqa: BLE001
+            continue
+        for uri in metadata.get("changed_by", []):  # type: ignore[union-attr]
+            document = lex_dania.document_path_of(str(uri))
+            if document in seen:
+                continue
+            parts = document.split("/")
+            if (int(parts[-2]), int(parts[-1])) > newest:
+                reason = "nyere end lovbekendtgoerelsen"
+            elif document in excused:
+                reason = "oplyst som ikke indarbejdet"
+            else:
+                reason = ""
+            leaked.append((step, document, reason))
+
+    unexplained = [row for row in leaked if not row[2]]
+    print(f"--- {len(leaked)} love uden for kaeden, heraf {len(unexplained)} uforklarede")
+    for step, document, reason in leaked[:30]:
+        print(f"        {document}  (aendrer {step}) — {reason or 'UFORKLARET'}")
     return 0
 
 
@@ -2032,6 +2267,8 @@ if __name__ == "__main__":
         )
     elif step == "motiver":
         sys.exit(step_motiver(*sys.argv[2:5]))
+    elif step == "daekning":
+        sys.exit(step_daekning(*sys.argv[2:4]))
     elif step == "notes":
         sys.exit(step_notes(sys.argv[2]))
     elif step == "intro":

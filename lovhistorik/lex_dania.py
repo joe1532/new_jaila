@@ -179,14 +179,40 @@ def fetch_metadata(eli_uri: str) -> dict[str, object]:
 # lydløst fra listen, og deres ændringer kunne aldrig findes.
 CONSOLIDATED_AMENDMENT = re.compile(
     r"(?:§+\s*(?P<paragraph>\d+)(?:\s*(?:og|,)\s*\d+)*\s+i\s+)?"
-    r"lov\s+nr\.\s*(?P<number>\d+)\s+af\s+\d+\.\s*\w+\s+(?P<year>\d{4})",
+    # Punktummet efter dagen er valgfrit: LBK 42/2023 skriver "af 30 november 2021",
+    # og en enkelt manglende tegnsætning må ikke koste hele lovens ændringer.
+    r"lov\s+nr\.\s*(?P<number>\d+)\s+af\s+\d+\.?\s*\w+\s+(?P<year>\d{4})",
     re.IGNORECASE,
 )
 # Uden IGNORECASE: flaget ville få [A-ZÆØÅ] til også at matche små bogstaver, og så
 # ville "af 10. december" blive læst som en sætningsafslutning midt i opremsningen.
+# Kommaet og valget mellem "der" og "som" varierer fra bekendtgørelse til
+# bekendtgørelse. LBK 42/2023 skriver "med de ændringer der følger af" uden komma, og
+# et krav om kommaet gjorde hele perioden juni 2021 – oktober 2022 usynlig, uden at
+# noget fejlede.
 CONSOLIDATION_CLAUSE = re.compile(
-    r"med de ændringer, der følger af(.*?)(?:\.\s*$|\.\s+[A-ZÆØÅ])", re.DOTALL
+    r"med de ændringer,?\s+(?:der|som)\s+følger af(.*?)(?:\.\s*$|\.\s+[A-ZÆØÅ])", re.DOTALL
 )
+
+
+def unincorporated_amendments(xml_bytes: bytes) -> list[str]:
+    """Ændringslove, bekendtgørelsen udtrykkeligt oplyser ikke at have indarbejdet.
+
+    Efter opremsningen begrundes udeladelserne: "Den ændring, der følger af § 3 i lov
+    nr. 624 af 14. juni 2011, er ikke indarbejdet i denne lovbekendtgørelse, da
+    ændringen efterfølgende er ophævet." Uden dem ligner en legitim udeladelse en
+    lækage, og en kontrol, der larmer ved korrekte tilfælde, bliver ignoreret.
+    """
+    found: list[str] = []
+    for element in _preamble_lineas(xml_bytes):
+        text = element_text(element)
+        if "ikke indarbejdet" not in text.lower():
+            continue
+        for match in CONSOLIDATED_AMENDMENT.finditer(text):
+            path = f"eli/lta/{match.group('year')}/{match.group('number')}"
+            if path not in found:
+                found.append(path)
+    return found
 
 
 PREVIOUS_CONSOLIDATION = re.compile(
@@ -224,6 +250,18 @@ class ConsolidatedAmendment:
     paragraph: int  # ændringslovens egen paragraf, fx 10 i "§ 10 i lov nr. 1454"
 
 
+def _preamble_lineas(xml_bytes: bytes) -> list[ElementTree.Element]:
+    """Tekstblokke før første paragraf. Det er dér, bekendtgørelsen taler om sig selv."""
+    root = ElementTree.fromstring(xml_bytes)
+    blocks: list[ElementTree.Element] = []
+    for element in root.iter():
+        if element.tag == "Paragraf":
+            break
+        if element.tag == "Linea":
+            blocks.append(element)
+    return blocks
+
+
 def consolidated_amendments(xml_bytes: bytes) -> list[ConsolidatedAmendment]:
     """Læs, hvilke ændringer en lovbekendtgørelse selv siger den indeholder.
 
@@ -238,12 +276,7 @@ def consolidated_amendments(xml_bytes: bytes) -> list[ConsolidatedAmendment]:
     Returnerer en tom liste, hvis sætningen ikke findes. Kalderen må da selv afgøre,
     hvad der skal afspilles — vi opfinder ikke en liste.
     """
-    root = ElementTree.fromstring(xml_bytes)
-    for element in root.iter():
-        if element.tag == "Paragraf":
-            break
-        if element.tag != "Linea":
-            continue
+    for element in _preamble_lineas(xml_bytes):
         text = element_text(element)
         if "bekendtgøres" not in text.lower():
             continue
