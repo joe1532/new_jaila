@@ -136,6 +136,11 @@ def render_history_tab() -> None:
             for problem in history.problems:
                 st.warning(problem)
 
+    if history.notices:
+        with st.expander(f"{len(history.notices)} usædvanlige forhold blev håndteret"):
+            for notice in history.notices:
+                st.info(notice)
+
     if not history.changes:
         st.info(
             f"§ {history.paragraph_id} er ikke ændret i den del af kæden, vi kan nå. "

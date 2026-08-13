@@ -142,11 +142,11 @@ python lovhistorik/probe.py motiver eli/lta/2025/1500 alle
 python lovhistorik/probe.py motiver eli/lta/2024/15 alle
 ```
 
-Forventet: 18 ændringer af § 9 C ved seks led, hvoraf 17 nævner bestemmelsen, og 23 ved
-otte led, hvoraf 18 nævner den; 12 af 12 på § 7 P; 3 af 3 på § 33 A. Bredt: 96 af 104
-punkter med bemærkning på ligningsloven (95,8 % bekræftet) og 38 af 40 på
-skatteindberetningsloven. En bestemmelse kan sagtens være uændret gennem flere
-lovbekendtgørelser, og "ikke ændret" må aldrig forveksles med "ingen forarbejder".
+Forventet: 23 ændringer af § 9 C ved otte led, hvoraf 18 nævner bestemmelsen; 12 af 12 på
+§ 7 P; 3 af 3 på § 33 A. Bredt: 97 af 104 punkter med bemærkning på ligningsloven
+(95,9 % bekræftet) og 40 af 40 på skatteindberetningsloven. En bestemmelse kan sagtens
+være uændret gennem flere lovbekendtgørelser, og "ikke ændret" må aldrig forveksles med
+"ingen forarbejder".
 
 **Søgelogikken ligger i `forarbejder.py`, ikke i `probe.py`.** Både proben og
 Streamlit-appen kalder `paragraph_history`, så de ikke kan nå frem til forskellige svar
@@ -178,10 +178,10 @@ python lovhistorik/probe.py daekning eli/lta/2025/1222 14
 python lovhistorik/probe.py daekning eli/lta/2025/1059 14
 ```
 
-Forventet: 227 ændringslove og 768 punkter på ligningsloven, og **nul uforklarede** love i
-lækagetesten på alle tre — bortset fra den ene, der rammer 2006, hvor XML'en slipper op.
-Stiger tallet, taber kæden love, og det viser sig ikke andre steder. Advarslen "har ingen
-laeselig liste over aendringer" skal kun optræde for det ældste led.
+Forventet: 228 ændringslove og 771 punkter på ligningsloven, og **nul uforklarede** love i
+lækagetesten på alle tre. Stiger tallet, taber kæden love, og det viser sig ikke andre
+steder. Advarslen "har ingen laeselig liste over aendringer" skal kun optræde for det
+ældste led, hvor XML'en slipper op.
 
 **Lovforslagets paragrafnumre er ikke lovens.** Ligningsloven er § 6 i LOV 84/2019, men
 § 5 i lovforslag L 114. Slår man bemærkningen op på lovens numre, får man en anden

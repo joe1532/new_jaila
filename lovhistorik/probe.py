@@ -772,7 +772,7 @@ def _instructions_of(amendment, law_name: str) -> list:
     """
     import forarbejder
 
-    instructions, _ = forarbejder.instructions_of(amendment, law_name)
+    instructions, _, _ = forarbejder.instructions_of(amendment, law_name)
     return instructions
 
 
@@ -853,6 +853,8 @@ def _paragraph_history(lbk_eli: str, paragraph_id: str, max_steps: int) -> int:
         print(f"--- kaeden stopper ved {history.chain[-1][0]}")
     for problem in history.problems:
         print(f"--- ADVARSEL: {problem}")
+    for notice in history.notices:
+        print(f"--- BEMAERK: {notice}")
 
     if not history.changes:
         print()
@@ -1056,6 +1058,7 @@ def step_daekning(lbk_eli: str, max_steps: str = "8") -> int:
     """
     import xml.etree.ElementTree as ElementTree
 
+    import forarbejder
     import lex_dania
 
     facit = lbk_eli.strip("/")
@@ -1089,11 +1092,22 @@ def step_daekning(lbk_eli: str, max_steps: str = "8") -> int:
         # forsvinder hele perioden lydloest.
         if not current_amendments:
             print(f"--- ADVARSEL: {current} har ingen laeselig liste over aendringer")
+
+        # Listen opregner aendringer af den forrige bekendtgoerelse, hvis changed_by
+        # kan afgoere et aarstal, listen har skrevet forkert.
+        earlier = lex_dania.previous_consolidation(current_xml)
+
         for amendment in current_amendments:
             if amendment.document_path in seen:
                 continue
             seen.add(amendment.document_path)
-            for instruction in _instructions_of(amendment, law_name):
+            instructions, _, notice = forarbejder.instructions_of(
+                amendment, law_name, earlier
+            )
+            if notice:
+                print(f"--- BEMAERK: {notice}")
+                seen.add(notice.split(":")[0])
+            for instruction in instructions:
                 hit: set[str] = set()
                 for raw in instruction.probable_targets:
                     label = lex_dania.parse_target(raw).paragraph_id.upper()
@@ -1102,10 +1116,10 @@ def step_daekning(lbk_eli: str, max_steps: str = "8") -> int:
                 inserted = set(lex_dania.inserted_paragraphs(instruction.new_text))
                 for label in hit | inserted:
                     touched.setdefault(label, []).append(
-                        (current, amendment.document_path, instruction, label in hit)
+                        (current, instruction.document_path, instruction, label in hit)
                     )
+                seen.add(instruction.document_path)
 
-        earlier = lex_dania.previous_consolidation(current_xml)
         if not earlier or earlier in chain:
             break
         try:

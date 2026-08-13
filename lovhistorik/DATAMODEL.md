@@ -293,10 +293,18 @@ indholdet slutter med `</Dokument>`. Kontrollen er billig nok til at køre hver 
 fanger netop afkortning og fejlsider; skader midt i dokumentet opdager XML-parseren.
 
 **Kilden indeholder trykfejl.** LBK 176/2009 skriver "§ 7 i lov nr. 1534 af 19. december
-2207". Året findes ikke, og loven kan ikke hentes. Vores parsing læste teksten korrekt;
-fejlen står i bekendtgørelsen. Umulige årstal fanges nu før hentningen og rapporteres
-som det, de er. Vi retter dem ikke: en gætværksrettelse af kildens tekst ville være en
-tavs fejl af netop den slags, vi leder efter.
+2207". Året findes ikke, og loven — en reel ændring af ligningsloven — faldt ud af
+kæden. Vores parsing læste teksten korrekt; fejlen står i bekendtgørelsen.
+
+Lækagetesten pegede uafhængigt på den samme lov, og det gav rettelsen: `eli:changed_by`
+for LBK 1061/2006 indeholder `eli/lta/2007/1534`. Året kan derfor afgøres af data i
+stedet for at gættes. Et umuligt årstal slås nu op i changed_by for den bekendtgørelse,
+der blev konsolideret, og bruges kun, hvis præcis ét lovnummer passer; ellers
+rapporteres tvetydigheden. Rettelsen oplyses altid — en tavs rettelse af kildens tekst
+ville være netop den slags fejl, vi leder efter.
+
+Det lukkede den sidste uforklarede lækage: ligningsloven står nu med 228 ændringslove og
+771 punkter mod 227 og 768, og alle tre love har nul uforklarede love i lækagetesten.
 
 ### Lovforslagets paragrafnumre er ikke lovens
 

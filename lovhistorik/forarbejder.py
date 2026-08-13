@@ -25,7 +25,7 @@ import difflib
 import json
 import re
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date
 from typing import Callable
 
@@ -133,38 +133,87 @@ def realign(proposed: list, instruction_text: str) -> tuple[int, int] | None:
         return None
 
 
-def instructions_of(amendment, law_name: str) -> tuple[list, str]:
+def plausible_year(document_path: str) -> bool:
+    """Kan årstallet i en ELI-sti passe?"""
+    year = document_path.split("/")[-2]
+    return year.isdigit() and 1849 <= int(year) <= date.today().year
+
+
+def resolve_path(document_path: str, consolidates: str) -> tuple[str | None, str]:
+    """Find den lov, en bekendtgørelse peger på, også når årstallet er en trykfejl.
+
+    LBK 176/2009 skriver "§ 7 i lov nr. 1534 af 19. december 2207". Året findes ikke, og
+    loven — en reel ændring af ligningsloven — falder ud af kæden.
+
+    Rettelsen gættes ikke. Den slås op i `eli:changed_by` for den bekendtgørelse, der
+    blev konsolideret, altså Retsinformations egen liste over, hvad der har ændret
+    loven. Er der præcis ét lovnummer, der passer, er sagen afgjort af data. Er der flere
+    eller ingen, rapporteres det i stedet, for et gæt ville være netop den slags tavse
+    fejl, vi leder efter.
+
+    Returnerer (sti, note). Sti er None, når loven ikke kan findes.
+    """
+    if plausible_year(document_path):
+        return (document_path, "")
+
+    number = document_path.rsplit("/", 1)[-1]
+    stated_year = document_path.split("/")[-2]
+    if not consolidates:
+        return (None, f"{document_path}: årstallet {stated_year} kan ikke passe, og der "
+                      "er ingen liste at slå det rigtige op i.")
+
+    try:
+        candidates = [
+            path for path in lex_dania.amending_documents(consolidates)
+            if path.rsplit("/", 1)[-1] == number and plausible_year(path)
+        ]
+    except Exception as error:  # noqa: BLE001
+        return (None, f"{document_path}: årstallet {stated_year} kan ikke passe, og "
+                      f"{consolidates} kunne ikke slås op: {error}")
+
+    if len(candidates) != 1:
+        return (None, f"{document_path}: årstallet {stated_year} kan ikke passe. "
+                      f"{len(candidates)} love med nummer {number} ændrer {consolidates}, "
+                      "så det rigtige år kan ikke afgøres.")
+    return (candidates[0], f"{document_path}: årstallet {stated_year} er en trykfejl i "
+                           f"lovbekendtgørelsen. Læst som {candidates[0]}, bekræftet af "
+                           f"listen over love, der ændrer {consolidates}.")
+
+
+def instructions_of(
+    amendment, law_name: str, consolidates: str = ""
+) -> tuple[list, str, str]:
     """Ændringspunkter i den paragraf, lovbekendtgørelsen har indarbejdet.
 
-    Returnerer (punkter, problem). En lov, der ikke kan hentes, må ikke stoppe
-    søgningen bagud, men fejlen skal med ud: sluges den, ligner en utilgængelig
-    ændringslov en lov, der ikke rørte paragraffen, og svaret bliver tavst ufuldstændigt.
+    `consolidates` er den bekendtgørelse, ændringerne blev indarbejdet i, og bruges kun
+    til at opklare trykfejl i årstallet.
+
+    Returnerer (punkter, problem, oplysning). Et problem betyder, at svaret mangler
+    noget; en oplysning, at noget usædvanligt blev håndteret. En lov, der ikke kan
+    hentes, må ikke stoppe søgningen bagud, men fejlen skal med ud: sluges den, ligner
+    en utilgængelig ændringslov en lov, der ikke rørte paragraffen.
     """
-    # Lovbekendtgørelser er skrevet af mennesker og indeholder trykfejl. LBK 176/2009
-    # skriver "lov nr. 1534 af 19. december 2207" om en lov fra 2007. Fejlen fanges her,
-    # så den ikke kommer til at ligne et netværksproblem — og så vi ikke retter i det,
-    # kilden har skrevet, på et gæt.
-    year = amendment.document_path.split("/")[-2]
-    if not (year.isdigit() and 1849 <= int(year) <= date.today().year):
-        return ([], f"{amendment.document_path}: lovbekendtgørelsen angiver årstallet "
-                    f"{year}, som ikke kan passe. Trykfejl i kilden, og lovens ændringer "
-                    "kommer derfor ikke med.")
+    path, note = resolve_path(amendment.document_path, consolidates)
+    if path is None:
+        return ([], note, "")
+    if path != amendment.document_path:
+        amendment = replace(amendment, document_path=path)
 
     try:
         xml = lex_dania.fetch_document_xml(amendment.document_path)
         instructions = lex_dania.extract_instructions(xml, amendment.document_path, law_name)
     except Exception as error:  # noqa: BLE001 - netværk og XML fejler på mange måder
-        return ([], f"{amendment.document_path} kunne ikke læses: {error}")
+        return ([], f"{amendment.document_path} kunne ikke læses: {error}", "")
 
     # Paragraf 0 betyder, at hele ændringsloven er indarbejdet.
-    if not amendment.paragraph:
-        return (instructions, "")
-    kept = []
-    for instruction in instructions:
-        reference = AMENDMENT_REFERENCE.search(instruction.amendment_path)
-        if reference and int(reference.group(1)) == amendment.paragraph:
-            kept.append(instruction)
-    return (kept, "")
+    if amendment.paragraph:
+        kept = []
+        for instruction in instructions:
+            reference = AMENDMENT_REFERENCE.search(instruction.amendment_path)
+            if reference and int(reference.group(1)) == amendment.paragraph:
+                kept.append(instruction)
+        instructions = kept
+    return (instructions, "", note)
 
 
 @dataclass
@@ -309,7 +358,8 @@ class History:
     chain: list[tuple[str, int]] = field(default_factory=list)  # (lovbekendtgørelse, fund)
     changes: list[Change] = field(default_factory=list)
     reached_end: bool = False  # kæden løb tør for led, ikke for skridt
-    problems: list[str] = field(default_factory=list)
+    problems: list[str] = field(default_factory=list)  # svaret mangler noget
+    notices: list[str] = field(default_factory=list)  # noget usædvanligt blev håndteret
 
     @property
     def by_place(self) -> dict[str, list[Change]]:
@@ -368,14 +418,20 @@ def paragraph_history(
             # Er listen tom, kunne indledningen ikke læses, og hele perioden forsvinder.
             history.problems.append(f"{current}: ingen læselig liste over ændringer")
 
+        # Bekendtgørelsens liste opregner ændringer af den forrige bekendtgørelse, så
+        # det er dennes changed_by, der kan afgøre et årstal, listen har skrevet forkert.
+        earlier = lex_dania.previous_consolidation(current_xml)
+
         found_here = 0
         for amendment in current_amendments:
             if amendment.document_path in seen:
                 continue
             seen.add(amendment.document_path)
-            instructions, problem = instructions_of(amendment, law_name)
+            instructions, problem, notice = instructions_of(amendment, law_name, earlier)
             if problem:
                 history.problems.append(problem)
+            if notice:
+                history.notices.append(notice)
             for instruction in instructions:
                 places: list[tuple[str, str]] = []
                 for raw in instruction.probable_targets:
@@ -401,7 +457,9 @@ def paragraph_history(
                 history.changes.append(
                     Change(
                         consolidation=current,
-                        document_path=amendment.document_path,
+                        # Instruksens egen sti, ikke listens: er årstallet rettet, er
+                        # det den rettede sti, dokumentet faktisk blev hentet fra.
+                        document_path=instruction.document_path,
                         amendment_path=instruction.amendment_path,
                         text=instruction.text,
                         places=places,
@@ -412,7 +470,6 @@ def paragraph_history(
 
         history.chain.append((current, found_here))
 
-        earlier = lex_dania.previous_consolidation(current_xml)
         if not earlier or earlier == current or earlier in {step for step, _ in history.chain}:
             history.reached_end = True
             break
