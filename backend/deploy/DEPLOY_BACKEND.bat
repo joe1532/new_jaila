@@ -63,7 +63,12 @@ ssh -i "%SSH_KEY%" %SSH_USER%@%SSH_HOST% "echo %SUDO_PASS% | sudo -S mkdir -p %R
 if errorlevel 1 goto :remote_failed
 
 echo [5/7] Sikrer venv og installerer kun dependencies ved behov...
-ssh -i "%SSH_KEY%" %SSH_USER%@%SSH_HOST% "echo %SUDO_PASS% | sudo -S -u www-data bash -lc 'set -e; APP=%REMOTE_APP%; VENV=$APP/.venv; REQ=$APP/requirements.txt; HASH_FILE=/var/lib/jaila/requirements.sha256; if [ ! -d $VENV ]; then python3 -m venv $VENV; fi; NEW_HASH=$(sha256sum $REQ); NEW_HASH=${NEW_HASH%% *}; OLD_HASH=\"\"; if [ -f $HASH_FILE ]; then OLD_HASH=$(cat $HASH_FILE); fi; if [ ! -x $VENV/bin/pip ] || [ \"$NEW_HASH\" != \"$OLD_HASH\" ]; then $VENV/bin/pip install -r $REQ; echo $NEW_HASH > $HASH_FILE; echo Dependencies opdateret.; else echo Requirements uændret - springer pip install over.; fi'"
+rem Hashen skaeres med cut -c1-64, ikke med bash-udtrykket ${VAR%% *}. Et dobbelt
+rem procenttegn bliver til ét, naar .bat-filen koerer, saa bash fik ${VAR% *} - korteste
+rem match i stedet for laengste. Hashen beholdt derfor et mellemrum til sidst, mens
+rem filen blev skrevet uden, og de to kunne aldrig vaere ens. pip koerte ved hver
+rem udrulning, ogsaa naar intet var aendret. En sha256 er altid 64 tegn.
+ssh -i "%SSH_KEY%" %SSH_USER%@%SSH_HOST% "echo %SUDO_PASS% | sudo -S -u www-data bash -lc 'set -e; APP=%REMOTE_APP%; VENV=$APP/.venv; REQ=$APP/requirements.txt; HASH_FILE=/var/lib/jaila/requirements.sha256; if [ ! -d $VENV ]; then python3 -m venv $VENV; fi; NEW_HASH=$(sha256sum $REQ | cut -c1-64); OLD_HASH=\"\"; if [ -f $HASH_FILE ]; then OLD_HASH=$(cat $HASH_FILE); fi; if [ ! -x $VENV/bin/pip ] || [ \"$NEW_HASH\" != \"$OLD_HASH\" ]; then $VENV/bin/pip install -r $REQ; echo $NEW_HASH > $HASH_FILE; echo Dependencies opdateret.; else echo Requirements uændret - springer pip install over.; fi'"
 if errorlevel 1 goto :remote_failed
 
 echo [6/7] Installerer/opfrier systemd service...
