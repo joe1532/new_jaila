@@ -113,6 +113,9 @@ const SAGS_SUBTAB_LABELS = {
   andet: "Andet",
 };
 const ENABLE_ANALYSE_TAB = false;
+// Test-fanen gemmer i sin egen historik, så eksperimenter ikke blander sig med de
+// rigtige chatforløb. Chat-fanen bruger klientens standard og sender derfor intet.
+const TEST_CHAT_LOG_KIND = "test";
 
 const elements = {
   loginSection: document.getElementById("loginSection"),
@@ -817,7 +820,7 @@ async function loadTestChatSavedLogs() {
   const user = (getActiveUser() || "").trim();
   if (!user) return;
   try {
-    const res = await listChatLogs(user);
+    const res = await listChatLogs(user, TEST_CHAT_LOG_KIND);
     const prev = getState().testChat || {};
     setState({ testChat: { ...prev, savedLogs: res.entries || [] } });
     renderTestChat(elements, getState());
@@ -847,7 +850,7 @@ async function onTestChatLogEntryClick(entryId) {
   const user = getActiveUser();
   if (!user) return;
   try {
-    const entry = await getChatLog(user, entryId);
+    const entry = await getChatLog(user, entryId, TEST_CHAT_LOG_KIND);
     setState({
       testChat: {
         selectedLogId: entryId,
@@ -911,7 +914,7 @@ async function onDeleteTestChatLog(entryId) {
     return;
   }
   try {
-    const res = await deleteChatLog(user, entryId);
+    const res = await deleteChatLog(user, entryId, TEST_CHAT_LOG_KIND);
     const prev = getState().testChat || {};
     setState({
       testChat: {
@@ -3310,6 +3313,7 @@ async function runTestChat() {
                   : (Array.isArray(evt.retrieval_results) ? evt.retrieval_results : []),
                 usedVectorStoreIds: Array.isArray(evt.used_vector_store_ids) ? evt.used_vector_store_ids : [],
               },
+              TEST_CHAT_LOG_KIND,
             )
               .then((saved) => {
                 const prev = getState().testChat || {};
@@ -3346,6 +3350,38 @@ async function runTestChat() {
       addTestChatMessage("assistant", data.answer || "Intet svar returneret.");
       const modeLabel = data.vector_search_enabled ? "vector search: aktiv" : "vector search: inaktiv";
       setStatus("Test-chat svar modtaget. Model: " + (data.used_model || "ukendt") + " (" + modeLabel + ")", "ok");
+      const user = getActiveUser();
+      if (user) {
+        const snapshotMessages = getState().testChat.messages || [];
+        saveChatLog(
+          user,
+          sessionId,
+          snapshotMessages,
+          data.used_model || "",
+          data.response_id || null,
+          {
+            citations: Array.isArray(data.citations) ? data.citations : [],
+            retrievalResults: Array.isArray(data.retrieval_results) ? data.retrieval_results : [],
+            usedRetrievalResults: Array.isArray(data.used_retrieval_results)
+              ? data.used_retrieval_results
+              : (Array.isArray(data.retrieval_results) ? data.retrieval_results : []),
+            usedVectorStoreIds: Array.isArray(data.used_vector_store_ids) ? data.used_vector_store_ids : [],
+          },
+          TEST_CHAT_LOG_KIND,
+        )
+          .then((saved) => {
+            const prev = getState().testChat || {};
+            const existing = Array.isArray(prev.savedLogs) ? prev.savedLogs : [];
+            const filtered = existing.filter((entry) => entry.id !== saved.id);
+            setState({
+              testChat: {
+                savedLogs: [saved, ...filtered],
+              },
+            });
+            renderTestChat(elements, getState());
+          })
+          .catch(() => {});
+      }
     }
   } catch (err) {
     const isAborted = err && err.name === "AbortError";

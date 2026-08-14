@@ -41,7 +41,7 @@ const state = {
   analyse: {
     question: "",
     answer: "",
-    usedModel: null,         // "gpt-5.4" | "gpt-5.2" | null
+    usedModel: null,         // "gpt-5.6-sol" | "gpt-5.2" | null
     citations: [],           // [{ file_id, filename }]
     retrievalResults: [],    // [{ filename, score, text }]
     logPdfUrl: null,         // "/api/logs/....pdf"
@@ -208,7 +208,7 @@ Response:
 ```json
 {
   "answer": "...",
-  "used_model": "gpt-5.4",
+  "used_model": "gpt-5.6-sol",
   "citations": [{ "file_id": "file_x", "filename": "x.pdf" }],
   "retrieval_results": [{ "filename": "x.pdf", "score": "0.95", "text": "..." }],
   "log_pdf_filename": "query_log_....pdf",

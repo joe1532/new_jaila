@@ -23,6 +23,28 @@ from backend.config import (
 MAX_VECTOR_STORES_PER_REQUEST = 2
 _log = logging.getLogger(__name__)
 
+# Modeller fra GPT-5.6 og frem sætter cachens levetid med `prompt_cache_options`;
+# ældre modeller bruger `prompt_cache_retention`. Præfikserne står eksplicit, fordi
+# en fremtidig generation (5.7, 6) ellers stiltiende ville havne i den gamle gren.
+# Kommer der en ny generation, skal den tilføjes her.
+NEW_CACHE_FORMAT_PREFIXES = ("gpt-5.6",)
+
+
+def cache_fields_for_model(model: str) -> dict[str, Any]:
+    """De cache-felter, der hører til modellens generation.
+
+    Skellet er nødvendigt, fordi fallback-kæden kan ramme både en 5.6-model og en
+    ældre inden for samme kald. Sendes det gamle felt til en 5.6-model, risikerer vi
+    at få afvist netop det kald, der skulle redde requesten.
+
+    For 5.6 sættes intet levetidsfelt: den eneste tilladte værdi er "30m", som også
+    er standard. Det er samtidig en reel ændring i forhold til de 24 timer, ældre
+    modeller fik — cachen holder kortere, men fornys hver gang prefikset genbruges.
+    """
+    if model.startswith(NEW_CACHE_FORMAT_PREFIXES):
+        return {}
+    return {"prompt_cache_retention": PROMPT_CACHE_RETENTION}
+
 
 def _log_performance(
     flow: str,
@@ -36,11 +58,20 @@ def _log_performance(
     usage = get_value(resp, "usage")
     input_tokens = get_value(usage, "input_tokens", 0) if usage else 0
     output_tokens = get_value(usage, "output_tokens", 0) if usage else 0
+    # Responses API lægger cache-tallene i input_tokens_details. Feltet hed tidligere
+    # prompt_tokens_details i denne kode, hvilket er Chat Completions-formen — derfor
+    # blev cached_tokens altid logget som 0. Begge læses nu, så gamle logs kan
+    # sammenlignes med nye. cache_write_tokens er ny fra 5.6 og viser, om vi betaler
+    # for at skrive cache uden at læse den bagefter.
     cached_tokens = 0
+    cache_write_tokens = 0
     if usage:
-        details = get_value(usage, "prompt_tokens_details")
-        if isinstance(details, dict):
-            cached_tokens = details.get("cached_tokens", 0)
+        details = get_value(usage, "input_tokens_details") or get_value(
+            usage, "prompt_tokens_details"
+        )
+        if details is not None:
+            cached_tokens = get_value(details, "cached_tokens", 0) or 0
+            cache_write_tokens = get_value(details, "cache_write_tokens", 0) or 0
     request_id = getattr(resp, "_request_id", None) or getattr(resp, "request_id", None)
     processing_ms = getattr(resp, "_headers", None)
     if processing_ms and hasattr(processing_ms, "get"):
@@ -49,7 +80,8 @@ def _log_performance(
         processing_ms = None
     _log.info(
         "perf flow=%s model=%s duration_ms=%.0f openai_processing_ms=%s x_request_id=%s "
-        "input_tokens=%s output_tokens=%s cached_tokens=%s reasoning_effort=%s retrieval_results=%s",
+        "input_tokens=%s output_tokens=%s cached_tokens=%s cache_write_tokens=%s "
+        "reasoning_effort=%s retrieval_results=%s",
         flow,
         model,
         duration_ms,
@@ -58,6 +90,7 @@ def _log_performance(
         input_tokens,
         output_tokens,
         cached_tokens,
+        cache_write_tokens,
         reasoning_effort,
         num_retrieval_results,
     )
@@ -572,7 +605,7 @@ def analyze_question(
                 "input": question,
                 "reasoning": {"effort": effective_reasoning},
                 "prompt_cache_key": effective_cache_key,
-                "prompt_cache_retention": PROMPT_CACHE_RETENTION,
+                **cache_fields_for_model(model),
             }
             if use_file_search:
                 request_payload["tools"] = [
@@ -649,7 +682,7 @@ def analyze_question_stream(
                 "input": question,
                 "reasoning": {"effort": effective_reasoning},
                 "prompt_cache_key": effective_cache_key,
-                "prompt_cache_retention": PROMPT_CACHE_RETENTION,
+                **cache_fields_for_model(model),
                 "stream": True,
             }
             if use_file_search:

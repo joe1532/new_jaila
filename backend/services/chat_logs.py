@@ -26,8 +26,24 @@ def _sanitize_username(username: str) -> str:
     return re.sub(r"[^\w\-]", "", (username or "").strip().lower()) or "default"
 
 
-def _user_logs_path(username: str) -> Path:
-    return ANALYSE_LOGS_DIR / f"{_sanitize_username(username)}_chat.json"
+# Chat og test-chat gemmes hver for sig, så eksperimenter i test-fanen ikke blander sig
+# i den rigtige historik. "chat" giver samme filnavn som før, så eksisterende logs
+# bliver liggende, hvor de er.
+LOG_KINDS = {"chat": "chat", "test": "test_chat"}
+
+
+def _log_suffix(kind: str) -> str:
+    """Filnavnets endelse for en logtype.
+
+    Ukendte værdier falder tilbage til "chat" frem for at danne et nyt filnavn. Det
+    holder samtidig brugerstyret input ude af stien: kun de to kendte endelser kan
+    nås herfra.
+    """
+    return LOG_KINDS.get((kind or "").strip().lower(), "chat")
+
+
+def _user_logs_path(username: str, kind: str = "chat") -> Path:
+    return ANALYSE_LOGS_DIR / f"{_sanitize_username(username)}_{_log_suffix(kind)}.json"
 
 
 def _generate_title_from_messages(messages: list[dict]) -> str:
@@ -72,6 +88,7 @@ def save_chat_log(
     retrieval_results: list[dict] | None = None,
     used_retrieval_results: list[dict] | None = None,
     used_vector_store_ids: list[str] | None = None,
+    kind: str = "chat",
 ) -> dict:
     """
     Upsert chat-log for en session.
@@ -83,7 +100,7 @@ def save_chat_log(
         raise ValueError("session_id mangler")
 
     ANALYSE_LOGS_DIR.mkdir(parents=True, exist_ok=True)
-    path = _user_logs_path(username)
+    path = _user_logs_path(username, kind)
     now = datetime.now().isoformat(timespec="seconds")
 
     entries: list[dict] = []
@@ -156,8 +173,8 @@ def save_chat_log(
     }
 
 
-def list_chat_logs(username: str) -> list[dict]:
-    path = _user_logs_path(username)
+def list_chat_logs(username: str, kind: str = "chat") -> list[dict]:
+    path = _user_logs_path(username, kind)
     if not path.exists():
         return []
     try:
@@ -179,8 +196,8 @@ def list_chat_logs(username: str) -> list[dict]:
     ]
 
 
-def get_chat_log(username: str, entry_id: str) -> dict | None:
-    path = _user_logs_path(username)
+def get_chat_log(username: str, entry_id: str, kind: str = "chat") -> dict | None:
+    path = _user_logs_path(username, kind)
     if not path.exists():
         return None
     try:
@@ -194,9 +211,9 @@ def get_chat_log(username: str, entry_id: str) -> dict | None:
     return None
 
 
-def delete_chat_log(username: str, entry_id: str) -> bool:
+def delete_chat_log(username: str, entry_id: str, kind: str = "chat") -> bool:
     """Slet chat-log efter id. Returnerer True hvis slettet."""
-    path = _user_logs_path(username)
+    path = _user_logs_path(username, kind)
     if not path.exists():
         return False
     try:

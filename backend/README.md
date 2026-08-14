@@ -45,7 +45,7 @@ python -m uvicorn backend.main:app --host 127.0.0.1 --port 8010
 ```json
 {
   "answer": "...",
-  "used_model": "gpt-5.4",
+  "used_model": "gpt-5.6-sol",
   "response_id": "resp_...",
   "citations": [{"file_id":"file_...","filename":"...pdf"}],
   "retrieval_results": [{"filename":"...pdf","score":"0.95","text":"..."}],

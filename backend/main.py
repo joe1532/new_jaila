@@ -28,7 +28,6 @@ from backend.config import (
     PRIMARY_MODEL,
     PROMPT_CACHE_KEY_CHAT,
     PROMPT_CACHE_KEY_LIGNINGSFRIST,
-    PROMPT_CACHE_RETENTION,
     REASONING_EFFORT_CHAT,
     REASONING_EFFORT_LIGNINGSFRIST,
     SAGSBEHANDLING_MODELS,
@@ -81,6 +80,7 @@ from backend.services import forarbejder_service
 from backend.services.openai_service import (
     analyze_question,
     analyze_question_stream,
+    cache_fields_for_model,
     select_vector_store_ids_for_query,
 )
 from backend.services.pdf_log import save_chat_pdf_log, save_pdf_log
@@ -2613,7 +2613,7 @@ def chat(
                             "input": message,
                             "reasoning": {"effort": REASONING_EFFORT_CHAT},
                             "prompt_cache_key": PROMPT_CACHE_KEY_CHAT,
-                            "prompt_cache_retention": PROMPT_CACHE_RETENTION,
+                            **cache_fields_for_model(PRIMARY_MODEL),
                             "stream": True,
                         }
                         if payload.previous_response_id:
@@ -2744,7 +2744,7 @@ def chat(
                 "input": message,
                 "reasoning": {"effort": REASONING_EFFORT_CHAT},
                 "prompt_cache_key": PROMPT_CACHE_KEY_CHAT,
-                "prompt_cache_retention": PROMPT_CACHE_RETENTION,
+                **cache_fields_for_model(PRIMARY_MODEL),
             }
             if payload.previous_response_id:
                 request_payload["previous_response_id"] = payload.previous_response_id
@@ -2919,6 +2919,7 @@ def save_chat_log_endpoint(payload: ChatLogSaveRequest) -> ChatLogSaveResponse:
             retrieval_results=payload.retrieval_results,
             used_retrieval_results=payload.used_retrieval_results,
             used_vector_store_ids=payload.used_vector_store_ids,
+            kind=payload.kind,
         )
         return ChatLogSaveResponse(**result)
     except Exception as exc:
@@ -2926,9 +2927,12 @@ def save_chat_log_endpoint(payload: ChatLogSaveRequest) -> ChatLogSaveResponse:
 
 
 @app.get("/api/chat-logs", response_model=ChatLogListResponse)
-def list_chat_logs_endpoint(user: str = Query(..., min_length=1)) -> ChatLogListResponse:
+def list_chat_logs_endpoint(
+    user: str = Query(..., min_length=1),
+    kind: str = Query("chat"),
+) -> ChatLogListResponse:
     """Liste gemte chat-logs for bruger."""
-    entries = list_chat_logs(user)
+    entries = list_chat_logs(user, kind)
     return ChatLogListResponse(entries=entries)
 
 
@@ -2936,9 +2940,10 @@ def list_chat_logs_endpoint(user: str = Query(..., min_length=1)) -> ChatLogList
 def get_chat_log_endpoint(
     entry_id: str,
     user: str = Query(..., min_length=1),
+    kind: str = Query("chat"),
 ) -> ChatLogGetResponse:
     """Hent fuld chat-log efter id."""
-    entry = get_chat_log(user, entry_id)
+    entry = get_chat_log(user, entry_id, kind)
     if not entry:
         raise HTTPException(status_code=404, detail="Chat-log ikke fundet")
     return ChatLogGetResponse(
@@ -2965,12 +2970,13 @@ def get_chat_log_endpoint(
 def delete_chat_log_endpoint(
     entry_id: str,
     user: str = Query(..., min_length=1),
+    kind: str = Query("chat"),
 ) -> ChatLogListResponse:
     """Slet chat-log efter id."""
-    deleted = delete_chat_log(user, entry_id)
+    deleted = delete_chat_log(user, entry_id, kind)
     if not deleted:
         raise HTTPException(status_code=404, detail="Chat-log ikke fundet")
-    entries = list_chat_logs(user)
+    entries = list_chat_logs(user, kind)
     return ChatLogListResponse(entries=entries)
 
 

@@ -195,7 +195,10 @@ Eksempel:
 Formuleringen må ikke indeholde juridisk argumentation.""",
 }
 
-PRIMARY_MODEL = "gpt-5.4"
+# Sol er flagskibet i GPT-5.6-familien og afløser gpt-5.4 i chat og analyse.
+# Fallback står bevidst på den gamle model: fejler Sol, er det en fordel at falde
+# tilbage til noget, der ikke er ændret samtidig, så fejlkilden kan afgrænses.
+PRIMARY_MODEL = "gpt-5.6-sol"
 FALLBACK_MODEL = "gpt-5.2"
 MAX_NUM_RESULTS = 10
 STRICT_SOURCING = os.getenv("STRICT_SOURCING", "false").strip().lower() in {
@@ -205,16 +208,24 @@ STRICT_SOURCING = os.getenv("STRICT_SOURCING", "false").strip().lower() in {
     "on",
 }
 
-# Reasoning effort per flow (none, minimal, low, medium, high, xhigh).
-# Lavere effort = hurtigere svar, færre reasoning tokens.
+# Reasoning effort per flow. GPT-5.6 understøtter none, low, medium, high, xhigh og max
+# ("minimal" fandtes på ældre modeller og er ikke gyldig her). Lavere effort giver
+# hurtigere svar og færre reasoning tokens.
+# Værdierne er med vilje uændrede efter skiftet til 5.6: udelades feltet, vælger 5.6
+# selv "medium", og en bevaret indstilling gør det muligt at se, hvad modelskiftet
+# alene betød, før der skrues på noget.
 REASONING_EFFORT_ANALYSE = "medium"
 REASONING_EFFORT_CHAT = "medium"
 REASONING_EFFORT_LIGNINGSFRIST = "low"
 
-# Prompt caching: stabile nøgler for cache routing, 24h retention for faste instruktioner.
+# Prompt caching: stabile nøgler for cache routing. Nøglen er vigtigere fra 5.6, hvor
+# den er en forudsætning for den pålidelige prefix-matchning.
 PROMPT_CACHE_KEY_ANALYSE = "jaila-analyse-v1"
 PROMPT_CACHE_KEY_CHAT = "jaila-chat-v1"
 PROMPT_CACHE_KEY_LIGNINGSFRIST = "jaila-ligningsfrist-v1"
+
+# Gælder kun modeller før GPT-5.6. Fra 5.6 er levetiden fast 30 minutter, som fornys
+# hver gang prefikset genbruges; se cache_fields_for_model i openai_service.
 PROMPT_CACHE_RETENTION = "24h"
 
 ANSWER_INSTRUCTIONS = """Rolle

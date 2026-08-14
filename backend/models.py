@@ -228,6 +228,10 @@ class ChatExportResponse(BaseModel):
 class ChatLogSaveRequest(BaseModel):
     user: str = Field(..., min_length=1, description="Brugernavn")
     session_id: str = Field(..., min_length=1, description="Chat-session-id")
+    kind: str = Field(
+        default="chat",
+        description="Hvilken historik loggen hører til: 'chat' eller 'test'",
+    )
     messages: list[ChatMessage] = Field(
         default_factory=list,
         description="Hele chatforløbet der skal gemmes",
