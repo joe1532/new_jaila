@@ -48,7 +48,14 @@ ssh -i "%SSH_KEY%" %SSH_USER%@%SSH_HOST% "echo %SUDO_PASS% | sudo -S mkdir -p %R
 if errorlevel 1 goto :remote_failed
 
 echo [4/7] Synkroniserer filer...
-ssh -i "%SSH_KEY%" %SSH_USER%@%SSH_HOST% "echo %SUDO_PASS% | sudo -S rsync -a --delete %REMOTE_TMP%/ %REMOTE_APP%/ && echo %SUDO_PASS% | sudo -S chown -R www-data:www-data %REMOTE_APP%"
+rem .venv skal undtages. Miljoet ligger i app-mappen, men findes ikke i arkivet, saa
+rem --delete fjernede det ved hver udrulning. Alle pakker blev derfor hentet forfra hver
+rem gang - omkring et minut og 579 MB - og hash-tjekket i trin 5, der skulle springe pip
+rem over ved uaendrede requirements, kunne aldrig traede i kraft.
+rem
+rem Skal miljoet bygges rent, slettes det manuelt:
+rem   sudo rm -rf /opt/jaila_backend/.venv
+ssh -i "%SSH_KEY%" %SSH_USER%@%SSH_HOST% "echo %SUDO_PASS% | sudo -S rsync -a --delete --exclude='.venv' %REMOTE_TMP%/ %REMOTE_APP%/ && echo %SUDO_PASS% | sudo -S chown -R www-data:www-data %REMOTE_APP%"
 if errorlevel 1 goto :remote_failed
 
 echo [4b/7] Sikrer persistente datamapper for analyse-logs og forarbejdscache...

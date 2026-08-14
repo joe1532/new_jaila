@@ -1,11 +1,93 @@
-openai
-streamlit
-reportlab
-fastapi
-uvicorn
-python-multipart
-python-docx
-pypdf
-openpyxl
-pymupdf
-xlrd
+# Backendens afhængigheder, låst til de versioner der kører i produktion.
+#
+# Låsene er der, fordi udrulningen installerer alt forfra hver gang. Uden dem henter
+# pip nyeste version, og en vilkårlig udrulning kan trække en brydende ændring ind i
+# chat og analyse, uden at nogen har bedt om det. Det skete: openai sprang fra 2.x til
+# 3.0.0 under en udrulning, der handlede om noget helt andet. Det gik godt, men det var
+# held, ikke kontrol.
+#
+# Også de indirekte afhængigheder er låst. Ellers flytter fx pydantic eller starlette
+# sig af sig selv, og de bærer fastapi.
+#
+# Sådan opdateres en pakke bevidst:
+#   1. Ret versionen her, eller fjern låsen på den ene pakke midlertidigt.
+#   2. Installer i et venv lokalt, og kør fladen igennem.
+#   3. Kør `pip freeze` og skriv resultatet herind, så de indirekte følger med.
+#
+# Udrulningen sammenligner filens sha256 med sidste kørsel og springer pip over, når
+# den er uændret. Enhver redigering her — også en kommentar — udløser derfor en fuld
+# geninstallation ved næste udrulning.
+
+# --- Bruges direkte af koden ---
+openai==3.0.0
+fastapi==0.141.1
+uvicorn==0.52.3
+python-multipart==0.0.32
+reportlab==5.0.0
+python-docx==1.2.0
+pypdf==6.16.0
+openpyxl==3.1.5
+pymupdf==1.28.2
+xlrd==2.0.2
+
+# Kun til inspektionsværktøjet lovhistorik/app.py, som ikke køres på serveren. Den
+# trækker altair, pandas, pyarrow, numpy, pydeck og protobuf med sig — over halvdelen
+# af de 579 MB, miljøet fylder. Kan fjernes sammen med dem, hvis serveren aldrig skal
+# køre den flade.
+streamlit==1.61.1
+
+# --- Trukket ind af ovenstående. Låst, så de ikke flytter sig af sig selv ---
+altair==6.2.2
+annotated-doc==0.0.5
+annotated-types==0.8.0
+anyio==4.14.2
+attrs==26.1.0
+blinker==1.9.0
+certifi==2026.7.22
+charset-normalizer==3.5.0
+click==8.4.2
+distro==1.9.0
+et_xmlfile==2.0.0
+h11==0.16.0
+httpcore2==2.10.0
+httptools==0.8.0
+httpx2==2.10.0
+idna==3.18
+itsdangerous==2.2.0
+Jinja2==3.1.6
+jiter==0.16.0
+jsonschema==4.26.0
+jsonschema-specifications==2025.9.1
+lxml==6.1.1
+MarkupSafe==3.0.3
+narwhals==2.24.0
+numpy==2.5.2
+packaging==26.3
+pandas==3.0.5
+pillow==12.3.0
+protobuf==7.35.1
+pyarrow==24.0.0
+pydantic==2.13.4
+pydantic_core==2.46.4
+pydeck==0.9.3
+python-dateutil==2.9.0.post0
+referencing==0.37.0
+requests==2.34.2
+rpds-py==2026.6.3
+six==1.17.0
+sniffio==1.3.1
+starlette==1.3.1
+tenacity==9.1.4
+toml==0.10.2
+tqdm==4.70.0
+typing-inspection==0.4.4
+typing_extensions==4.16.0
+urllib3==2.7.0
+watchdog==6.0.0
+websockets==16.1.1
+
+# lovhistorik/lex_dania.py validerer TLS mod OS'ets trust store, hvis denne findes.
+# Den importeres i en try/except og er ikke nødvendig på serveren, hvor der ikke er
+# TLS-inspektion. Den kom hidtil med som en tilfældig følge af openai og står her, så
+# den ikke forsvinder uset, hvis den afhængighed ændrer sig.
+truststore==0.10.4
