@@ -676,6 +676,9 @@ class Instruction:
     targets: list[str] = field(default_factory=list)  # kun signiChar='AendringURN'
     italic_spans: list[str] = field(default_factory=list)
     new_text: str = ""
+    # localId på de paragraffer, den indsatte tekst selv er opmærket med. Tom, hvis
+    # ændringsloven ikke opmærker sin nye tekst — se inserted_paragraph_ids.
+    inserted_ids: list[str] = field(default_factory=list)
     constructions: list[str] = field(default_factory=list)
     occurrences: int | None = None
 
@@ -699,6 +702,25 @@ class Instruction:
         må derfor ikke bruges som antal mål — kun `targets` kan tælles.
         """
         return self.targets or self.italic_spans
+
+    @property
+    def inserted_paragraph_ids(self) -> list[str]:
+        """Paragraffer, instruksen indsætter — fra opmærkningen, ikke fra ordlyden.
+
+        Opmærkningen går forud, fordi tekstmønstret ikke kan bære opgaven. Målt over
+        263 blokke indsat tekst fra fire skattelove mistede mønstret 386 paragraffer
+        og opfandt 19, der ikke fandtes. Kun 13 blokke manglede opmærkning.
+
+        Tabet er systematisk: én instruks indsætter tit flere paragraffer med en
+        overskrift imellem ("§ 19 A … *Personer* § 19 B …"). Mønstret krævede punktum
+        umiddelbart foran og standsede derfor ved den første. Aktieavancebeskatnings-
+        lovens §§ 19 B, 19 C og 19 D blev alle indsat i ét punkt i LOV 84/2019 og var
+        usynlige — uden at noget fejlede.
+
+        Ordlyden bruges kun, hvor opmærkningen mangler. Den er svag, men et svagt bud
+        er bedre end intet, når alternativet er et tomt svar uden forklaring.
+        """
+        return self.inserted_ids or inserted_paragraphs(self.new_text)
 
 
 def extract_instructions(
@@ -753,6 +775,16 @@ def extract_instructions(
                 element_text(element) for element in item.iter("AendringNyTekst")
             ).strip()
 
+            # Den indsatte tekst bærer selv sine paragraffer som localId. Det er den
+            # samme maskinlæsbare nøgle, vi bruger i lovbekendtgørelsen, og den skal
+            # læses frem for at udledes af ordlyden.
+            inserted_ids: list[str] = []
+            for element in item.iter("AendringNyTekst"):
+                for paragraph in element.iter("Paragraf"):
+                    local = (paragraph.get("localId") or "").upper().replace(" ", "")
+                    if local and local not in inserted_ids:
+                        inserted_ids.append(local)
+
             instructions.append(
                 Instruction(
                     document_path=document_path,
@@ -762,6 +794,7 @@ def extract_instructions(
                     targets=targets,
                     italic_spans=italic_spans,
                     new_text=new_text,
+                    inserted_ids=inserted_ids,
                     constructions=classify(text),
                     occurrences=occurrence_count(text),
                 )

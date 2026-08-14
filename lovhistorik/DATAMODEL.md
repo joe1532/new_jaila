@@ -391,6 +391,54 @@ Rækkefølgen i lovbekendtgørelsens egen liste er ikke kronologisk, så histori
 efter (år, lovnummer). For § 33 A afgør det, om ophævelsen eller genindførelsen ser ud til
 at komme sidst — altså om bestemmelsen ser ud til at gælde.
 
+### En overskrift mellem to paragraffer skjulte 386 indsættelser
+
+Rettelsen ovenfor løste § 33 A, men kun fordi den paragraf blev indsat alene. Aktie-
+avancebeskatningslovens § 19 D gav et tomt svar: "ikke ændret i den del af kæden, vi kan
+nå" — uden advarsel, selv om paragraffen står i loven. Den blev indsat af LOV 84/2019,
+§ 1, nr. 15:
+
+```text
+§ 19 A ophæves, og i stedet indsættes:
+  Aktier og investeringsbeviser i investeringsselskaber  Selskaber m.v.
+  § 19 A. …
+  Aktier og investeringsbeviser i aktiebaserede investeringsselskaber  Personer
+  § 19 B. …
+  … Fradrag  Personer
+  § 19 D. …
+```
+
+Ét punkt indsætter fire paragraffer. `inserted_paragraphs` læste dem ud af ordlyden med
+mønstret `(?:^|\.\s+)§\s*(\d+)\s*([A-ZÆØÅ])?\.\s`, som kræver tekststart eller punktum
+umiddelbart foran. **Overskrifterne står imellem**, så kun § 19 A blev fundet — og den kun
+ved et tilfælde, fordi forkortelsen "m.v." efterlod et punktum på den rigtige plads. §§ 19
+B, C og D var usynlige.
+
+Målt over 263 blokke indsat tekst fra fire skattelove:
+
+| | Antal |
+| --- | --- |
+| Paragraffer mønstret mistede | 386 |
+| Paragraffer mønstret opfandt | 19 |
+| Blokke uden `Paragraf`-opmærkning | 13 af 263 |
+
+Mønstret fejlede altså i begge retninger. De 19 er henvisninger i løbende tekst, der
+tilfældigt stod efter et punktum, og de blev talt som indsættelser.
+
+Den indsatte tekst bærer selv sine paragraffer: `<Paragraf localId="19D">` inde i
+`<AendringNyTekst>`. Det er samme maskinlæsbare nøgle, vi bruger i lovbekendtgørelsen.
+`Instruction.inserted_paragraph_ids` læser den nu og falder kun tilbage på ordlyden for de
+13 blokke uden opmærkning.
+
+Fejlen er den samme, som modellen advarer imod ét afsnit længere oppe: *`localId` er en
+maskinlæsbar nøgle, vi ikke selv skal udlede af overskriftsteksten.* Reglen var skrevet
+for lovbekendtgørelsen og blev ikke anvendt på ændringslovens nye tekst, selv om
+opmærkningen er den samme dér.
+
+Rettelsen ændrer intet i de eksisterende målinger — § 9 C giver stadig 23 ændringer ved
+otte led og 13 i 2015-udgaven, `probe.py mine` er uændret, og lækagetesten er fortsat nul
+uforklarede på alle tre love. Den tilføjer kun ændringer, der før manglede.
+
 **Målt dækning.** For de 40 ændringspunkter bag LBK 15/2024 (skatteindberetningsloven):
 
 | Resultat | Antal |

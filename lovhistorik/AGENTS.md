@@ -195,11 +195,15 @@ python lovhistorik/probe.py motiver eli/lta/2025/1500 alle
 python lovhistorik/probe.py motiver eli/lta/2024/15 alle
 ```
 
-Forventet: 23 ændringer af § 9 C ved otte led, hvoraf 19 nævner bestemmelsen; 12 af 12 på
+Forventet: 23 ændringer af § 9 C ved otte led, hvoraf 21 er bekræftet; 12 af 12 på
 § 7 P; 3 af 3 på § 33 A. Bredt: 97 af 104 punkter med bemærkning på ligningsloven
 (95,9 % bekræftet) og 40 af 40 på skatteindberetningsloven. En bestemmelse kan sagtens
 være uændret gennem flere lovbekendtgørelser, og "ikke ændret" må aldrig forveksles med
 "ingen forarbejder".
+
+(Tallet for § 9 C stod som 19 og var forældet. Det er efterprøvet mod koden både før og
+efter rettelsen af indsatte paragraffer og var 21 begge gange, så det er ikke en
+regression, men en note, der ikke fulgte med en tidligere forbedring.)
 
 **Mål også på ældre materiale.** Skrivemåden har ændret sig, og en måling, der kun rammer
 de seneste år, viser grønt, selv om ældre lovforslag læses forkert. Et opslag i en gammel
@@ -209,8 +213,8 @@ udgave af loven afslører det:
 python lovhistorik/probe.py motiver eli/lta/2015/1081 9C 7
 ```
 
-Forventet: 13 ændringer, hvoraf 8 nævner § 9 C. Falder tallet, er et overskriftsmønster
-blevet for snævert igen.
+Forventet: 13 ændringer, hvoraf 10 er bekræftet. Falder tallet, er et overskriftsmønster
+blevet for snævert igen. (Stod som 8 og var forældet på samme måde som tallet ovenfor.)
 
 **Søgelogikken ligger i `forarbejder.py`, ikke i `probe.py`.** Både proben og
 Streamlit-appen kalder `paragraph_history`, så de ikke kan nå frem til forskellige svar
@@ -266,6 +270,15 @@ læses i den nye tekst. Ellers mangler netop den ændring, der indførte bestemm
 Ligningslovens § 33 A blev ophævet i 2012 og genindført samme år med tilbagevirkende
 kraft; kun målsøgning fandt ophævelsen, ikke genindførelsen. Historikken skal desuden
 sorteres efter (år, lovnummer), for lovbekendtgørelsens egen liste er ikke kronologisk.
+
+**De indsatte paragraffer læses af opmærkningen, ikke af ordlyden.** Den nye tekst bærer
+selv `<Paragraf localId="19D">`. Udled dem ikke af tekstmønstre: ét punkt indsætter tit
+flere paragraffer med en overskrift imellem ("§ 19 A … *Personer* § 19 B …"), og et
+mønster, der kræver punktum foran, standser ved den første. Målt over 263 blokke mistede
+ordlyden 386 paragraffer og opfandt 19. Aktieavancebeskatningslovens §§ 19 B, C og D var
+usynlige — svaret var tomt uden advarsel, selv om paragraffen står i loven. Ordlyden
+bruges kun for de 13 blokke uden opmærkning. Det er samme regel som for
+lovbekendtgørelsen: `localId` er en nøgle, vi ikke selv skal udlede.
 
 **Lovbekendtgørelsens liste udelader paragrafangivelsen, når hele ændringsloven er
 indarbejdet** ("… , lov nr. 1379 af 28. december 2011, …"). Kræver mønsteret "§ N i",

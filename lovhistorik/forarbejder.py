@@ -770,9 +770,7 @@ def paragraph_history(
 
                 # Indsættes paragraffen, er målet den foregående paragraf ("Efter § 33
                 # indsættes: § 33 A"), så den skal også søges i den nye tekst.
-                inserted = not places and wanted in lex_dania.inserted_paragraphs(
-                    instruction.new_text
-                )
+                inserted = not places and wanted in instruction.inserted_paragraph_ids
                 if not places and not inserted:
                     continue
                 if inserted:
