@@ -144,14 +144,15 @@ def normalize_mojibake_text(text: str) -> str:
     return unicodedata.normalize("NFC", best)
 
 
-def clean_answer_text(text: str) -> str:
+def clean_answer_text(text: str, preserve_markdown: bool = False) -> str:
     """Remove raw inline filecite markers from model output text."""
     cleaned = re.sub(r"filecite.*?", "", text, flags=re.DOTALL)
-    # Remove markdown quote markers at line start.
-    cleaned = re.sub(r"(?m)^\s*>\s?", "", cleaned)
-    # Remove markdown bold markers because they add no legal value in output.
-    cleaned = re.sub(r"\*\*(.*?)\*\*", r"\1", cleaned, flags=re.DOTALL)
-    cleaned = cleaned.replace("**", "")
+    if not preserve_markdown:
+        # Remove markdown quote markers at line start.
+        cleaned = re.sub(r"(?m)^\s*>\s?", "", cleaned)
+        # Remove markdown bold markers because they add no legal value in output.
+        cleaned = re.sub(r"\*\*(.*?)\*\*", r"\1", cleaned, flags=re.DOTALL)
+        cleaned = cleaned.replace("**", "")
     cleaned = re.sub(
         r"(?i)\bkarnov[-\s]*noter?\b",
         "Note til relevant lovbestemmelse",
@@ -170,9 +171,9 @@ def clean_answer_text(text: str) -> str:
     return cleaned.strip()
 
 
-def parse_response(resp: Any) -> dict[str, Any]:
+def parse_response(resp: Any, preserve_markdown: bool = False) -> dict[str, Any]:
     output_text = get_value(resp, "output_text", "") or ""
-    output_text = clean_answer_text(output_text)
+    output_text = clean_answer_text(output_text, preserve_markdown=preserve_markdown)
     output_items = get_value(resp, "output", []) or []
 
     citations: list[dict[str, str]] = []
@@ -329,6 +330,71 @@ def _reference_keys(text: str) -> dict[str, set[str]]:
         "afgørelser": rulings,
         "artikler": articles,
     }
+
+
+def _filename_is_named_statute(filename: str, law_stems: set[str]) -> bool:
+    """True if the file *is* the named statute, not a document that merely mentions it.
+
+    "Ligningsloven (2025-11-24 nr. 1500).pdf" matches stem ligningslov.
+    "Cirkulære 1996-04-17 nr. 72 om ligningsloven.pdf" does not: the circular is
+    not the statute, even though the filename contains the law's name.
+    """
+    name = filename.replace("\\", "/").rsplit("/", 1)[-1].lower().strip()
+    if not name:
+        return False
+    for stem in law_stems:
+        if len(stem) < 4:
+            continue
+        if name.startswith(stem):
+            return True
+    return False
+
+
+def attach_named_law_citations(parsed: dict[str, Any]) -> dict[str, Any]:
+    """Add retrieved statute files that the answer names but the model did not cite.
+
+    file_search can return ligningsloven while the model only filecites DJV that
+    quotes the section. The answer then names the law, but the citation cards and
+    PDF source list omit it. This is display/audit only: it does not change the
+    model text.
+    """
+    answer = str(parsed.get("output_text", "") or "")
+    law_stems = _reference_keys(answer).get("love") or set()
+    if not law_stems:
+        return parsed
+
+    citations = [
+        citation
+        for citation in (parsed.get("citations") or [])
+        if isinstance(citation, dict)
+    ]
+    seen: set[tuple[str, str]] = set()
+    for citation in citations:
+        file_id = str(citation.get("file_id", "")).strip()
+        filename = normalize_mojibake_text(str(citation.get("filename", "")).strip())
+        if file_id:
+            seen.add((file_id, filename))
+
+    extra: list[dict[str, str]] = []
+    for source in parsed.get("retrieved_sources") or []:
+        if not isinstance(source, dict):
+            continue
+        file_id = str(source.get("file_id", "")).strip()
+        filename = normalize_mojibake_text(str(source.get("filename", "")).strip())
+        if not file_id or not filename:
+            continue
+        if not _filename_is_named_statute(filename, law_stems):
+            continue
+        key = (file_id, filename)
+        if key in seen:
+            continue
+        seen.add(key)
+        extra.append({"file_id": file_id, "filename": filename})
+
+    if extra:
+        # Love først, så kortene følger retskildehierarkiet.
+        parsed["citations"] = extra + citations
+    return parsed
 
 
 def diagnose_retrieval(question: str, parsed: dict[str, Any]) -> dict[str, Any]:
@@ -753,6 +819,7 @@ def analyze_question(
     use_file_search: bool = True,
     user_question: str | None = None,
     flow: str = "analyse",
+    preserve_markdown: bool = False,
 ) -> tuple[dict[str, Any], str, str]:
     """`user_question` er brugerens rå spørgsmål og bruges kun til retrieval-diagnosen.
 
@@ -801,7 +868,7 @@ def analyze_question(
             t0 = time.perf_counter()
             resp = client.responses.create(**request_payload)
             duration_ms = (time.perf_counter() - t0) * 1000
-            parsed = parse_response(resp)
+            parsed = parse_response(resp, preserve_markdown=preserve_markdown)
             _log_performance(
                 flow=flow,
                 model=model,
@@ -819,6 +886,7 @@ def analyze_question(
                     model=model,
                     diagnostics=parsed["retrieval_diagnostics"],
                 )
+            parsed = attach_named_law_citations(parsed)
             if STRICT_SOURCING:
                 parsed = enforce_strict_sourcing(parsed)
             else:
@@ -848,6 +916,7 @@ def analyze_question_stream(
     use_file_search: bool = True,
     user_question: str | None = None,
     flow: str = "analyse",
+    preserve_markdown: bool = False,
 ):
     """
     Streaming variant af analyze_question. Yielder dict-events: delta, done, error.
@@ -900,7 +969,7 @@ def analyze_question_stream(
                 elif event_type == "response.completed":
                     resp = get_value(event, "response")
                     duration_ms = (time.perf_counter() - t0) * 1000
-                    parsed = parse_response(resp)
+                    parsed = parse_response(resp, preserve_markdown=preserve_markdown)
                     _log_performance(
                         flow=flow,
                         model=model,
@@ -918,6 +987,7 @@ def analyze_question_stream(
                             model=model,
                             diagnostics=parsed["retrieval_diagnostics"],
                         )
+                    parsed = attach_named_law_citations(parsed)
                     if STRICT_SOURCING:
                         parsed = enforce_strict_sourcing(parsed)
                     else:

@@ -169,6 +169,10 @@ class ChatRequest(BaseModel):
         default=None,
         description="Valgfri override af vector stores i chat",
     )
+    allow_markdown: bool = Field(
+        default=False,
+        description="Hvis true må svaret bruge markdown (##, **fed**, lister, tabeller)",
+    )
 
 
 class Citation(BaseModel):

@@ -220,8 +220,9 @@ REASONING_EFFORT_LIGNINGSFRIST = "low"
 
 # Prompt caching: stabile nøgler for cache routing. Nøglen er vigtigere fra 5.6, hvor
 # den er en forudsætning for den pålidelige prefix-matchning.
-PROMPT_CACHE_KEY_ANALYSE = "jaila-analyse-v1"
-PROMPT_CACHE_KEY_CHAT = "jaila-chat-v1"
+PROMPT_CACHE_KEY_ANALYSE = "jaila-analyse-v2"
+PROMPT_CACHE_KEY_CHAT = "jaila-chat-v2"
+PROMPT_CACHE_KEY_CHAT_MARKDOWN = "jaila-chat-md-v1"
 PROMPT_CACHE_KEY_LIGNINGSFRIST = "jaila-ligningsfrist-v1"
 
 # Gælder kun modeller før GPT-5.6. Fra 5.6 er levetiden fast 30 minutter, som fornys
@@ -269,6 +270,24 @@ oplysninger, der ikke kan dokumenteres i materialet
 Hvis en oplysning ikke fremgår af materialet, skal du skrive:
 
 "Dette fremgår ikke af de tilgængelige kilder."
+
+Søgning (file_search)
+
+Den juridiske vejledning er et administrativt fortolkningsbidrag. Det er ikke nok
+at søge eller henvise til den alene.
+
+Når spørgsmålet vedrører en paragraf eller et retligt emne, skal søgningen omfatte
+mindst:
+- den lov, bekendtgørelse eller overenskomst, paragrafen eller emnet hører til
+  (lovens navn og paragrafnummer; gerne også betegnelsen lovbekendtgørelse)
+- Den juridiske vejledning om samme emne, hvis den er relevant
+
+Henviser vejledningen til en konkret lovbestemmelse, skal den bestemmelse søges
+særskilt. Lovteksten skal hentes fra loven selv, når den findes i materialet.
+Gengiver vejledningen en paragraf, erstatter det ikke et opslag i loven.
+
+Finder søgningen ikke loven, skrives det udtrykkeligt. Vejledningen må da kun
+bruges som fortolkningsbidrag med det forbehold.
 
 Citater og præcision
 
@@ -440,6 +459,10 @@ Prioritér i denne rækkefølge:
 - Den juridiske vejledning og andre administrative fortolkningsbidrag
 - OECD's modeloverenskomst med kommentarer, når de er relevante for fortolkningen
 
+Et svar, der kun henviser til Den juridiske vejledning, er ikke tilstrækkeligt.
+Lovteksten til den paragraf eller det emne, spørgsmålet vedrører, skal søges og
+anvendes, når den findes i materialet.
+
 Angiv præcise henvisninger: lov, paragraf, stykke og nummer, artikel, doms- og SKM-numre.
 
 Fremgår det af materialet, hvilken udgave en retskilde har - lovbekendtgørelsens nummer
@@ -497,6 +520,21 @@ henvisninger mod materiale, og du må ikke give indtryk af, at du har gjort det.
 Indled svaret med at oplyse, at søgning i retskilder er slået fra, og at henvisninger
 bygger på almindelig viden, som ikke er kontrolleret mod kilderne. Udelad afsnittet
 "Anvendte kilder/love"; angiv i stedet henvisningerne i teksten med det forbehold."""
+
+# Lægges til CHAT_INSTRUCTIONS i Test. Overstyrer forbuddet mod markdown ovenfor.
+# Chat-fanen får den ikke. Cache-nøglen er PROMPT_CACHE_KEY_CHAT_MARKDOWN.
+CHAT_MARKDOWN_ADDENDUM = """Markdown i svaret
+
+Svaret vises som markdown. Forbuddet mod markdown under "Sprog og form" gælder ikke her.
+
+- Skriv de seks faste overskrifter som ## Konklusion, ## Retskildeoversigt, ## Analyse,
+  ## Hvis-så-scenarier, ## Manglende oplysninger og ## Anvendte kilder/love. Stavningen
+  skal være den samme som i svarformen.
+- Brug **fed** sparsomt til henvisninger og afgørende begreber.
+- Brug nummererede lister og punktlister, når det letter læsningen.
+- Brug en markdown-tabel kun når en sammenligning eller et hvis-så-skema bliver
+  tydeligere som tabel.
+- Brug ikke HTML, ikke # (h1) og ikke citatblokke med >."""
 
 
 def get_allowed_origins() -> list[str]:

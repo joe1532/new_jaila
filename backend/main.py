@@ -23,11 +23,13 @@ from backend.config import (
     BASE_DIR,
     CHAT_BASE_INSTRUCTIONS,
     CHAT_INSTRUCTIONS,
+    CHAT_MARKDOWN_ADDENDUM,
     CHAT_NO_SEARCH_NOTICE,
     FALLBACK_MODEL,
     LOG_DIR,
     PRIMARY_MODEL,
     PROMPT_CACHE_KEY_CHAT,
+    PROMPT_CACHE_KEY_CHAT_MARKDOWN,
     PROMPT_CACHE_KEY_LIGNINGSFRIST,
     REASONING_EFFORT_CHAT,
     REASONING_EFFORT_LIGNINGSFRIST,
@@ -2690,6 +2692,8 @@ def chat(
     try:
         client = OpenAI()
         chat_instructions = CHAT_INSTRUCTIONS + "\n\n" + CHAT_NO_SEARCH_NOTICE
+        allow_markdown = bool(payload.allow_markdown)
+        chat_cache_key = PROMPT_CACHE_KEY_CHAT_MARKDOWN if allow_markdown else PROMPT_CACHE_KEY_CHAT
         requested_vector_store_ids = payload.vector_store_ids or list(VECTOR_STORE_IDS)
         cleaned_vector_store_ids: list[str] = []
         for store_id in requested_vector_store_ids:
@@ -2748,6 +2752,11 @@ def chat(
         # Basisinstruksen holder den absolutte kilderegel og kildelisten; svarformen kommer
         # alene fra chatblokken. Analysens strukturafsnit er bevidst udeladt.
         vector_chat_format_instructions = CHAT_BASE_INSTRUCTIONS + "\n\n" + CHAT_INSTRUCTIONS
+        if allow_markdown:
+            chat_instructions = chat_instructions + "\n\n" + CHAT_MARKDOWN_ADDENDUM
+            vector_chat_format_instructions = (
+                vector_chat_format_instructions + "\n\n" + CHAT_MARKDOWN_ADDENDUM
+            )
         if vector_search_enabled and context_text:
             vector_question = (
                 message
@@ -2776,7 +2785,7 @@ def chat(
                             "instructions": chat_instructions,
                             "input": message,
                             "reasoning": {"effort": REASONING_EFFORT_CHAT},
-                            "prompt_cache_key": PROMPT_CACHE_KEY_CHAT,
+                            "prompt_cache_key": chat_cache_key,
                             **cache_fields_for_model(PRIMARY_MODEL),
                             "stream": True,
                         }
@@ -2837,10 +2846,11 @@ def chat(
                             instructions=vector_chat_format_instructions,
                             models_to_try=[PRIMARY_MODEL, FALLBACK_MODEL],
                             reasoning_effort=REASONING_EFFORT_CHAT,
-                            prompt_cache_key=PROMPT_CACHE_KEY_CHAT,
+                            prompt_cache_key=chat_cache_key,
                             use_file_search=True,
                             user_question=message,
                             flow="chat",
+                            preserve_markdown=allow_markdown,
                         ):
                             if evt.get("type") == "delta":
                                 yield _sse_line({"type": "delta", "text": evt.get("text", "")})
@@ -2897,10 +2907,11 @@ def chat(
                 instructions=vector_chat_format_instructions,
                 models_to_try=[PRIMARY_MODEL, FALLBACK_MODEL],
                 reasoning_effort=REASONING_EFFORT_CHAT,
-                prompt_cache_key=PROMPT_CACHE_KEY_CHAT,
+                prompt_cache_key=chat_cache_key,
                 use_file_search=True,
                 user_question=message,
                 flow="chat",
+                preserve_markdown=allow_markdown,
             )
             answer = str(parsed.get("output_text", "") or "").strip()
             chat_citations = parsed.get("citations", []) or []
@@ -2913,7 +2924,7 @@ def chat(
                 "instructions": chat_instructions,
                 "input": message,
                 "reasoning": {"effort": REASONING_EFFORT_CHAT},
-                "prompt_cache_key": PROMPT_CACHE_KEY_CHAT,
+                "prompt_cache_key": chat_cache_key,
                 **cache_fields_for_model(PRIMARY_MODEL),
             }
             if payload.previous_response_id:
