@@ -1,3 +1,5 @@
+import { renderContextList } from "./contextList.js";
+
 function formatTestChatLogEntryAsText(entry) {
   if (!entry) return "";
   const lines = [];
@@ -22,40 +24,88 @@ function formatTestChatLogEntryAsText(entry) {
   return lines.join("\n");
 }
 
+// Rækkefølgen bestemmer, hvordan de manglende henvisninger listes. Nøglerne skal matche
+// REFERENCE_KINDS i backendens openai_service.
+const REFERENCE_KIND_LABELS = [
+  ["paragraffer", "Paragraffer"],
+  ["love", "Love"],
+  ["afgørelser", "Afgørelser"],
+  ["artikler", "Artikler"],
+];
+
+function formatScore(value) {
+  return typeof value === "number" ? value.toFixed(2) : "–";
+}
+
+function renderRetrievalPanel(container, diagnostics) {
+  if (!container) return;
+
+  container.innerHTML = "";
+  if (!diagnostics) {
+    container.classList.add("hidden");
+    return;
+  }
+  container.classList.remove("hidden");
+
+  const heading = document.createElement("h3");
+  heading.className = "retrieval-panel-heading";
+  heading.textContent = "Søgning";
+  container.appendChild(heading);
+
+  const searches = Array.isArray(diagnostics.searches) ? diagnostics.searches : [];
+  const queries = searches.flatMap((search) => (Array.isArray(search.queries) ? search.queries : []));
+
+  const summary = document.createElement("p");
+  summary.className = "retrieval-panel-summary";
+  summary.textContent =
+    `${searches.length} søgning(er), ${diagnostics.num_results || 0} tekststykker hentet · ` +
+    `score ${formatScore(diagnostics.score_min)}–${formatScore(diagnostics.score_max)}`;
+  container.appendChild(summary);
+
+  if (queries.length) {
+    const list = document.createElement("ul");
+    list.className = "retrieval-panel-queries";
+    queries.forEach((query) => {
+      const li = document.createElement("li");
+      li.textContent = query;
+      list.appendChild(li);
+    });
+    container.appendChild(list);
+  } else {
+    const none = document.createElement("p");
+    none.className = "retrieval-panel-note";
+    // Sker blandt andet, når modellen svarer uden at søge. Det er i sig selv et fund.
+    none.textContent = "Modellen sendte ingen søgestrenge.";
+    container.appendChild(none);
+  }
+
+  const missing = diagnostics.missing_references || {};
+  const missingParts = REFERENCE_KIND_LABELS
+    .filter(([key]) => Array.isArray(missing[key]) && missing[key].length)
+    .map(([key, label]) => `${label}: ${missing[key].join(", ")}`);
+
+  const verdict = document.createElement("p");
+  if (missingParts.length) {
+    verdict.className = "retrieval-panel-missing";
+    verdict.textContent = "Nævnt i spørgsmålet, men ikke fundet i materialet — " + missingParts.join(" · ");
+  } else {
+    verdict.className = "retrieval-panel-note";
+    // Formuleringen er bevidst forbeholden: kontrollen ser kun efter de henvisninger,
+    // spørgsmålet selv nævner, og et fund betyder blot, at henvisningen optræder et sted
+    // i det hentede materiale.
+    verdict.textContent = "Ingen af de henvisninger, spørgsmålet nævner, mangler i materialet.";
+  }
+  container.appendChild(verdict);
+}
+
 export function renderTestChat(elements, state) {
+  renderRetrievalPanel(elements.testChatRetrievalPanel, state.testChat.retrievalDiagnostics);
+
   if (elements.testChatUseVectorSearch) {
     elements.testChatUseVectorSearch.checked = state.testChat.useVectorSearch !== false;
   }
 
-  if (elements.testChatContextList) {
-    elements.testChatContextList.innerHTML = "";
-    const files = state.testChat.contextFiles || [];
-    if (!files.length) {
-      const li = document.createElement("li");
-      li.className = "context-file-item-empty";
-      li.textContent = "Ingen filer uploadet endnu.";
-      elements.testChatContextList.appendChild(li);
-    } else {
-      files.forEach((file) => {
-        const li = document.createElement("li");
-        li.className = "context-file-item";
-        const name = document.createElement("span");
-        name.className = "context-file-name";
-        const typeLabel = file.file_type ? "[" + file.file_type + "] " : "";
-        const noteLabel = file.extraction_note ? " - " + file.extraction_note : "";
-        name.textContent = typeLabel + file.filename + " (" + (file.size_chars || 0) + " tegn)" + noteLabel;
-        li.appendChild(name);
-        const removeBtn = document.createElement("button");
-        removeBtn.type = "button";
-        removeBtn.className = "context-file-remove";
-        removeBtn.setAttribute("data-context-id", file.context_id);
-        removeBtn.setAttribute("aria-label", "Fjern " + file.filename);
-        removeBtn.textContent = "×";
-        li.appendChild(removeBtn);
-        elements.testChatContextList.appendChild(li);
-      });
-    }
-  }
+  renderContextList(elements.testChatContextList, state.testChat.contextFiles || []);
 
   if (elements.testChatLogContent) {
     const savedLogs = state.testChat.savedLogs || [];
@@ -160,6 +210,9 @@ export function getInitialTestChatState() {
     citations: [],
     retrievalResults: [],
     usedRetrievalResults: [],
+    // null betyder "ikke målt" — enten er der ikke svaret endnu, eller også var vector
+    // search slået fra. Det er ikke det samme som "intet fundet".
+    retrievalDiagnostics: null,
     savedLogs: [],
     selectedLogId: null,
     selectedLogContent: null,

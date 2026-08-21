@@ -1137,10 +1137,25 @@ a {
 }
 
 .context-file-name {
+  flex: 1;
   color: var(--text);
   font-size: 0.9rem;
   word-break: break-word;
   overflow-wrap: anywhere;
+}
+
+.context-file-toggle {
+  width: 16px;
+  min-width: 16px;
+  height: 16px;
+  margin: 0;
+  cursor: pointer;
+}
+
+/* En fravalgt fil bliver liggende, men skal kunne ses som fravalgt. */
+.context-file-item-off .context-file-name {
+  color: var(--muted);
+  text-decoration: line-through;
 }
 
 .context-file-item-empty {
@@ -1443,6 +1458,44 @@ a {
 .forarbejder-subheading {
   margin: 14px 0 6px;
   font-size: 0.95rem;
+}
+
+/* Diagnosepanel under test-chatten: viser hvad modellen søgte efter, og om det, der
+   blev spurgt om, faktisk kom hjem. Bevidst diskret — det er et værktøj, ikke en del
+   af svaret. */
+.retrieval-panel {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  margin-bottom: 12px;
+  background: #0a1428;
+  font-size: 0.85rem;
+}
+
+.retrieval-panel-heading {
+  margin: 0 0 6px;
+  font-size: 0.9rem;
+}
+
+.retrieval-panel-summary,
+.retrieval-panel-note {
+  margin: 0 0 6px;
+  color: var(--muted);
+}
+
+.retrieval-panel-queries {
+  margin: 0 0 6px;
+  padding-left: 18px;
+  color: var(--text);
+  line-height: 1.5;
+}
+
+/* Manglende henvisninger er hele pointen med panelet og skal kunne ses uden at læse
+   resten. */
+.retrieval-panel-missing {
+  margin: 0;
+  color: var(--danger);
+  font-weight: 600;
 }
 
 /* Lovtekst og bemærkninger vises, som de står i kilden, linjeskift medregnet. */

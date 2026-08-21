@@ -37,7 +37,7 @@
           <button id="tabAnalyse" type="button" class="tab-button hidden" data-tab="analyse" aria-hidden="true">Analyse</button>
           <button id="tabChat" type="button" class="tab-button tab-button-active" data-tab="chat">Chat</button>
           <button id="tabTest" type="button" class="tab-button" data-tab="test">Test</button>
-          <button id="tabSagsbehandling" type="button" class="tab-button" data-tab="sagsbehandling">Sagsbehandling</button>
+          <button id="tabSagsbehandling" type="button" class="tab-button hidden" data-tab="sagsbehandling" aria-hidden="true">Sagsbehandling</button>
           <button id="tabForarbejder" type="button" class="tab-button" data-tab="forarbejder">Forarbejder</button>
         </nav>
 
@@ -452,6 +452,7 @@
             <section class="result chat-main-panel">
               <h2>Test</h2>
               <div id="testChatConversation" class="conversation"></div>
+              <div id="testChatRetrievalPanel" class="retrieval-panel hidden"></div>
               <label class="label" for="testChatInput">Besked</label>
               <textarea
                 id="testChatInput"
@@ -523,8 +524,9 @@
               <div id="forarbejderResult" class="forarbejder-result"></div>
               <div id="forarbejderSendPanel" class="forarbejder-send-panel hidden">
                 <p class="forarbejder-send-hint">
-                  De valgte bemærkninger lægges i chatten som fortolkningsbidrag sammen med
-                  dit spørgsmål. Forbeholdene om, hvor sikker koblingen er, følger med.
+                  De valgte bemærkninger lægges op i chattens kontekstliste som
+                  fortolkningsbidrag. Forbeholdene om, hvor sikker koblingen er, følger med.
+                  Materialet kan slås fra i listen uden at blive slettet.
                 </p>
                 <div class="actions">
                   <button id="forarbejderSendBtn" type="button" disabled>Send til chatten</button>

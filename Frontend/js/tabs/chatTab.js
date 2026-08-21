@@ -1,3 +1,6 @@
+import { ENABLE_SAGSBEHANDLING_TAB } from "../state/features.js";
+import { renderContextList } from "./contextList.js";
+
 function formatChatLogEntryAsText(entry) {
   if (!entry) return "";
   const lines = [];
@@ -27,39 +30,7 @@ export function renderChat(elements, state) {
     elements.chatUseVectorSearch.checked = state.chat.useVectorSearch !== false;
   }
 
-  if (elements.chatContextList) {
-    elements.chatContextList.innerHTML = "";
-    const files = state.chat.contextFiles || [];
-    if (!files.length) {
-      const li = document.createElement("li");
-      li.className = "context-file-item-empty";
-      li.textContent = "Ingen filer uploadet endnu.";
-      elements.chatContextList.appendChild(li);
-    } else {
-      files.forEach((file) => {
-        const li = document.createElement("li");
-        li.className = "context-file-item";
-
-        const name = document.createElement("span");
-        name.className = "context-file-name";
-        const typeLabel = file.file_type ? "[" + file.file_type + "] " : "";
-        const noteLabel = file.extraction_note ? " - " + file.extraction_note : "";
-        name.textContent =
-          typeLabel + file.filename + " (" + (file.size_chars || 0) + " tegn)" + noteLabel;
-        li.appendChild(name);
-
-        const removeBtn = document.createElement("button");
-        removeBtn.type = "button";
-        removeBtn.className = "context-file-remove";
-        removeBtn.setAttribute("data-context-id", file.context_id);
-        removeBtn.setAttribute("aria-label", "Fjern " + file.filename);
-        removeBtn.textContent = "×";
-        li.appendChild(removeBtn);
-
-        elements.chatContextList.appendChild(li);
-      });
-    }
-  }
+  renderContextList(elements.chatContextList, state.chat.contextFiles || []);
 
   if (elements.chatLogContent) {
     const savedLogs = state.chat.savedLogs || [];
@@ -89,13 +60,17 @@ export function renderChat(elements, state) {
       deleteBtn.dataset.entryId = selectedLogContent.id || "";
       elements.chatLogContent.appendChild(deleteBtn);
 
-      const useInSagsBtn = document.createElement("button");
-      useInSagsBtn.type = "button";
-      useInSagsBtn.className = "button-secondary analyse-log-back";
-      useInSagsBtn.textContent = "Brug i sagsbehandling";
-      useInSagsBtn.dataset.action = "use-chat-as-sags-context";
-      useInSagsBtn.dataset.entryId = selectedLogContent.id || "";
-      elements.chatLogContent.appendChild(useInSagsBtn);
+      // Knappen sender chatloggen videre til sagsbehandling. Er fanen frakoblet, ville
+      // konteksten lande et sted, brugeren ikke kan komme hen.
+      if (ENABLE_SAGSBEHANDLING_TAB) {
+        const useInSagsBtn = document.createElement("button");
+        useInSagsBtn.type = "button";
+        useInSagsBtn.className = "button-secondary analyse-log-back";
+        useInSagsBtn.textContent = "Brug i sagsbehandling";
+        useInSagsBtn.dataset.action = "use-chat-as-sags-context";
+        useInSagsBtn.dataset.entryId = selectedLogContent.id || "";
+        elements.chatLogContent.appendChild(useInSagsBtn);
+      }
 
       const pre = document.createElement("pre");
       pre.className = "analyse-log-full";

@@ -18,8 +18,10 @@ import {
 import { exportChatPdf, sendChat, sendChatStream } from "./api/chatApi.js";
 import {
   clearChatContextFiles,
+  createChatContextFromText,
   deleteChatContextFile,
   getChatContextFiles,
+  setChatContextEnabled,
   uploadChatContextFile,
 } from "./api/contextApi.js";
 import {
@@ -35,6 +37,7 @@ import {
   setActiveTab,
   setActiveUser,
 } from "./state/session.js";
+import { ENABLE_ANALYSE_TAB, ENABLE_SAGSBEHANDLING_TAB } from "./state/features.js";
 import { getState, setState } from "./state/store.js";
 import { getInitialAnalyseState, renderAnalyse } from "./tabs/analyseTab.js";
 import { getInitialChatState, renderChat } from "./tabs/chatTab.js";
@@ -112,7 +115,6 @@ const SAGS_SUBTAB_LABELS = {
   lempelse: "Lempelse",
   andet: "Andet",
 };
-const ENABLE_ANALYSE_TAB = false;
 // Test-fanen gemmer i sin egen historik, så eksperimenter ikke blander sig med de
 // rigtige chatforløb. Chat-fanen bruger klientens standard og sender derfor intet.
 const TEST_CHAT_LOG_KIND = "test";
@@ -154,6 +156,7 @@ const elements = {
   analyseLegalPreviewPageInfo: document.getElementById("analyseLegalPreviewPageInfo"),
   tabButtons: Array.from(document.querySelectorAll(".tab-button")),
   tabAnalyse: document.getElementById("tabAnalyse"),
+  tabSagsbehandling: document.getElementById("tabSagsbehandling"),
   tabPaneAnalyse: document.getElementById("tabPaneAnalyse"),
   tabPaneSagsbehandling: document.getElementById("tabPaneSagsbehandling"),
   tabPaneChat: document.getElementById("tabPaneChat"),
@@ -238,6 +241,7 @@ const elements = {
   chatContextList: document.getElementById("chatContextList"),
   chatLogContent: document.getElementById("chatLogContent"),
   testChatConversation: document.getElementById("testChatConversation"),
+  testChatRetrievalPanel: document.getElementById("testChatRetrievalPanel"),
   testChatInput: document.getElementById("testChatInput"),
   testChatSendBtn: document.getElementById("testChatSendBtn"),
   testChatAbortBtn: document.getElementById("testChatAbortBtn"),
@@ -253,6 +257,11 @@ const elements = {
 function normalizeTabId(tabId) {
   const normalized = String(tabId || "").trim();
   if (normalized === "analyse" && !ENABLE_ANALYSE_TAB) {
+    return "chat";
+  }
+  // En bruger, der sidst var i sagsbehandling, har fanen liggende i localStorage og ville
+  // ellers lande på en skjult, tom side ved næste login.
+  if (normalized === "sagsbehandling" && !ENABLE_SAGSBEHANDLING_TAB) {
     return "chat";
   }
   if (
@@ -276,6 +285,16 @@ function applyTabAvailability() {
     if (elements.tabPaneAnalyse) {
       elements.tabPaneAnalyse.classList.add("hidden");
       elements.tabPaneAnalyse.setAttribute("aria-hidden", "true");
+    }
+  }
+  if (!ENABLE_SAGSBEHANDLING_TAB) {
+    if (elements.tabSagsbehandling) {
+      elements.tabSagsbehandling.classList.add("hidden");
+      elements.tabSagsbehandling.setAttribute("aria-hidden", "true");
+    }
+    if (elements.tabPaneSagsbehandling) {
+      elements.tabPaneSagsbehandling.classList.add("hidden");
+      elements.tabPaneSagsbehandling.setAttribute("aria-hidden", "true");
     }
   }
 }
@@ -612,16 +631,45 @@ function buildForarbejderContext() {
   return `${header}\n\n${blocks}`;
 }
 
-function sendForarbejderToChat() {
+/**
+ * Læg de valgte bemærkninger op som kontekstfil i chatten.
+ *
+ * Teksten lå tidligere i selve chatfeltet. Den ligger nu i chattens kontekstliste, så
+ * spørgsmålet kan skrives frit, materialet kan slås fra igen uden at blive slettet, og
+ * det følger med i flere spørgsmål i træk i stedet for kun det første.
+ */
+async function sendForarbejderToChat() {
   const context = buildForarbejderContext();
   if (!context) {
     return;
   }
-  const existing = String(getState().chat.inputText || "").trim();
-  const question = existing || "Hvad menes der med denne paragraf, og hvordan skal den fortolkes?";
-  setState({ chat: { inputText: `${question}\n\n---\n${context}\n---` } });
-  switchTab("chat");
-  renderAllTabs();
+  const history = getState().forarbejder.history;
+  const filename = history
+    ? `Forarbejder ${history.law_name} § ${history.paragraph_id}.txt`
+    : "Forarbejder.txt";
+
+  setLoading(true);
+  setStatus("Lægger forarbejderne op som kontekst...", "ok");
+  try {
+    const sessionId = getOrCreateChatSessionId();
+    const files = await createChatContextFromText(
+      { filename, text: context, kind: "retskilde" },
+      sessionId,
+    );
+    setState({ chat: { contextFiles: files } });
+    if (!String(getState().chat.inputText || "").trim()) {
+      setState({
+        chat: { inputText: "Hvad menes der med denne paragraf, og hvordan skal den fortolkes?" },
+      });
+    }
+    switchTab("chat");
+    renderAllTabs();
+    setStatus("Forarbejderne ligger nu som kontekst i Chat.", "ok");
+  } catch (err) {
+    setStatus("Kunne ikke lægge forarbejderne op: " + (err.message || "Ukendt fejl"), "error");
+  } finally {
+    setLoading(false);
+  }
   setStatus("Fortolkningsbidraget er lagt i chatten. Tilret spørgsmålet, og send.", "ok");
 }
 
@@ -648,6 +696,10 @@ function switchTab(tabId) {
       return;
     }
     if (key === "analyse" && !ENABLE_ANALYSE_TAB) {
+      pane.classList.add("hidden");
+      return;
+    }
+    if (key === "sagsbehandling" && !ENABLE_SAGSBEHANDLING_TAB) {
       pane.classList.add("hidden");
       return;
     }
@@ -705,8 +757,12 @@ function showApp(user) {
   elements.sessionLabel.textContent = "Logget ind som: " + user;
   switchTab(getState().ui.activeTab || "chat");
   renderAllTabs();
-  refreshSagsCases();
-  loadLegalBasisForSubtab(getState().sagsbehandling.activeSubtab || "skattepligt_ligningsfrist");
+  // Sagslisten og retsgrundlaget hentes fra backend ved login. Er fanen frakoblet, er det
+  // to kald til data, ingen kan se, så de springes over.
+  if (ENABLE_SAGSBEHANDLING_TAB) {
+    refreshSagsCases();
+    loadLegalBasisForSubtab(getState().sagsbehandling.activeSubtab || "skattepligt_ligningsfrist");
+  }
   renderStatus();
   setStatus("Klar.", "ok");
   if (user === "allan") {
@@ -1026,6 +1082,9 @@ function loadTestChatFromLogEntry(entry) {
       retrievalResults: Array.isArray(entry?.retrieval_results) ? entry.retrieval_results : [],
       usedRetrievalResults: Array.isArray(entry?.used_retrieval_results) ? entry.used_retrieval_results : [],
       usedVectorStoreIds: Array.isArray(entry?.used_vector_store_ids) ? entry.used_vector_store_ids : [],
+      // Diagnosen gemmes ikke i historikken, så et indlæst forløb har ingen at vise.
+      // Uden nulstilling ville panelet blive stående med det seneste svars søgninger.
+      retrievalDiagnostics: null,
       selectedLogId: null,
       selectedLogContent: null,
       inputText: "",
@@ -3203,6 +3262,23 @@ async function removeContextFile(contextId) {
   }
 }
 
+async function toggleContextFile(contextId, enabled) {
+  if (!contextId) {
+    return;
+  }
+  try {
+    const sessionId = getOrCreateChatSessionId();
+    const files = await setChatContextEnabled(contextId, enabled, sessionId);
+    setState({ chat: { contextFiles: files } });
+    renderChat(elements, getState());
+    setStatus(enabled ? "Kontekstfil slået til." : "Kontekstfil slået fra.", "ok");
+  } catch (err) {
+    // Serveren har ikke ændret noget, så listen tegnes igen fra kendt tilstand.
+    renderChat(elements, getState());
+    setStatus("Kunne ikke ændre kontekstfil: " + (err.message || "Ukendt fejl"), "error");
+  }
+}
+
 async function saveChatToPdf() {
   const messages = getState().chat.messages || [];
   if (!messages.length) {
@@ -3248,6 +3324,9 @@ async function runTestChat() {
   setState({
     testChat: {
       inputText: "",
+      // Diagnosen hører til det svar, der er på vej. Ryddes den ikke her, ville panelet
+      // vise forrige spørgsmåls søgninger, mens det nye svar streames ind.
+      retrievalDiagnostics: null,
     },
   });
   renderTestChat(elements, getState());
@@ -3290,6 +3369,7 @@ async function runTestChat() {
               usedRetrievalResults: Array.isArray(evt.used_retrieval_results)
                 ? evt.used_retrieval_results
                 : (Array.isArray(evt.retrieval_results) ? evt.retrieval_results : []),
+              retrievalDiagnostics: evt.retrieval_diagnostics || null,
             },
           });
           updateLastTestChatMessageText(evt.answer || accumulated || "Intet svar returneret.");
@@ -3345,6 +3425,7 @@ async function runTestChat() {
           usedRetrievalResults: Array.isArray(data.used_retrieval_results)
             ? data.used_retrieval_results
             : (Array.isArray(data.retrieval_results) ? data.retrieval_results : []),
+          retrievalDiagnostics: data.retrieval_diagnostics || null,
         },
       });
       addTestChatMessage("assistant", data.answer || "Intet svar returneret.");
@@ -3482,6 +3563,22 @@ async function removeTestContextFile(contextId) {
     setStatus("Fejl ved fjernelse af test-kontekstfil: " + (err.message || "Ukendt fejl"), "error");
   } finally {
     setLoading(false);
+  }
+}
+
+async function toggleTestContextFile(contextId, enabled) {
+  if (!contextId) {
+    return;
+  }
+  try {
+    const sessionId = getOrCreateTestChatSessionId();
+    const files = await setChatContextEnabled(contextId, enabled, sessionId);
+    setState({ testChat: { contextFiles: files } });
+    renderTestChat(elements, getState());
+    setStatus(enabled ? "Test-kontekstfil slået til." : "Test-kontekstfil slået fra.", "ok");
+  } catch (err) {
+    renderTestChat(elements, getState());
+    setStatus("Kunne ikke ændre test-kontekstfil: " + (err.message || "Ukendt fejl"), "error");
   }
 }
 
@@ -4103,6 +4200,17 @@ function bindEvents() {
       }
       removeContextFile(contextId);
     });
+    elements.chatContextList.addEventListener("change", (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLInputElement)) {
+        return;
+      }
+      const contextId = target.getAttribute("data-context-toggle-id");
+      if (!contextId) {
+        return;
+      }
+      toggleContextFile(contextId, target.checked);
+    });
   }
 
   if (elements.testChatContextList) {
@@ -4116,6 +4224,17 @@ function bindEvents() {
         return;
       }
       removeTestContextFile(contextId);
+    });
+    elements.testChatContextList.addEventListener("change", (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLInputElement)) {
+        return;
+      }
+      const contextId = target.getAttribute("data-context-toggle-id");
+      if (!contextId) {
+        return;
+      }
+      toggleTestContextFile(contextId, target.checked);
     });
   }
 

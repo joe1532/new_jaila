@@ -193,6 +193,30 @@ class AnalyzeResponse(BaseModel):
     log_pdf_url: str
 
 
+class RetrievalSearch(BaseModel):
+    """En enkelt søgning, modellen selv formulerede og sendte til file_search."""
+
+    queries: list[str] = Field(default_factory=list)
+    status: str = ""
+    num_results: int = 0
+
+
+class RetrievalDiagnostics(BaseModel):
+    """Observation af, om søgningen hentede det, spørgsmålet nævnte.
+
+    Felterne har defaults hele vejen, fordi diagnosen udelades, når vector search er slået
+    fra. Et tomt objekt betyder derfor "ikke målt", ikke "intet fundet".
+    """
+
+    searches: list[RetrievalSearch] = Field(default_factory=list)
+    num_results: int = 0
+    score_min: float | None = None
+    score_max: float | None = None
+    asked_references: dict[str, list[str]] = Field(default_factory=dict)
+    missing_references: dict[str, list[str]] = Field(default_factory=dict)
+    has_missing_references: bool = False
+
+
 class ChatResponse(BaseModel):
     answer: str
     used_model: str
@@ -202,6 +226,7 @@ class ChatResponse(BaseModel):
     citations: list[Citation] = Field(default_factory=list)
     retrieval_results: list[RetrievalResult] = Field(default_factory=list)
     used_retrieval_results: list[RetrievalResult] = Field(default_factory=list)
+    retrieval_diagnostics: RetrievalDiagnostics = Field(default_factory=RetrievalDiagnostics)
 
 
 class ChatMessage(BaseModel):
@@ -290,10 +315,26 @@ class ChatContextFileResponse(BaseModel):
     file_type: str
     size_chars: int
     extraction_note: str | None = None
+    # Arten styrer, hvordan materialet rammesættes for modellen: sagens fakta,
+    # fortolkningsbidrag eller vejledning i sprog og form.
+    kind: str = "fakta"
+    enabled: bool = True
 
 
 class ChatContextListResponse(BaseModel):
     files: list[ChatContextFileResponse]
+
+
+class ChatContextToggleRequest(BaseModel):
+    enabled: bool
+
+
+class ChatContextTextRequest(BaseModel):
+    """Kontekst, der er dannet i JAILA selv - fx forarbejder - og ikke uploadet fra disk."""
+
+    filename: str
+    text: str
+    kind: str = "retskilde"
 
 
 class SagsLegalBasisResponse(BaseModel):

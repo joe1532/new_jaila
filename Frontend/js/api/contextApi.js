@@ -78,6 +78,54 @@ export async function uploadChatContextFile(file, chatSessionId) {
   return parsed.data.files || [];
 }
 
+export async function createChatContextFromText(payload, chatSessionId) {
+  const response = await fetch(API_BASE_URL + "/chat/context/text", {
+    method: "POST",
+    headers: {
+      ...buildSessionHeaders(chatSessionId),
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+  const parsed = await parseApiJson(response);
+  if (!response.ok) {
+    throw new Error(
+      await parseApiError(
+        { rawText: parsed.rawText, status: response.status },
+        "Kunne ikke lægge teksten op som kontekst",
+      ),
+    );
+  }
+  if (!parsed.data || typeof parsed.data !== "object") {
+    throw new Error("Serveren returnerede ugyldig JSON");
+  }
+  return parsed.data.files || [];
+}
+
+export async function setChatContextEnabled(contextId, enabled, chatSessionId) {
+  const response = await fetch(API_BASE_URL + "/chat/context/" + encodeURIComponent(contextId), {
+    method: "PATCH",
+    headers: {
+      ...buildSessionHeaders(chatSessionId),
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ enabled: Boolean(enabled) }),
+  });
+  const parsed = await parseApiJson(response);
+  if (!response.ok) {
+    throw new Error(
+      await parseApiError(
+        { rawText: parsed.rawText, status: response.status },
+        "Kunne ikke ændre kontekstfilen",
+      ),
+    );
+  }
+  if (!parsed.data || typeof parsed.data !== "object") {
+    throw new Error("Serveren returnerede ugyldig JSON");
+  }
+  return parsed.data.files || [];
+}
+
 export async function deleteChatContextFile(contextId, chatSessionId) {
   const response = await fetch(API_BASE_URL + "/chat/context/" + encodeURIComponent(contextId), {
     method: "DELETE",

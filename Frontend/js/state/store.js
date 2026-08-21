@@ -115,6 +115,10 @@ const state = {
     citations: [],
     retrievalResults: [],
     usedRetrievalResults: [],
+    // Sættes til null mellem to spørgsmål. Ud over at rydde panelet sikrer det, at
+    // setState erstatter objektet i stedet for at flette det sammen med det forrige
+    // svars diagnose (se mergeObject nedenfor).
+    retrievalDiagnostics: null,
     savedLogs: [],
     selectedLogId: null,
     selectedLogContent: null,

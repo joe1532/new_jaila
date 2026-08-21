@@ -179,6 +179,7 @@ def parse_response(resp: Any) -> dict[str, Any]:
     retrieved_chunks: list[dict[str, str]] = []
     retrieved_sources: list[dict[str, str]] = []
     retrieved_source_seen: set[tuple[str, str]] = set()
+    searches: list[dict[str, Any]] = []
 
     for item in output_items:
         item_type = get_value(item, "type", "")
@@ -199,7 +200,24 @@ def parse_response(resp: Any) -> dict[str, Any]:
                         )
 
         if item_type == "file_search_call":
-            for result in get_value(item, "results", []) or []:
+            # Modellen formulerer selv sine søgestrenge. De er den eneste kilde til at se,
+            # om et dårligt svar skyldtes en dårlig søgning eller manglende materiale, så
+            # de gemmes her i stedet for at blive kasseret sammen med resten af item'et.
+            # num_results tæller kun de hits, vi faktisk fik udleveret; uden
+            # include=["file_search_call.results"] er listen tom, selv om der blev søgt.
+            search_results = get_value(item, "results", []) or []
+            searches.append(
+                {
+                    "queries": [
+                        str(query).strip()
+                        for query in (get_value(item, "queries", []) or [])
+                        if str(query).strip()
+                    ],
+                    "status": str(get_value(item, "status", "") or ""),
+                    "num_results": len(search_results),
+                }
+            )
+            for result in search_results:
                 file_id = str(get_value(result, "file_id", ""))
                 filename = normalize_mojibake_text(str(get_value(result, "filename", "")))
                 chunk_text = str(get_value(result, "text", "")).strip()
@@ -239,7 +257,157 @@ def parse_response(resp: Any) -> dict[str, Any]:
         "citations": unique_citations,
         "retrieved_chunks": retrieved_chunks,
         "retrieved_sources": retrieved_sources,
+        "searches": searches,
     }
+
+
+# --- Retrieval-diagnostik ---------------------------------------------------------
+#
+# Alt herunder er observation. Det ændrer ikke svaret og blokerer intet; formålet er
+# udelukkende at kunne se, hvorfor et svar blev dårligt — blev der søgt forkert, eller
+# kom det rigtige materiale bare ikke hjem?
+#
+# Vigtig begrænsning: diagnosen kan kun måle på de retskilder, spørgsmålet selv nævner.
+# Spørger nogen bredt ("hvordan beskattes fri bil?"), er der intet at holde søgningen op
+# imod, og diagnosen melder ingenting. Den fanger altså den fejl, hvor en nævnt
+# bestemmelse ikke kom hjem — ikke den, hvor en relevant bestemmelse aldrig blev nævnt.
+
+# Et enkelt bogstav efter paragraffens nummer kan være paragrafbogstavet ("§ 33 A") eller
+# et almindeligt dansk ord ("§ 5 i loven"). Uden denne liste ville det sidste blive læst
+# som "§ 5 I", og diagnosen ville melde en manglende bestemmelse, ingen har spurgt om.
+_PARAGRAPH_LETTER_STOPWORDS = {"i", "o", "e", "å"}
+
+# Bogstavet tages kun med, hvis der ikke står flere bogstaver lige efter. Det holder
+# "§ 5 om fradrag" og "§ 5 stk. 2" fri af at blive læst som "§ 5 O" og "§ 5 S".
+_PARAGRAPH_PATTERN = re.compile(
+    r"§+\s*(\d+)\s*(?:([A-Za-zÆØÅæøå])(?![A-Za-zÆØÅæøå]))?"
+)
+# Kræver mindst fire bogstaver før "lov", så det generiske ord "loven" ikke tælles med
+# som en selvstændig retskilde. Stammen gemmes uden endelse, så "ligningsloven",
+# "ligningslovens" og "ligningslov" giver samme nøgle.
+_LAW_PATTERN = re.compile(r"([a-zæøå]{4,}lov)(?:en|ens|e|s)?\b", re.IGNORECASE)
+_RULING_PATTERN = re.compile(
+    r"\b(?:SKM|TfS|LSR|SKDM)\s*\.?\s*\d{4}\s*[.,]?\s*\d+\s*[.,]?\s*[A-ZÆØÅ]{0,5}\b",
+    re.IGNORECASE,
+)
+_ARTICLE_PATTERN = re.compile(r"\bartikel\s*(\d+)", re.IGNORECASE)
+
+REFERENCE_KINDS = ("paragraffer", "love", "afgørelser", "artikler")
+
+
+def _normalize_key(value: str) -> str:
+    return re.sub(r"[^0-9a-zæøå]", "", value.lower())
+
+
+def _reference_keys(text: str) -> dict[str, set[str]]:
+    """Normaliserede nøgler for de retskilder, en tekst nævner.
+
+    Nøglerne er med vilje grove: "§ 33 A", "§33 a" og "§ 33 A, stk. 1" giver alle
+    "§33a". Det er en forudsætning for at kunne sammenligne et spørgsmål med de hentede
+    tekststykker, hvor skrivemåden sjældent er den samme.
+
+    Stykke og litra ignoreres. To spørgsmål om henholdsvis stk. 1 og stk. 3 i samme
+    paragraf kan derfor ikke skelnes her — diagnosen er på paragrafniveau.
+    """
+    source = text or ""
+
+    paragraphs: set[str] = set()
+    for match in _PARAGRAPH_PATTERN.finditer(source):
+        number = match.group(1)
+        letter = (match.group(2) or "").lower()
+        if letter in _PARAGRAPH_LETTER_STOPWORDS:
+            letter = ""
+        paragraphs.add(f"§{number}{letter}")
+
+    laws = {match.group(1).lower() for match in _LAW_PATTERN.finditer(source)}
+    rulings = {_normalize_key(match.group(0)) for match in _RULING_PATTERN.finditer(source)}
+    articles = {f"artikel{match.group(1)}" for match in _ARTICLE_PATTERN.finditer(source)}
+
+    return {
+        "paragraffer": paragraphs,
+        "love": laws,
+        "afgørelser": rulings,
+        "artikler": articles,
+    }
+
+
+def diagnose_retrieval(question: str, parsed: dict[str, Any]) -> dict[str, Any]:
+    """Sammenhold spørgsmålets retskilder med det, søgningen faktisk hentede hjem.
+
+    Filnavnet tælles med på lige fod med teksten, fordi et lovdokument sjældent gentager
+    sit eget navn inde i teksten — "aktieavancebeskatningsloven" står typisk kun i
+    filnavnet.
+
+    Et fund betyder kun, at bestemmelsen er nævnt et sted i det hentede materiale. Den
+    kan optræde i en henvisningsliste uden at være det, tekststykket handler om. Signalet
+    er derfor pålideligt, når det melder noget som manglende, og svagere når det melder
+    alt fundet.
+    """
+    chunks = [chunk for chunk in (parsed.get("retrieved_chunks") or []) if isinstance(chunk, dict)]
+    haystack = "\n".join(
+        f"{chunk.get('filename', '')}\n{chunk.get('text', '')}" for chunk in chunks
+    )
+
+    asked = _reference_keys(question)
+    found = _reference_keys(haystack)
+    missing = {kind: sorted(asked[kind] - found[kind]) for kind in REFERENCE_KINDS}
+
+    scores: list[float] = []
+    for chunk in chunks:
+        raw_score = str(chunk.get("score", "")).strip()
+        if not raw_score:
+            continue
+        try:
+            scores.append(float(raw_score))
+        except ValueError:
+            # Scoren kommer som streng fra API'et. Kan den ikke læses som tal, er det
+            # ikke værd at fejle på — den indgår bare ikke i opsummeringen.
+            continue
+
+    return {
+        "searches": parsed.get("searches") or [],
+        "num_results": len(chunks),
+        "score_min": min(scores) if scores else None,
+        "score_max": max(scores) if scores else None,
+        "asked_references": {kind: sorted(asked[kind]) for kind in REFERENCE_KINDS},
+        "missing_references": missing,
+        "has_missing_references": any(missing[kind] for kind in REFERENCE_KINDS),
+    }
+
+
+def _log_retrieval(flow: str, model: str, diagnostics: dict[str, Any]) -> None:
+    """Én linje pr. kald, så mange spørgsmål kan aflæses samlet bagefter.
+
+    Formatet er key=value, så linjerne kan filtreres med grep og tælles op uden at skulle
+    parses. Søgestrengene skrives ud i fuld længde — det er netop dem, der skal kunne
+    læses, når et svar er gået galt.
+    """
+    searches = diagnostics.get("searches") or []
+    queries = [query for search in searches for query in (search.get("queries") or [])]
+    missing = diagnostics.get("missing_references") or {}
+    missing_flat = [value for kind in REFERENCE_KINDS for value in (missing.get(kind) or [])]
+
+    def _fmt(value: Any) -> str:
+        return "-" if value is None else f"{value:.3f}" if isinstance(value, float) else str(value)
+
+    _log.info(
+        "retrieval flow=%s model=%s searches=%s results=%s score_min=%s score_max=%s "
+        'missing=%s asked=%s queries="%s"',
+        flow,
+        model,
+        len(searches),
+        diagnostics.get("num_results", 0),
+        _fmt(diagnostics.get("score_min")),
+        _fmt(diagnostics.get("score_max")),
+        ",".join(missing_flat) or "-",
+        ",".join(
+            value
+            for kind in REFERENCE_KINDS
+            for value in (diagnostics.get("asked_references", {}).get(kind) or [])
+        )
+        or "-",
+        '" | "'.join(queries) or "-",
+    )
 
 
 def extract_legal_references(chunks: list[dict[str, str]]) -> list[str]:
@@ -583,7 +751,18 @@ def analyze_question(
     reasoning_effort: str | None = None,
     prompt_cache_key: str | None = None,
     use_file_search: bool = True,
+    user_question: str | None = None,
+    flow: str = "analyse",
 ) -> tuple[dict[str, Any], str, str]:
+    """`user_question` er brugerens rå spørgsmål og bruges kun til retrieval-diagnosen.
+
+    I chat indeholder `question` også uploadet kontekst og en instruktionshale. Måltes
+    diagnosen på den, ville den tælle retskilder, brugeren aldrig har nævnt.
+
+    `flow` er den etiket, kaldet får i loggen. Chat bruger denne funktion med analysens
+    regler, og indtil nu blev chat-kald derfor logget som "analyse". Det er rettet, så
+    de to kan skelnes — bemærk at ældre logs bruger den gamle, forkerte etiket.
+    """
     effective_vector_store_ids = vector_store_ids or VECTOR_STORE_IDS
     effective_instructions = instructions or ANSWER_INSTRUCTIONS
     effective_reasoning = reasoning_effort or REASONING_EFFORT_ANALYSE
@@ -624,13 +803,22 @@ def analyze_question(
             duration_ms = (time.perf_counter() - t0) * 1000
             parsed = parse_response(resp)
             _log_performance(
-                flow="analyse",
+                flow=flow,
                 model=model,
                 duration_ms=duration_ms,
                 resp=resp,
                 reasoning_effort=effective_reasoning,
                 num_retrieval_results=len(parsed.get("retrieved_chunks", [])),
             )
+            if use_file_search:
+                parsed["retrieval_diagnostics"] = diagnose_retrieval(
+                    user_question or question, parsed
+                )
+                _log_retrieval(
+                    flow=flow,
+                    model=model,
+                    diagnostics=parsed["retrieval_diagnostics"],
+                )
             if STRICT_SOURCING:
                 parsed = enforce_strict_sourcing(parsed)
             else:
@@ -658,9 +846,13 @@ def analyze_question_stream(
     reasoning_effort: str | None = None,
     prompt_cache_key: str | None = None,
     use_file_search: bool = True,
+    user_question: str | None = None,
+    flow: str = "analyse",
 ):
     """
     Streaming variant af analyze_question. Yielder dict-events: delta, done, error.
+
+    `user_question` og `flow` virker som i analyze_question — se dokumentationen der.
     """
     effective_vector_store_ids = vector_store_ids or VECTOR_STORE_IDS
     effective_instructions = instructions or ANSWER_INSTRUCTIONS
@@ -710,13 +902,22 @@ def analyze_question_stream(
                     duration_ms = (time.perf_counter() - t0) * 1000
                     parsed = parse_response(resp)
                     _log_performance(
-                        flow="analyse",
+                        flow=flow,
                         model=model,
                         duration_ms=duration_ms,
                         resp=resp,
                         reasoning_effort=effective_reasoning,
                         num_retrieval_results=len(parsed.get("retrieved_chunks", [])),
                     )
+                    if use_file_search:
+                        parsed["retrieval_diagnostics"] = diagnose_retrieval(
+                            user_question or log_question or question, parsed
+                        )
+                        _log_retrieval(
+                            flow=flow,
+                            model=model,
+                            diagnostics=parsed["retrieval_diagnostics"],
+                        )
                     if STRICT_SOURCING:
                         parsed = enforce_strict_sourcing(parsed)
                     else:
@@ -733,6 +934,8 @@ def analyze_question_stream(
                         "citations": parsed.get("citations", []),
                         "retrieval_results": parsed.get("retrieved_chunks", []),
                         "used_retrieval_results": parsed.get("used_retrieval_results", []),
+                        "searches": parsed.get("searches", []),
+                        "retrieval_diagnostics": parsed.get("retrieval_diagnostics", {}),
                         "used_vector_store_ids": selected_vector_store_ids if use_file_search else [],
                         "log_pdf_filename": log_path.name,
                         "log_pdf_url": f"/api/logs/{log_path.name}",

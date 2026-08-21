@@ -1,3 +1,5 @@
+import { ENABLE_SAGSBEHANDLING_TAB } from "../state/features.js";
+
 function formatLogEntryAsText(entry) {
   if (!entry) return "";
   const lines = [];
@@ -96,13 +98,17 @@ export function renderAnalyse(elements, state) {
       deleteBtn.dataset.action = "analyse-log-delete";
       deleteBtn.dataset.entryId = selectedLogContent.id || selectedLogId || "";
       elements.analyseLogContent.appendChild(deleteBtn);
-      const useInSagsBtn = document.createElement("button");
-      useInSagsBtn.type = "button";
-      useInSagsBtn.className = "button-secondary analyse-log-back";
-      useInSagsBtn.textContent = "Brug i sagsbehandling";
-      useInSagsBtn.dataset.action = "use-as-sags-context";
-      useInSagsBtn.dataset.entryId = selectedLogContent.id || selectedLogId || "";
-      elements.analyseLogContent.appendChild(useInSagsBtn);
+      // Samme forbehold som i chat-fanen: uden en synlig sagsbehandlingsfane fører
+      // knappen ingen steder hen.
+      if (ENABLE_SAGSBEHANDLING_TAB) {
+        const useInSagsBtn = document.createElement("button");
+        useInSagsBtn.type = "button";
+        useInSagsBtn.className = "button-secondary analyse-log-back";
+        useInSagsBtn.textContent = "Brug i sagsbehandling";
+        useInSagsBtn.dataset.action = "use-as-sags-context";
+        useInSagsBtn.dataset.entryId = selectedLogContent.id || selectedLogId || "";
+        elements.analyseLogContent.appendChild(useInSagsBtn);
+      }
       const logPdfUrl = (selectedLogContent.log_pdf_url || "").trim();
       if (logPdfUrl) {
         const pdfLink = document.createElement("a");

@@ -20,9 +20,10 @@ from openai import OpenAI
 from pypdf import PdfReader
 
 from backend.config import (
-    ANSWER_INSTRUCTIONS,
     BASE_DIR,
+    CHAT_BASE_INSTRUCTIONS,
     CHAT_INSTRUCTIONS,
+    CHAT_NO_SEARCH_NOTICE,
     FALLBACK_MODEL,
     LOG_DIR,
     PRIMARY_MODEL,
@@ -49,6 +50,8 @@ from backend.models import (
     CaseUpdateRequest,
     ChatContextFileResponse,
     ChatContextListResponse,
+    ChatContextTextRequest,
+    ChatContextToggleRequest,
     ChatExportRequest,
     ChatExportResponse,
     ChatLogGetResponse,
@@ -1396,10 +1399,20 @@ def list_chat_context_ids(session_id: str) -> list[str]:
     if not session_dir.exists():
         return []
     ids = [p.stem for p in session_dir.glob("*.json") if p.is_file()]
-    ids.sort(
-        key=lambda context_id: context_meta_path(session_dir, context_id).stat().st_mtime,
-        reverse=True,
-    )
+
+    def sort_key(context_id: str) -> float:
+        # Oprettelsestidspunktet, ikke filens ændringstidspunkt. Ellers ville filen
+        # hoppe op i listen, hver gang den blev slået til eller fra.
+        meta = load_context_meta(session_dir, context_id)
+        created = meta.get("created_at")
+        if isinstance(created, (int, float)):
+            return float(created)
+        try:
+            return context_meta_path(session_dir, context_id).stat().st_mtime
+        except OSError:
+            return 0.0
+
+    ids.sort(key=sort_key, reverse=True)
     return ids
 
 
@@ -1449,12 +1462,18 @@ def ensure_default_guide_context_for_session(session_id: str) -> None:
     note = "Default skriveguide indlæst automatisk ved ny session"
     if was_truncated:
         note += ". Indhold blev afkortet."
+    # Skriveguiden lægges frem, men slået fra. Den er skrevet til afsnit, der sendes
+    # direkte til en borger, og passer ikke til et retskildenotat. Skal den bruges, slår
+    # brugeren den til.
     metadata = {
         "context_id": context_id,
         "filename": "Skriveguide.md",
         "file_type": "tekst",
         "size_chars": len(guide_text),
         "extraction_note": note,
+        "kind": "skrivevejledning",
+        "enabled": False,
+        "created_at": time.time(),
     }
     context_meta_path(session_dir, context_id).write_text(
         json.dumps(metadata, ensure_ascii=False),
@@ -1483,6 +1502,8 @@ def build_chat_context_list_response(session_id: str) -> ChatContextListResponse
                 file_type=file_type,
                 size_chars=size_chars,
                 extraction_note=extraction_note,
+                kind=context_kind(meta),
+                enabled=context_enabled(meta),
             )
         )
     return ChatContextListResponse(files=files)
@@ -1492,6 +1513,35 @@ def is_default_skriveguide_meta(meta: dict) -> bool:
     filename = str(meta.get("filename", "")).strip().lower()
     extraction_note = str(meta.get("extraction_note", "")).strip().lower()
     return filename == "skriveguide.md" and "default skriveguide" in extraction_note
+
+
+# Materialets art afgør, hvordan det skal bruges. En kontrakt er sagens fakta, et
+# forarbejde er et fortolkningsbidrag, og en skrivevejledning er hverken det ene eller
+# det andet. Blev alt kaldt det samme, ville modellen få at vide, at en skrivevejledning
+# var en faktisk oplysning i sagen.
+CONTEXT_KINDS = ("fakta", "retskilde", "skrivevejledning")
+
+
+def context_kind(meta: dict) -> str:
+    """Materialets art. Ældre filer har ingen art og læses som sagens fakta.
+
+    Skriveguiden genkendes stadig på navnet, fordi den blev sået før feltet fandtes.
+    """
+    kind = str(meta.get("kind", "")).strip().lower()
+    if kind in CONTEXT_KINDS:
+        return kind
+    if is_default_skriveguide_meta(meta):
+        return "skrivevejledning"
+    return "fakta"
+
+
+def context_enabled(meta: dict) -> bool:
+    """Er materialet slået til? Ældre filer uden feltet er slået til, bortset fra
+    skriveguiden, som ikke længere skal være aktiv, uden at brugeren har valgt det."""
+    value = meta.get("enabled")
+    if isinstance(value, bool):
+        return value
+    return context_kind(meta) != "skrivevejledning"
 
 
 def save_chat_last_sources(
@@ -1542,17 +1592,20 @@ def load_chat_last_sources(session_id: str) -> dict[str, list]:
     }
 
 
-def load_chat_context_text(session_id: str, include_default_skriveguide: bool = True) -> str:
+def load_chat_context_blocks(session_id: str) -> list[dict[str, str]]:
+    """De kontekstfiler, der er slået til, som tekstblokke med deres art.
+
+    Arten følger med ud, fordi rammesætningen til modellen afhænger af den. Den samlede
+    længde er stadig begrænset; grænsen rammes først af det ældste materiale, fordi
+    listen er sorteret med det nyeste først.
+    """
     ensure_default_guide_context_for_session(session_id)
     session_dir = get_session_dir(session_id)
-    context_ids = list_chat_context_ids(session_id)
-    if not context_ids:
-        return ""
-    blocks: list[str] = []
+    blocks: list[dict[str, str]] = []
     total_chars = 0
-    for context_id in context_ids:
+    for context_id in list_chat_context_ids(session_id):
         meta = load_context_meta(session_dir, context_id)
-        if not include_default_skriveguide and is_default_skriveguide_meta(meta):
+        if not context_enabled(meta):
             continue
         filename = str(meta.get("filename", "ukendt_fil"))
         file_type = str(meta.get("file_type", "ukendt"))
@@ -1568,11 +1621,53 @@ def load_chat_context_text(session_id: str, include_default_skriveguide: bool = 
             break
         if len(block) > remaining:
             block = block[:remaining] + "\n[NOTE: Kontekst afkortet pga. længde]\n"
-        blocks.append(block)
+        blocks.append({"kind": context_kind(meta), "text": block})
         total_chars += len(block)
         if total_chars >= MAX_CHAT_CONTEXT_CHARS:
             break
-    return "\n".join(blocks).strip()
+    return blocks
+
+
+def format_context_text(blocks: list[dict[str, str]]) -> str:
+    return "\n".join(block["text"] for block in blocks).strip()
+
+
+# Én linje pr. art, der fortæller modellen, hvad materialet er, og hvad det må bruges
+# til. Kun de arter, der faktisk er lagt op, kommer med.
+CONTEXT_KIND_FRAMING = {
+    "fakta": (
+        "Materiale mærket som fakta er sagens faktiske oplysninger. Find retskilderne "
+        "ved søgning, og anvend dem på de oplyste forhold."
+    ),
+    "retskilde": (
+        "Materiale mærket som retskilde er et fortolkningsbidrag - typisk forarbejder "
+        "hentet i Forarbejder-fanen. Det skal anvendes på lige fod med det, søgningen "
+        "henter, og det skal fremgå af svaret, at det kommer fra materiale, brugeren har "
+        "lagt op. Følger der forbehold med om, hvor sikker koblingen mellem en ændring "
+        "og en lovbemærkning er, skal forbeholdet med i svaret."
+    ),
+    "skrivevejledning": (
+        "Materiale mærket som skrivevejledning angår alene sprog og form. Det er ikke en "
+        "retskilde, må ikke bruges som hjemmel og må ikke føre til, at henvisninger eller "
+        "juridisk præcision udelades."
+    ),
+}
+
+
+def build_context_framing(blocks: list[dict[str, str]]) -> str:
+    """Rammesætningen for det materiale, der faktisk er lagt op."""
+    seen: list[str] = []
+    for block in blocks:
+        if block["kind"] not in seen:
+            seen.append(block["kind"])
+    lines = [CONTEXT_KIND_FRAMING[kind] for kind in seen if kind in CONTEXT_KIND_FRAMING]
+    if not lines:
+        return ""
+    lines.append(
+        "Giver materialet og kilderne ikke grundlag for at vurdere et faktum eller en "
+        "delkonklusion, skal du sige det."
+    )
+    return "\n".join(lines)
 
 
 def ocr_image_bytes_with_openai(client: OpenAI, image_bytes: bytes, mime_type: str) -> str:
@@ -1797,11 +1892,90 @@ async def upload_chat_context(
         "file_type": file_type,
         "size_chars": len(extracted_text),
         "extraction_note": note,
+        "kind": "fakta",
+        "enabled": True,
+        "created_at": time.time(),
     }
     context_meta_path(session_dir, context_id).write_text(
         json.dumps(metadata, ensure_ascii=False),
         encoding="utf-8",
     )
+    return build_chat_context_list_response(session_id)
+
+
+@app.post("/api/chat/context/text", response_model=ChatContextListResponse)
+def create_chat_context_from_text(
+    payload: ChatContextTextRequest,
+    x_chat_session_id: str | None = Header(default=None, alias="X-Chat-Session-Id"),
+) -> ChatContextListResponse:
+    """Læg tekst dannet i JAILA op som kontekst - fx forarbejder fra Forarbejder-fanen.
+
+    Adskiller sig fra upload ved, at teksten ikke skal udtrækkes fra en fil, og ved at
+    arten sættes eksplicit.
+    """
+    session_id = get_session_id(x_chat_session_id)
+    kind = payload.kind.strip().lower()
+    if kind not in CONTEXT_KINDS:
+        raise HTTPException(status_code=400, detail="Ukendt art for kontekst")
+
+    text = normalize_text(payload.text).strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Teksten er tom")
+    text, was_truncated = truncate_text(text, MAX_CHAT_CONTEXT_PER_FILE_CHARS)
+
+    # Filnavnet vises kun i listen og bruges ikke som sti, men holdes alligevel fri for
+    # tegn, der kunne pege ud af sessionsmappen. \w dækker æ, ø og å.
+    filename = re.sub(r"[^\w\s.\-§]", "", payload.filename.strip())[:120] or "kontekst.txt"
+
+    note = "Indsat fra JAILA"
+    if was_truncated:
+        note += ". Indhold blev afkortet."
+
+    CHAT_CONTEXT_DIR.mkdir(parents=True, exist_ok=True)
+    session_dir = get_session_dir(session_id)
+    session_dir.mkdir(parents=True, exist_ok=True)
+
+    context_id = uuid4().hex
+    context_text_path(session_dir, context_id).write_text(text, encoding="utf-8")
+    metadata = {
+        "context_id": context_id,
+        "filename": filename,
+        "file_type": "tekst",
+        "size_chars": len(text),
+        "extraction_note": note,
+        "kind": kind,
+        "enabled": True,
+        "created_at": time.time(),
+    }
+    context_meta_path(session_dir, context_id).write_text(
+        json.dumps(metadata, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    return build_chat_context_list_response(session_id)
+
+
+@app.patch("/api/chat/context/{context_id}", response_model=ChatContextListResponse)
+def set_chat_context_enabled(
+    context_id: str,
+    payload: ChatContextToggleRequest,
+    x_chat_session_id: str | None = Header(default=None, alias="X-Chat-Session-Id"),
+) -> ChatContextListResponse:
+    """Slå en kontekstfil til eller fra uden at slette den."""
+    session_id = get_session_id(x_chat_session_id)
+    if not re.fullmatch(r"[a-f0-9]{32}", context_id):
+        raise HTTPException(status_code=400, detail="Ugyldigt context_id")
+    session_dir = get_session_dir(session_id)
+    meta_file = context_meta_path(session_dir, context_id)
+    if not meta_file.exists():
+        raise HTTPException(status_code=404, detail="Kontekstfil ikke fundet")
+    meta = load_context_meta(session_dir, context_id)
+    # Ældre filer mangler felterne; de skrives med, så senere læsninger er entydige.
+    meta["kind"] = context_kind(meta)
+    meta["enabled"] = payload.enabled
+    try:
+        meta_file.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Kunne ikke gemme ændringen: {exc}") from exc
     return build_chat_context_list_response(session_id)
 
 
@@ -2515,7 +2689,7 @@ def chat(
 
     try:
         client = OpenAI()
-        chat_instructions = CHAT_INSTRUCTIONS
+        chat_instructions = CHAT_INSTRUCTIONS + "\n\n" + CHAT_NO_SEARCH_NOTICE
         requested_vector_store_ids = payload.vector_store_ids or list(VECTOR_STORE_IDS)
         cleaned_vector_store_ids: list[str] = []
         for store_id in requested_vector_store_ids:
@@ -2536,14 +2710,13 @@ def chat(
                 )
                 if not selected_vector_store_ids:
                     vector_search_enabled = False
-        context_text = load_chat_context_text(
-            session_id,
-            include_default_skriveguide=not vector_search_enabled,
-        )
+        context_blocks = load_chat_context_blocks(session_id)
+        context_text = format_context_text(context_blocks)
         vector_question = message
         chat_citations: list[dict[str, str]] = []
         chat_retrieval_results: list[dict[str, str]] = []
         chat_used_retrieval_results: list[dict[str, str]] = []
+        chat_retrieval_diagnostics: dict[str, object] = {}
 
         def _extract_used_retrieval_results(parsed: dict[str, object]) -> list[dict[str, str]]:
             retrieval = parsed.get("retrieved_chunks", []) if isinstance(parsed, dict) else []
@@ -2572,35 +2745,26 @@ def chat(
             if not indices:
                 return retrieval  # type: ignore[return-value]
             return [retrieval[idx - 1] for idx in indices if 0 < idx <= len(retrieval)]  # type: ignore[return-value]
-        vector_chat_format_instructions = (
-            ANSWER_INSTRUCTIONS
-            + "\n\n"
-            + "Outputformat i chat (gælder kun præsentation):\n"
-            + "- Svar i et naturligt chat-format med en kort, direkte konklusion først.\n"
-            + "- Undgå faste afsnitsoverskrifter som 'Faktiske forhold', 'Retsgrundlag', 'Vurdering' og 'Resultat'.\n"
-            + "- Hold svaret kompakt og let at læse i chat: korte afsnit eller punktform, kun når det hjælper.\n"
-            + "- Når der mangler kildedækning, sig det tydeligt og konkret.\n"
-            + "- Bevar stadig absolut kildekrav, præcision og dokumenterbarhed som ovenfor.\n"
-        )
+        # Basisinstruksen holder den absolutte kilderegel og kildelisten; svarformen kommer
+        # alene fra chatblokken. Analysens strukturafsnit er bevidst udeladt.
+        vector_chat_format_instructions = CHAT_BASE_INSTRUCTIONS + "\n\n" + CHAT_INSTRUCTIONS
         if vector_search_enabled and context_text:
             vector_question = (
                 message
                 + "\n\n---\n"
-                + "[Uploadet lokal kontekst fra bruger]\n"
+                + "[Materiale lagt op af brugeren]\n"
                 + context_text
-                + "\n[/Uploadet lokal kontekst]\n"
+                + "\n[/Materiale lagt op af brugeren]\n"
                 + "---\n"
-                + "Behandl den uploadede kontekst som sagens faktiske oplysninger (A). "
-                + "Identificér dernæst relevante retskilder fra file_search (B), "
-                + "og foretag derefter subsumption, hvor B anvendes på A for at nå en konklusion (C). "
-                + "Hvis kilderne ikke giver grundlag for at vurdere et faktum eller en delkonklusion, "
-                + "skal du tydeligt angive dette."
+                + build_context_framing(context_blocks)
             )
         if context_text:
             chat_instructions = (
-                CHAT_INSTRUCTIONS
-                + "\n\nYderligere uploadet kontekst til chat (skal anvendes i samspil med ovenstående):\n"
+                chat_instructions
+                + "\n\nMateriale lagt op af brugeren (skal anvendes i samspil med ovenstående):\n"
                 + context_text
+                + "\n"
+                + build_context_framing(context_blocks)
             )
 
         if stream:
@@ -2675,6 +2839,8 @@ def chat(
                             reasoning_effort=REASONING_EFFORT_CHAT,
                             prompt_cache_key=PROMPT_CACHE_KEY_CHAT,
                             use_file_search=True,
+                            user_question=message,
+                            flow="chat",
                         ):
                             if evt.get("type") == "delta":
                                 yield _sse_line({"type": "delta", "text": evt.get("text", "")})
@@ -2703,6 +2869,7 @@ def chat(
                                         "citations": chat_citations,
                                         "retrieval_results": chat_retrieval_results,
                                         "used_retrieval_results": chat_used_retrieval_results,
+                                        "retrieval_diagnostics": evt.get("retrieval_diagnostics", {}) or {},
                                     }
                                 )
                                 return
@@ -2732,11 +2899,14 @@ def chat(
                 reasoning_effort=REASONING_EFFORT_CHAT,
                 prompt_cache_key=PROMPT_CACHE_KEY_CHAT,
                 use_file_search=True,
+                user_question=message,
+                flow="chat",
             )
             answer = str(parsed.get("output_text", "") or "").strip()
             chat_citations = parsed.get("citations", []) or []
             chat_retrieval_results = parsed.get("retrieved_chunks", []) or []
             chat_used_retrieval_results = _extract_used_retrieval_results(parsed)
+            chat_retrieval_diagnostics = parsed.get("retrieval_diagnostics", {}) or {}
         else:
             request_payload: dict[str, object] = {
                 "model": PRIMARY_MODEL,
@@ -2788,6 +2958,7 @@ def chat(
         citations=chat_citations,
         retrieval_results=chat_retrieval_results,
         used_retrieval_results=chat_used_retrieval_results,
+        retrieval_diagnostics=chat_retrieval_diagnostics,
     )
 
 
