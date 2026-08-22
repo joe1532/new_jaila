@@ -46,6 +46,36 @@ def _user_logs_path(username: str, kind: str = "chat") -> Path:
     return ANALYSE_LOGS_DIR / f"{_sanitize_username(username)}_{_log_suffix(kind)}.json"
 
 
+def _as_dict_list(value: object) -> list[dict]:
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, dict)]
+
+
+def _normalize_messages(messages: list[dict]) -> list[dict]:
+    """Behold kilder på hvert assistantsvar. Brugerbeskeder forbliver kun role/text."""
+    normalized: list[dict] = []
+    for msg in messages or []:
+        text = str(msg.get("text", "")).strip()
+        if not text:
+            continue
+        row: dict = {
+            "role": str(msg.get("role", "")).strip(),
+            "text": text,
+        }
+        citations = _as_dict_list(msg.get("citations"))
+        retrieval_results = _as_dict_list(msg.get("retrieval_results"))
+        used_retrieval_results = _as_dict_list(msg.get("used_retrieval_results"))
+        if citations:
+            row["citations"] = citations
+        if retrieval_results:
+            row["retrieval_results"] = retrieval_results
+        if used_retrieval_results:
+            row["used_retrieval_results"] = used_retrieval_results
+        normalized.append(row)
+    return normalized
+
+
 def _generate_title_from_messages(messages: list[dict]) -> str:
     """LLM genererer kort titel ud fra første brugerbesked."""
     first_user_text = ""
@@ -111,14 +141,7 @@ def save_chat_log(
         except (json.JSONDecodeError, OSError):
             entries = []
 
-    normalized_messages = [
-        {
-            "role": str(msg.get("role", "")).strip(),
-            "text": str(msg.get("text", "")).strip(),
-        }
-        for msg in (messages or [])
-        if str(msg.get("text", "")).strip()
-    ]
+    normalized_messages = _normalize_messages(messages)
     if not normalized_messages:
         raise ValueError("messages er tom")
     normalized_citations = citations or []

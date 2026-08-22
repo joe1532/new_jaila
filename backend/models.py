@@ -236,6 +236,12 @@ class ChatResponse(BaseModel):
 class ChatMessage(BaseModel):
     role: str = Field(..., min_length=1, description="Rolle: user/assistant/system")
     text: str = Field(..., min_length=1, description="Beskedtekst")
+    # Kilder hører til det enkelte assistantsvar. Udelades på ældre logs og på
+    # bruger-/systembeskeder. Topniveau-felterne på loggen er stadig sidste svar,
+    # så ældre klienter og PDF-eksport fortsat har noget at vise.
+    citations: list[dict] = Field(default_factory=list)
+    retrieval_results: list[dict] = Field(default_factory=list)
+    used_retrieval_results: list[dict] = Field(default_factory=list)
 
 
 class ChatExportRequest(BaseModel):

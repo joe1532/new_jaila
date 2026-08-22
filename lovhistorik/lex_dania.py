@@ -577,7 +577,12 @@ def extract_explanatory_notes(xml_bytes: bytes) -> dict[tuple[int, int], str]:
             for item in items:
                 notes.setdefault((paragraph, item), []).append(text)
 
-    return {key: " ".join(parts) for key, parts in notes.items()}
+    # Hvert <Linea> er en tekstblok, og en Linea-grænse er altid en sætningsgrænse.
+    # Samles de med mellemrum, forsvinder afsnittene, og bemærkningen vises som én klump.
+    return {
+        key: "\n\n".join(part for part in parts if part.strip())
+        for key, parts in notes.items()
+    }
 
 
 def law_name_of(metadata: dict[str, object]) -> str:

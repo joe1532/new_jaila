@@ -221,8 +221,8 @@ REASONING_EFFORT_LIGNINGSFRIST = "low"
 # Prompt caching: stabile nøgler for cache routing. Nøglen er vigtigere fra 5.6, hvor
 # den er en forudsætning for den pålidelige prefix-matchning.
 PROMPT_CACHE_KEY_ANALYSE = "jaila-analyse-v2"
-PROMPT_CACHE_KEY_CHAT = "jaila-chat-v2"
-PROMPT_CACHE_KEY_CHAT_MARKDOWN = "jaila-chat-md-v1"
+PROMPT_CACHE_KEY_CHAT = "jaila-chat-v3"
+PROMPT_CACHE_KEY_CHAT_MARKDOWN = "jaila-chat-md-v2"
 PROMPT_CACHE_KEY_LIGNINGSFRIST = "jaila-ligningsfrist-v1"
 
 # Gælder kun modeller før GPT-5.6. Fra 5.6 er levetiden fast 30 minutter, som fornys
@@ -420,8 +420,10 @@ Konklusion
 Den centrale juridiske pointe eller en foreløbig konklusion i 2-4 sætninger.
 
 Retskildeoversigt
-De retskilder, svaret hviler på. Skriv én linje pr. kilde i formen:
-[juridisk delspørgsmål] - [retskilde med præcis henvisning] - [hvad kilden bruges til]
+De retskilder, svaret hviler på. Skriv dem som en punktliste, én kilde pr. linje,
+hver linje indledt med bindestreg. Sæt ikke kilderne i et sammenhængende afsnit.
+Formen pr. linje:
+- [juridisk delspørgsmål] - [retskilde med præcis henvisning] - [hvad kilden bruges til]
 
 Analyse
 Gennemgangen i logisk rækkefølge: hvilket retsgrundlag der gælder, hvordan det anvendes
@@ -449,7 +451,8 @@ Manglende oplysninger
 De konkrete faktiske oplysninger, der mangler, før der kan gives en sikker konklusion.
 
 Anvendte kilder/love
-Kun de kilder, der faktisk er anvendt i analysen.
+Kun de kilder, der faktisk er anvendt i analysen. Skriv dem som en punktliste,
+én kilde pr. linje, indledt med bindestreg.
 
 Retskildernes vægt
 
@@ -530,6 +533,8 @@ Svaret vises som markdown. Forbuddet mod markdown under "Sprog og form" gælder 
 - Skriv de seks faste overskrifter som ## Konklusion, ## Retskildeoversigt, ## Analyse,
   ## Hvis-så-scenarier, ## Manglende oplysninger og ## Anvendte kilder/love. Stavningen
   skal være den samme som i svarformen.
+- Retskildeoversigt og Anvendte kilder/love skrives som markdown-punktlister: én linje
+  pr. kilde, indledt med "- ". Skriv ikke kilderne som brødtekst.
 - Brug **fed** sparsomt til henvisninger og afgørende begreber.
 - Brug nummererede lister og punktlister, når det letter læsningen.
 - Brug en markdown-tabel kun når en sammenligning eller et hvis-så-skema bliver

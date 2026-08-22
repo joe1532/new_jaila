@@ -3094,7 +3094,7 @@ def save_chat_log_endpoint(payload: ChatLogSaveRequest) -> ChatLogSaveResponse:
         result = save_chat_log(
             username=payload.user,
             session_id=payload.session_id,
-            messages=[{"role": msg.role, "text": msg.text} for msg in payload.messages],
+            messages=[msg.model_dump() for msg in payload.messages],
             used_model=payload.used_model,
             last_response_id=payload.last_response_id,
             citations=payload.citations,
@@ -3137,7 +3137,13 @@ def get_chat_log_endpoint(
         used_model=entry.get("used_model", ""),
         last_response_id=entry.get("last_response_id"),
         messages=[
-            {"role": str(msg.get("role", "")).strip(), "text": str(msg.get("text", "")).strip()}
+            {
+                "role": str(msg.get("role", "")).strip(),
+                "text": str(msg.get("text", "")).strip(),
+                "citations": msg.get("citations") or [],
+                "retrieval_results": msg.get("retrieval_results") or [],
+                "used_retrieval_results": msg.get("used_retrieval_results") or [],
+            }
             for msg in (entry.get("messages") or [])
             if str(msg.get("text", "")).strip()
         ],
