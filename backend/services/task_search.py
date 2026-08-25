@@ -10,6 +10,7 @@ from typing import Any, Callable
 
 from openai import OpenAI
 
+from backend.services.djv_opslag import lookup_djv_hits
 from backend.services.legal_search import search_legal_sources
 from backend.services.opslagsvaerk import lookup_hit_for_anchor
 
@@ -218,12 +219,15 @@ def lookup_hits_for_text(text: str) -> list[dict[str, Any]]:
 def lookup_pack_for_chat(message: str) -> dict[str, Any]:
     """Paragrafnoder til almindelig chat. file_search må stadig hente praksis."""
     hits = lookup_hits_for_text(message)
+    doors = _open_doors(hits, message, None)
+    djv_hits = lookup_djv_hits(extract_anchors(message), doors)
+    hits = hits + djv_hits
     searches = [
         {
             "queries": [f"Opslag: {hit.get('anchor') or hit.get('filename') or ''}"],
             "status": "completed",
             "num_results": 1,
-            "layer": "A",
+            "layer": hit.get("layer") or "A",
             "source": "opslag",
         }
         for hit in hits
@@ -440,11 +444,30 @@ def run_layered_search(
                 if existing
                 else [door_query]
             )
+    hits_djv = lookup_djv_hits(plan["anchors"], open_doors)
+    if hits_djv:
+        searches.append(
+            {
+                "queries": [
+                    "DJV-opslag: "
+                    + ", ".join(
+                        str(hit.get("lookup_address") or hit.get("anchor") or "")
+                        for hit in hits_djv
+                        if not hit.get("lookup_clip")
+                    )
+                ],
+                "status": "completed",
+                "num_results": len(hits_djv),
+                "layer": "B",
+                "source": "opslag",
+            }
+        )
     hits_b = _filter_layer_b(
         _run_query_batch(plan["interpretive_queries"], worker_b, searches),
         plan["anchors"],
         open_doors=open_doors,
     )
+    hits_b = _drop_replaced_djv_files(hits_b, hits_djv)
 
     gap_queries = _gap_queries(
         plan["anchors"],
@@ -460,7 +483,7 @@ def run_layered_search(
     hits_gap = _filter_gap_statute_nodes(
         _drop_replaced_statute_files(hits_gap, lookup_hits)
     )
-    chunks = _pack_chunks(hits_a, hits_b, hits_gap, anchors=plan["anchors"])
+    chunks = _pack_chunks(hits_a + hits_djv, hits_b, hits_gap, anchors=plan["anchors"])
     sources = _sources_from_chunks(chunks)
     diagnosis_question = " ".join(
         [legal_locus, message] + [anchor["label"] for anchor in plan["anchors"]]
@@ -511,6 +534,11 @@ def format_retrieved_context(
             "Henvisninger i øvrige stykker er ikke hentet som hul. "
             "Konkludér ikke på et åbent stykke, der mangler fortolkningsgrundlag."
         )
+    if any(chunk.get("lookup_kind") == "djv" for chunk in chunks):
+        intro += (
+            " DJV-afsnit med adresse er slået op som node, ikke søgt. "
+            "Brug ikke andre uddrag af samme DJV-familie som erstatning."
+        )
     lines = ["[Hentede retskilder]", intro, ""]
     current_layer = ""
     used = 0
@@ -533,9 +561,13 @@ def format_retrieved_context(
             continue
         notice = str(chunk.get("lookup_notice") or "").strip()
         block = f"### {filename}\n{notice}\n{text}" if notice else f"### {filename}\n{text}"
-        # Opslåede noder klippes ikke. Vector-uddrag fylder resten af budgettet.
-        if not chunk.get("from_lookup") and used + len(block) > MAX_CONTEXT_CHARS:
-            break
+        # Lov- og DJV-krop klippes ikke. Praksistabel og vector-uddrag fylder resten.
+        should_clip = (not chunk.get("from_lookup")) or chunk.get("lookup_clip")
+        if should_clip and used + len(block) > MAX_CONTEXT_CHARS:
+            room = MAX_CONTEXT_CHARS - used
+            if room < 400:
+                break
+            block = block[: room - 1].rstrip() + "…"
         lines.append(block)
         used += len(block)
     lines.append("[/Hentede retskilder]")
@@ -551,6 +583,9 @@ def prefetch_chat_retrieval(
     """Opslag af LL-noder plus semantisk søgning. Bruges når modellen ikke selv søger."""
     clean = str(query or "").strip()
     lookups = lookup_hits_for_text(clean)
+    doors = _open_doors(lookups, clean, None)
+    djv_hits = lookup_djv_hits(extract_anchors(clean), doors)
+    lookups = lookups + djv_hits
     if not clean and not lookups:
         return {
             "retrieved_chunks": [],
@@ -586,6 +621,7 @@ def prefetch_chat_retrieval(
             }
         )
     semantic = _drop_replaced_statute_files(semantic, lookups)
+    semantic = _drop_replaced_djv_files(semantic, djv_hits)
     chunks = lookups + semantic
     searches: list[dict[str, Any]] = [
         {
@@ -970,6 +1006,9 @@ def _tag_hit(hit: dict[str, Any], item: dict[str, str]) -> dict[str, Any]:
         "issue_id": item.get("issue_id") or "",
         "from_lookup": bool(hit.get("from_lookup")),
         "lookup_notice": str(hit.get("lookup_notice") or ""),
+        "lookup_kind": str(hit.get("lookup_kind") or ""),
+        "lookup_clip": bool(hit.get("lookup_clip")),
+        "lookup_address": str(hit.get("lookup_address") or ""),
     }
 
 
@@ -1102,6 +1141,42 @@ def _filter_layer_b(
     return kept
 
 
+def _drop_replaced_djv_files(
+    hits: list[dict[str, Any]],
+    djv_hits: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Når DJV-noden er slået op, droppes PDF af samme underafsnit, ikke hele kapitlet.
+
+    C.F.4.2.1 erstatter C.F.4.2-uddrag, men ikke C.F.7. C.A.7.3.2 erstatter
+    ikke C.A.7.1 (rejsebegrebet), som stadig må komme fra vektorsøgning.
+    """
+    sections = {
+        _heading_pack_key(hit)
+        for hit in djv_hits
+        if _heading_pack_key(hit)
+    }
+    if not sections:
+        return hits
+    kept: list[dict[str, Any]] = []
+    dropped = 0
+    for hit in hits:
+        if hit.get("from_lookup"):
+            kept.append(hit)
+            continue
+        if _looks_like_djv(str(hit.get("filename") or "")) and _heading_pack_key(hit) in sections:
+            dropped += 1
+            continue
+        kept.append(hit)
+    if dropped:
+        _log.info("task_search: dropped %s DJV-chunks replaced by node lookup", dropped)
+    return kept
+
+
+def _looks_like_djv(filename: str) -> bool:
+    name = filename.lower()
+    return "djv" in name or "juridiske vejledning" in name
+
+
 def _drop_replaced_statute_files(
     hits: list[dict[str, Any]],
     lookup_hits: list[dict[str, Any]],
@@ -1196,7 +1271,12 @@ def _hit_is_section_node(hit: dict[str, Any], anchors: list[dict[str, str]]) -> 
 
 
 def _prompt_chunk_order(chunks: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    lookup = [chunk for chunk in chunks if chunk.get("from_lookup")]
+    ll_lookup = [
+        chunk
+        for chunk in chunks
+        if chunk.get("from_lookup") and chunk.get("lookup_kind") != "djv"
+    ]
+    djv_lookup = [chunk for chunk in chunks if chunk.get("lookup_kind") == "djv"]
     bound_b = [
         chunk
         for chunk in chunks
@@ -1207,7 +1287,7 @@ def _prompt_chunk_order(chunks: list[dict[str, Any]]) -> list[dict[str, Any]]:
         for chunk in chunks
         if not chunk.get("from_lookup") and chunk.get("layer") != "B"
     ]
-    return lookup + bound_b + rest
+    return ll_lookup + djv_lookup + bound_b + rest
 
 
 def _filter_gap_statute_nodes(hits: list[dict[str, Any]]) -> list[dict[str, Any]]:

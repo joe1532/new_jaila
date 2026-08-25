@@ -111,6 +111,16 @@ class TaskSearchTests(unittest.TestCase):
         first_ll = next(item for item in pack["retrieved_chunks"] if item.get("from_lookup"))
         self.assertTrue(first_ll["text"].startswith("§ 33 A."))
         self.assertGreater(len(first_ll["text"]), 2000)
+        self.assertTrue(
+            any(item.startswith("opslag:djv:C.F.4.2.1:") for item in file_ids)
+        )
+        self.assertTrue(
+            any(
+                "DJV-opslag" in query
+                for item in pack["searches"]
+                for query in item.get("queries") or []
+            )
+        )
 
     def test_filename_detects_statute_not_djv(self):
         self.assertTrue(filename_looks_like_statute("Ligningsloven (2025-11-24 nr. 1500).pdf"))
@@ -229,6 +239,18 @@ class TaskSearchTests(unittest.TestCase):
         self.assertFalse(any("ligningsloven § 9 A" in query and "lovtekst" in query for query in calls))
         self.assertNotIn("§ 9 H.", first["text"][:80])
         self.assertTrue(any(item["file_id"] == "djv" for item in pack["retrieved_chunks"]))
+        self.assertTrue(
+            any(
+                str(item["file_id"]).startswith("opslag:djv:C.A.7.3.2:")
+                for item in pack["retrieved_chunks"]
+            )
+        )
+        self.assertFalse(
+            any(
+                str(item["file_id"]).startswith("opslag:djv:C.F.")
+                for item in pack["retrieved_chunks"]
+            )
+        )
 
     def test_layer_b_keeps_practice_on_anchor_and_drops_9h_neighbor(self):
         dagpleje = (
@@ -544,14 +566,17 @@ class TaskSearchTests(unittest.TestCase):
             "Kan Entreprise A/S udbetale skattefri rejsegodtgørelse efter LL § 9 A?"
         )
         self.assertTrue(pack["keep_file_search"])
-        self.assertEqual(1, len(pack["retrieved_chunks"]))
         first = pack["retrieved_chunks"][0]
         self.assertTrue(first.get("from_lookup"))
         self.assertTrue(first["text"].startswith("§ 9 A."))
         self.assertIn("Stk. 3.", first["text"])
         self.assertGreater(len(first["text"]), 3000)
+        file_ids = [item["file_id"] for item in pack["retrieved_chunks"]]
+        self.assertTrue(any(item.startswith("opslag:djv:C.A.") for item in file_ids))
+        self.assertFalse(any(item.startswith("opslag:djv:C.F.") for item in file_ids))
         self.assertIn("paragrafnode", pack["context_text"])
         self.assertIn("også slå praksis", pack["context_text"])
+        self.assertIn("DJV 2026-2", pack["context_text"])
 
     def test_prefetch_chat_keeps_lookup_and_drops_replaced_statute_pdf(self):
         dagpleje = "rejsefradrag i § 9 A, men teksten er § 9 H om dagpleje."
@@ -582,6 +607,43 @@ class TaskSearchTests(unittest.TestCase):
         self.assertIn("djv", file_ids)
         self.assertNotIn("ll-pdf", file_ids)
         self.assertTrue(pack["retrieved_chunks"][0]["text"].startswith("§ 9 A."))
+
+    def test_33a_looks_up_djv_node_and_drops_same_family_pdf(self):
+        def fake_search(query: str):
+            if "praksis" in query or "personkreds" in query:
+                return [
+                    {
+                        "file_id": "djv-cf4-pdf",
+                        "filename": "Den juridiske vejledning 2025-1.pdf",
+                        "score": 0.7,
+                        "text": "C.F.4.2.1 uddrag fra PDF om ligningslovens § 33 A.",
+                    },
+                    {
+                        "file_id": "djv",
+                        "filename": "Den juridiske vejledning 2025-1.pdf",
+                        "score": 0.5,
+                        "text": "C.F.7.2.1 om ligningslovens § 33 A.",
+                    },
+                ]
+            return []
+
+        pack = run_layered_search(
+            client=None,  # type: ignore[arg-type]
+            message=(
+                "Tim bor i Tyskland. Dobbeltbeskatningsoverenskomsten "
+                "tillægger Danmark beskatningsretten."
+            ),
+            legal_locus="LL § 33 A",
+            issues=[{"id": "I1", "question": "Gælder LL § 33 A?"}],
+            search_fn=fake_search,
+        )
+        file_ids = [item["file_id"] for item in pack["retrieved_chunks"]]
+        self.assertTrue(any(item.startswith("opslag:djv:C.F.4.2.1:") for item in file_ids))
+        self.assertTrue(any(item.startswith("opslag:djv:C.F.4.2.3:") for item in file_ids))
+        self.assertIn("djv", file_ids)
+        self.assertNotIn("djv-cf4-pdf", file_ids)
+        self.assertIn("C.F.4.2.1", pack["context_text"])
+        self.assertIn("slået op som node, ikke søgt", pack["context_text"])
 
 
 if __name__ == "__main__":
