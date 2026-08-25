@@ -155,6 +155,11 @@ class AnalyzeRequest(BaseModel):
     )
 
 
+class ChatHistoryTurn(BaseModel):
+    role: str = Field(..., min_length=1, description="user eller assistant")
+    text: str = Field(..., min_length=1, description="Beskedtekst")
+
+
 class ChatRequest(BaseModel):
     message: str = Field(..., min_length=1, description="Brugerens chatbesked")
     previous_response_id: str | None = Field(
@@ -172,6 +177,30 @@ class ChatRequest(BaseModel):
     allow_markdown: bool = Field(
         default=False,
         description="Hvis true må svaret bruge markdown (##, **fed**, lister, tabeller)",
+    )
+    task_solve: bool = Field(
+        default=False,
+        description="Hvis true vurderes faktum først; manglende oplysninger kan stoppe før notat",
+    )
+    legal_locus: str | None = Field(
+        default=None,
+        description="Valgfrit retligt udgangspunkt, fx ligningsloven § 33 A",
+    )
+    proceed_anyway: bool = Field(
+        default=False,
+        description="Spring faktum-stoppet over og skriv notatet alligevel",
+    )
+    skip_expand: bool = Field(
+        default=False,
+        description="Spring issue-udvidelsen efter retrieval over (allerede kørt én gang)",
+    )
+    provider: str = Field(
+        default="openai",
+        description="Skrivemodel: openai (gpt-5.6-sol) eller grok (grok-4.6 high)",
+    )
+    history: list[ChatHistoryTurn] = Field(
+        default_factory=list,
+        description="Tidligere user/assistant-ture. Bruges af Grok, som ikke deler OpenAI response-id.",
     )
 
 

@@ -7,6 +7,10 @@ from typing import Any
 from openai import OpenAI
 
 from backend.services.pdf_log import save_pdf_log
+from backend.services.task_search import (
+    _drop_replaced_statute_files,
+    _sources_from_chunks,
+)
 
 from backend.config import (
     ANSWER_INSTRUCTIONS,
@@ -41,7 +45,7 @@ def cache_fields_for_model(model: str) -> dict[str, Any]:
     er standard. Det er samtidig en reel ændring i forhold til de 24 timer, ældre
     modeller fik — cachen holder kortere, men fornys hver gang prefikset genbruges.
     """
-    if model.startswith(NEW_CACHE_FORMAT_PREFIXES):
+    if model.startswith(NEW_CACHE_FORMAT_PREFIXES) or model.startswith("grok-"):
         return {}
     return {"prompt_cache_retention": PROMPT_CACHE_RETENTION}
 
@@ -807,6 +811,30 @@ def extract_used_retrieval_results(parsed: dict[str, Any]) -> list[dict[str, Any
     return [retrieval[idx - 1] for idx in indices if 0 < idx <= len(retrieval)]
 
 
+def _merge_prefetched_retrieval(
+    parsed: dict[str, Any],
+    prefetched_retrieval: dict[str, Any] | None,
+) -> None:
+    """Læg Python-dirigerede hits ind, så strict sourcing og diagnose virker uden file_search."""
+    if not prefetched_retrieval:
+        return
+    extra_chunks = list(prefetched_retrieval.get("retrieved_chunks") or [])
+    extra_searches = list(prefetched_retrieval.get("searches") or [])
+    if prefetched_retrieval.get("keep_file_search"):
+        rest = _drop_replaced_statute_files(
+            list(parsed.get("retrieved_chunks") or []),
+            extra_chunks,
+        )
+        chunks = extra_chunks + rest
+        parsed["retrieved_chunks"] = chunks
+        parsed["retrieved_sources"] = _sources_from_chunks(chunks)
+        parsed["searches"] = extra_searches + list(parsed.get("searches") or [])
+        return
+    parsed["retrieved_chunks"] = extra_chunks
+    parsed["retrieved_sources"] = list(prefetched_retrieval.get("retrieved_sources") or [])
+    parsed["searches"] = extra_searches
+
+
 def analyze_question(
     client: OpenAI,
     question: str,
@@ -820,6 +848,7 @@ def analyze_question(
     user_question: str | None = None,
     flow: str = "analyse",
     preserve_markdown: bool = False,
+    prefetched_retrieval: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], str, str]:
     """`user_question` er brugerens rå spørgsmål og bruges kun til retrieval-diagnosen.
 
@@ -830,6 +859,8 @@ def analyze_question(
     regler, og indtil nu blev chat-kald derfor logget som "analyse". Det er rettet, så
     de to kan skelnes — bemærk at ældre logs bruger den gamle, forkerte etiket.
     """
+    if prefetched_retrieval:
+        use_file_search = bool(prefetched_retrieval.get("keep_file_search"))
     effective_vector_store_ids = vector_store_ids or VECTOR_STORE_IDS
     effective_instructions = instructions or ANSWER_INSTRUCTIONS
     effective_reasoning = reasoning_effort or REASONING_EFFORT_ANALYSE
@@ -869,6 +900,7 @@ def analyze_question(
             resp = client.responses.create(**request_payload)
             duration_ms = (time.perf_counter() - t0) * 1000
             parsed = parse_response(resp, preserve_markdown=preserve_markdown)
+            _merge_prefetched_retrieval(parsed, prefetched_retrieval)
             _log_performance(
                 flow=flow,
                 model=model,
@@ -877,9 +909,12 @@ def analyze_question(
                 reasoning_effort=effective_reasoning,
                 num_retrieval_results=len(parsed.get("retrieved_chunks", [])),
             )
-            if use_file_search:
+            if use_file_search or prefetched_retrieval:
                 parsed["retrieval_diagnostics"] = diagnose_retrieval(
-                    user_question or question, parsed
+                    (prefetched_retrieval or {}).get("diagnosis_question")
+                    or user_question
+                    or question,
+                    parsed,
                 )
                 _log_retrieval(
                     flow=flow,
@@ -891,7 +926,9 @@ def analyze_question(
                 parsed = enforce_strict_sourcing(parsed)
             else:
                 parsed = ensure_sources_section(parsed)
-            parsed["used_vector_store_ids"] = selected_vector_store_ids if use_file_search else []
+            parsed["used_vector_store_ids"] = (
+                selected_vector_store_ids if (use_file_search or prefetched_retrieval) else []
+            )
             parsed["used_retrieval_results"] = extract_used_retrieval_results(parsed)
             response_id = str(get_value(resp, "id", ""))
             return parsed, model, response_id
@@ -917,12 +954,15 @@ def analyze_question_stream(
     user_question: str | None = None,
     flow: str = "analyse",
     preserve_markdown: bool = False,
+    prefetched_retrieval: dict[str, Any] | None = None,
 ):
     """
     Streaming variant af analyze_question. Yielder dict-events: delta, done, error.
 
     `user_question` og `flow` virker som i analyze_question — se dokumentationen der.
     """
+    if prefetched_retrieval:
+        use_file_search = bool(prefetched_retrieval.get("keep_file_search"))
     effective_vector_store_ids = vector_store_ids or VECTOR_STORE_IDS
     effective_instructions = instructions or ANSWER_INSTRUCTIONS
     effective_reasoning = reasoning_effort or REASONING_EFFORT_ANALYSE
@@ -934,6 +974,7 @@ def analyze_question_stream(
     )
     effective_models_to_try = models_to_try or [PRIMARY_MODEL, FALLBACK_MODEL]
     last_error: Exception | None = None
+    used_stores = selected_vector_store_ids if (use_file_search or prefetched_retrieval) else []
 
     for model in effective_models_to_try:
         try:
@@ -970,6 +1011,7 @@ def analyze_question_stream(
                     resp = get_value(event, "response")
                     duration_ms = (time.perf_counter() - t0) * 1000
                     parsed = parse_response(resp, preserve_markdown=preserve_markdown)
+                    _merge_prefetched_retrieval(parsed, prefetched_retrieval)
                     _log_performance(
                         flow=flow,
                         model=model,
@@ -978,9 +1020,13 @@ def analyze_question_stream(
                         reasoning_effort=effective_reasoning,
                         num_retrieval_results=len(parsed.get("retrieved_chunks", [])),
                     )
-                    if use_file_search:
+                    if use_file_search or prefetched_retrieval:
                         parsed["retrieval_diagnostics"] = diagnose_retrieval(
-                            user_question or log_question or question, parsed
+                            (prefetched_retrieval or {}).get("diagnosis_question")
+                            or user_question
+                            or log_question
+                            or question,
+                            parsed,
                         )
                         _log_retrieval(
                             flow=flow,
@@ -992,7 +1038,7 @@ def analyze_question_stream(
                         parsed = enforce_strict_sourcing(parsed)
                     else:
                         parsed = ensure_sources_section(parsed)
-                    parsed["used_vector_store_ids"] = selected_vector_store_ids if use_file_search else []
+                    parsed["used_vector_store_ids"] = used_stores
                     parsed["used_retrieval_results"] = extract_used_retrieval_results(parsed)
                     response_id = str(get_value(resp, "id", ""))
                     log_path = save_pdf_log(log_question or question, parsed, model)
@@ -1006,7 +1052,7 @@ def analyze_question_stream(
                         "used_retrieval_results": parsed.get("used_retrieval_results", []),
                         "searches": parsed.get("searches", []),
                         "retrieval_diagnostics": parsed.get("retrieval_diagnostics", {}),
-                        "used_vector_store_ids": selected_vector_store_ids if use_file_search else [],
+                        "used_vector_store_ids": used_stores,
                         "log_pdf_filename": log_path.name,
                         "log_pdf_url": f"/api/logs/{log_path.name}",
                     }

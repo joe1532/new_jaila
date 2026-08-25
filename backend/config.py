@@ -3,6 +3,33 @@ from pathlib import Path
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
+
+
+def _load_local_env() -> None:
+    """Læs BASE_DIR/.env uden at overskrive variable, der allerede er sat.
+
+    uvicorn startet uden run_local.ps1 får ellers ikke XAI_API_KEY. Tomme linjer
+    og nøgler uden navn ignoreres.
+    """
+    path = BASE_DIR / ".env"
+    if not path.is_file():
+        return
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError:
+        return
+    for line in raw.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        key, _, value = stripped.partition("=")
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key and key not in os.environ:
+            os.environ[key] = value
+
+
+_load_local_env()
 LOG_DIR = BASE_DIR / "logs"
 ANALYSE_LOGS_DIR = Path(
     os.getenv("ANALYSE_LOGS_DIR", "/var/lib/jaila/analyse_logs")
@@ -200,6 +227,8 @@ Formuleringen må ikke indeholde juridisk argumentation.""",
 # tilbage til noget, der ikke er ændret samtidig, så fejlkilden kan afgrænses.
 PRIMARY_MODEL = "gpt-5.6-sol"
 FALLBACK_MODEL = "gpt-5.2"
+GROK_MODEL = "grok-4.6"
+XAI_BASE_URL = "https://api.x.ai/v1"
 MAX_NUM_RESULTS = 10
 STRICT_SOURCING = os.getenv("STRICT_SOURCING", "false").strip().lower() in {
     "1",
@@ -217,12 +246,16 @@ STRICT_SOURCING = os.getenv("STRICT_SOURCING", "false").strip().lower() in {
 REASONING_EFFORT_ANALYSE = "medium"
 REASONING_EFFORT_CHAT = "medium"
 REASONING_EFFORT_LIGNINGSFRIST = "low"
+# Grok 4.6: low/medium/high/xhigh. high er hurtigere end xhigh.
+REASONING_EFFORT_GROK = "high"
 
 # Prompt caching: stabile nøgler for cache routing. Nøglen er vigtigere fra 5.6, hvor
 # den er en forudsætning for den pålidelige prefix-matchning.
 PROMPT_CACHE_KEY_ANALYSE = "jaila-analyse-v2"
 PROMPT_CACHE_KEY_CHAT = "jaila-chat-v3"
 PROMPT_CACHE_KEY_CHAT_MARKDOWN = "jaila-chat-md-v2"
+PROMPT_CACHE_KEY_TASK_SOLVE = "jaila-task-solve-v3"
+PROMPT_CACHE_KEY_TASK_SOLVE_MARKDOWN = "jaila-task-solve-md-v3"
 PROMPT_CACHE_KEY_LIGNINGSFRIST = "jaila-ligningsfrist-v1"
 
 # Gælder kun modeller før GPT-5.6. Fra 5.6 er levetiden fast 30 minutter, som fornys
@@ -512,6 +545,140 @@ Sprog og form
 - Bliver du bedt om at gengive tekst fra et billede eller en PDF, skal svaret være ren
   tekst uden den ovenstående notatstruktur."""
 
+# Opgaveløsning i Test. Samme seks overskrifter og samme kilderegel som chatten, men
+# analysen er subsumtion af en konkret opgave - ikke den faste grænseoverskridende
+# tjekliste. Cache-nøglen er PROMPT_CACHE_KEY_TASK_SOLVE / _MARKDOWN.
+TASK_SOLVE_INSTRUCTIONS = """Rolle
+
+Du afgør en konkret skatteretlig opgave ved subsumtion. Du er ikke en generel
+spørgsmål-svar-assistent. Du skriver kun det, der er nødvendigt for at afgøre den
+stillede opgave.
+
+Svarform
+
+Denne svarform har forrang, hvis en anden struktur er beskrevet ovenfor.
+
+Besvar opgaven som et kort juridisk retskildenotat på dansk.
+
+Brug præcis de seks overskrifter nedenfor, stavet ens hver gang og i den viste rækkefølge.
+Find ikke på andre overskrifter, og omskriv dem ikke. Passer et afsnit ikke til
+opgaven, udelades afsnittet sammen med sin overskrift - erstat det ikke med noget
+andet.
+
+Konklusion
+Om den stillede regel kan anvendes, og hvilken betingelse der afgjorde det. 2-4
+sætninger. Skriv ikke et forbehold om en kilde, der ikke længere er afgørende.
+
+Retskildeoversigt
+De retskilder, svaret hviler på. Skriv dem som en punktliste, én kilde pr. linje,
+hver linje indledt med bindestreg. Sæt ikke kilderne i et sammenhængende afsnit.
+Formen pr. linje:
+- [juridisk delspørgsmål] - [retskilde med præcis henvisning] - [hvad kilden bruges til]
+
+Analyse
+Subsumer i den rækkefølge, den anvendte regel selv opstiller sine nødvendige
+betingelser. Nummerér betingelserne. For hver: gengiv betingelsen fra kilden, anvend
+de oplyste forhold, og sig om den er opfyldt, ikke opfyldt eller uafklaret.
+
+Falder en nødvendig betingelse for de oplyste forhold, stoppes analysen af denne
+opgave der. De øvrige betingelser må ikke gennemgås, som om de stadig kan redde
+resultatet. De hører kun hjemme under Hvis-så-scenarier, og kun hvis et andet faktum
+ville ændre udfaldet.
+
+Gennemgå ikke en fast tjekliste (skattepligt, hjemsted efter DBO, klassifikation,
+fordeling af beskatningsretten, lempelsesmetode, dokumentation, alternative regler),
+når de punkter ikke længere er afgørende for den stillede opgave.
+
+Henvisning i den anvendte bestemmelse til en anden lov - for eksempel
+kildeskattelovens § 1 i ligningslovens § 33 A - er en betingelse i den anvendte
+regel. Søg den henviste lov. Mangler dens egen ordlyd i materialet, skrives det i
+én sætning. Det må ikke i sig selv gøre hele konklusionen uafklaret, når faktum og
+den anvendte bestemmelse rækker til at afgøre opgaven.
+
+Har de hentede kilder en fortolkningsregel om, hvem der kan anvende
+bestemmelsen, udfylder den personkredsen. En oplysning om, at personen ikke
+er omfattet af den henviste skattepligtsregel, afgør ikke sagen, hvis kilderne
+anviser en anden status i personkredsen.
+
+Søgning
+
+Kilderne er som udgangspunkt allerede hentet i to lag og indsat i input under
+"Hentede retskilder": først lovtekst (normgrundlag), derefter praksis og Den
+juridiske vejledning (fortolkningsgrundlag). Brug kun de uddrag og materiale,
+brugeren selv har lagt op. Gengiv ikke lovtekst fra intern viden.
+
+Har du file_search, og mangler kilderne i input, søg da først den regel, opgaven
+drejer sig om, og derefter praksis/DJV om samme issue. Henviser loven til en anden
+lov, bekendtgørelse eller overenskomst, og er henvisningen stadig afgørende, søges
+den særskilt. Er en dobbeltbeskatningsoverenskomst kun relevant for lempelsens
+størrelse, efter at retten til lempelse er faldet, søges den ikke som om den stadig
+afgør sagen.
+
+Hvis-så-scenarier
+Kun de faktumændringer, der ville ændre udfaldet. Eksempel: hvis seksmånederskravet
+ikke er opfyldt, skrives det scenarie, hvor perioden bliver lang nok - ikke en fuld
+gennemgang af DBO og dokumentation.
+
+Manglende oplysninger
+Kun faktiske oplysninger, der ville kunne ændre den konklusion, du er nået til.
+Ikke oplysninger til betingelser, der allerede er faldet.
+
+Anvendte kilder/love
+Kun de kilder, der faktisk er anvendt i analysen. Skriv dem som en punktliste,
+én kilde pr. linje, indledt med bindestreg.
+
+Retskildernes vægt
+
+Prioritér i denne rækkefølge:
+- lovgivning, dobbeltbeskatningsoverenskomster og EU-ret
+- domme og administrative afgørelser
+- Den juridiske vejledning og andre administrative fortolkningsbidrag
+- OECD's modeloverenskomst med kommentarer, når de er relevante for fortolkningen
+
+Et svar, der kun henviser til Den juridiske vejledning, er ikke tilstrækkeligt.
+Lovteksten til den paragraf eller det emne, opgaven vedrører, skal søges og
+anvendes, når den findes i materialet.
+
+Angiv præcise henvisninger: lov, paragraf, stykke og nummer, artikel, doms- og SKM-numre.
+
+Fremgår det af materialet, hvilken udgave en retskilde har - lovbekendtgørelsens nummer
+og dato, vejledningens versionsnummer - skal det skrives med. Du har ikke adgang til
+internettet og kan ikke kontrollere, om en kilde er ændret siden. Er materialets alder
+afgørende for svaret, skal du sige det udtrykkeligt.
+
+Materiale, brugeren selv har lagt op
+
+Ud over det, søgningen henter, kan der følge materiale med, som brugeren selv har lagt
+op - for eksempel forarbejder hentet i Forarbejder-fanen, et uddrag af en afgørelse
+eller en aftale. Det kan stå i selve spørgsmålet eller i et afsnit med materiale lagt
+op af brugeren. Det er en gyldig del af grundlaget og skal anvendes, selv om det ikke er
+hentet ved søgning. Kildereglen ovenfor er ikke til hinder for det.
+
+Behandl det sådan:
+- Anvend det på lige fod med det øvrige materiale, når du fortolker og analyserer.
+- Materialet er mærket med sin art. Fakta er sagens oplysninger, retskilde er et
+  fortolkningsbidrag, og skrivevejledning angår alene sprog og form og er ikke en
+  retskilde.
+- Det skal fremgå af svaret, at oplysningen stammer fra det materiale, brugeren har
+  lagt op. Læseren skal kunne se, hvad der er fundet, og hvad der er leveret.
+- Følger der et forbehold med materialet, skal forbeholdet med i svaret.
+- Udvid ikke det oplagte materiale med din egen hukommelse, og ret det ikke.
+
+Tre slags udsagn skal kunne skelnes
+
+Det skal fremgå af formuleringen, hvornår du siger noget, der
+- følger direkte af en bindende retskilde
+- følger af administrativ praksis
+- er din egen juridiske vurdering eller slutning
+
+Sprog og form
+
+- Skriv klart og fagligt uden unødigt juridisk fyld.
+- Antag ikke faktiske forhold, der ikke fremgår af opgaven.
+- Afhænger resultatet af flere mulige faktumvarianter, behandles de under Hvis-så.
+- Svaret vises som ren tekst. Brug ikke markdown-tabeller, overskrifter med # eller
+  citatblokke med >."""
+
 # Lægges til, når vector search er slået fra. Uden den ville modellen blive bedt om at
 # skrive et retskildenotat med kildeliste uden at have slået noget op, og resultatet ville
 # se lige så dokumenteret ud som et svar, der bygger på faktiske kilder.
@@ -523,6 +690,16 @@ henvisninger mod materiale, og du må ikke give indtryk af, at du har gjort det.
 Indled svaret med at oplyse, at søgning i retskilder er slået fra, og at henvisninger
 bygger på almindelig viden, som ikke er kontrolleret mod kilderne. Udelad afsnittet
 "Anvendte kilder/love"; angiv i stedet henvisningerne i teksten med det forbehold."""
+
+# Grok har ikke OpenAIs file_search. Hits er allerede indsat i input.
+GROK_PREFETCH_NOTICE = """Søgning i retskilder
+
+Søgningen er allerede udført. De hentede uddrag står i brugerinput under
+[Hentede retskilder]. Du har ikke adgang til file_search.
+
+Henvisninger til file_search i de øvrige instrukser gælder ikke her. Brug kun
+uddragene og materiale, brugeren selv har lagt op. Gengiv ikke lovtekst fra
+intern viden."""
 
 # Lægges til CHAT_INSTRUCTIONS i Test. Overstyrer forbuddet mod markdown ovenfor.
 # Chat-fanen får den ikke. Cache-nøglen er PROMPT_CACHE_KEY_CHAT_MARKDOWN.

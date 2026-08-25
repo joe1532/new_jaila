@@ -41,8 +41,13 @@ def search_legal_sources(
     query: str,
     max_results: int = 8,
     vector_store_ids: list[str] | None = None,
+    rewrite_query: bool = True,
 ) -> list[dict[str, Any]]:
-    """Search JAILA's vector stores without asking a model to write an answer."""
+    """Search JAILA's vector stores without asking a model to write an answer.
+
+    rewrite_query=False er opslag af en kendt paragraf. True er semantisk
+    omskrivning til fortolkning og praksis.
+    """
     clean_query = str(query or "").strip()
     if not clean_query:
         raise ValueError("Søgeforespørgslen må ikke være tom")
@@ -67,7 +72,7 @@ def search_legal_sources(
                 vector_store_id=store_id,
                 query=clean_query,
                 max_num_results=max_results,
-                rewrite_query=True,
+                rewrite_query=rewrite_query,
             )
         except Exception:
             # Do not expose provider details or credentials through the MCP tool.

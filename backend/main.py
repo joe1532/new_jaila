@@ -25,13 +25,19 @@ from backend.config import (
     CHAT_INSTRUCTIONS,
     CHAT_MARKDOWN_ADDENDUM,
     CHAT_NO_SEARCH_NOTICE,
+    GROK_PREFETCH_NOTICE,
+    TASK_SOLVE_INSTRUCTIONS,
     FALLBACK_MODEL,
+    GROK_MODEL,
     LOG_DIR,
     PRIMARY_MODEL,
     PROMPT_CACHE_KEY_CHAT,
     PROMPT_CACHE_KEY_CHAT_MARKDOWN,
+    PROMPT_CACHE_KEY_TASK_SOLVE,
+    PROMPT_CACHE_KEY_TASK_SOLVE_MARKDOWN,
     PROMPT_CACHE_KEY_LIGNINGSFRIST,
     REASONING_EFFORT_CHAT,
+    REASONING_EFFORT_GROK,
     REASONING_EFFORT_LIGNINGSFRIST,
     SAGSBEHANDLING_MODELS,
     SAGSBEHANDLING_PROMPTS,
@@ -87,6 +93,25 @@ from backend.services.openai_service import (
     analyze_question_stream,
     cache_fields_for_model,
     select_vector_store_ids_for_query,
+)
+from backend.services.task_solve import (
+    assess_task_facts,
+    expand_issue_map,
+    pin_legal_locus,
+    should_ask_facts,
+)
+from backend.services.llm_providers import (
+    format_history_prefix,
+    grok_client,
+    grok_is_configured,
+    normalize_chat_provider,
+    with_history,
+)
+from backend.services.task_search import (
+    compose_write_input,
+    lookup_pack_for_chat,
+    prefetch_chat_retrieval,
+    run_layered_search,
 )
 from backend.services.pdf_log import save_chat_pdf_log, save_pdf_log
 
@@ -2688,12 +2713,32 @@ def chat(
         raise HTTPException(status_code=400, detail="Chatbesked må ikke være tom")
     if not os.getenv("OPENAI_API_KEY"):
         raise HTTPException(status_code=500, detail="OPENAI_API_KEY mangler på server")
+    try:
+        provider = normalize_chat_provider(payload.provider)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if provider == "grok" and not grok_is_configured():
+        raise HTTPException(status_code=500, detail="XAI_API_KEY mangler på server")
 
     try:
         client = OpenAI()
-        chat_instructions = CHAT_INSTRUCTIONS + "\n\n" + CHAT_NO_SEARCH_NOTICE
+        write_client = grok_client() if provider == "grok" else client
+        write_models = [GROK_MODEL] if provider == "grok" else [PRIMARY_MODEL, FALLBACK_MODEL]
+        write_effort = REASONING_EFFORT_GROK if provider == "grok" else REASONING_EFFORT_CHAT
+        write_previous_id = None if provider == "grok" else payload.previous_response_id
+        history_prefix = format_history_prefix(payload.history) if provider == "grok" else ""
         allow_markdown = bool(payload.allow_markdown)
-        chat_cache_key = PROMPT_CACHE_KEY_CHAT_MARKDOWN if allow_markdown else PROMPT_CACHE_KEY_CHAT
+        task_solve = bool(payload.task_solve)
+        format_instructions = TASK_SOLVE_INSTRUCTIONS if task_solve else CHAT_INSTRUCTIONS
+        chat_instructions = format_instructions + "\n\n" + CHAT_NO_SEARCH_NOTICE
+        if task_solve:
+            chat_cache_key = (
+                PROMPT_CACHE_KEY_TASK_SOLVE_MARKDOWN if allow_markdown else PROMPT_CACHE_KEY_TASK_SOLVE
+            )
+        else:
+            chat_cache_key = (
+                PROMPT_CACHE_KEY_CHAT_MARKDOWN if allow_markdown else PROMPT_CACHE_KEY_CHAT
+            )
         requested_vector_store_ids = payload.vector_store_ids or list(VECTOR_STORE_IDS)
         cleaned_vector_store_ids: list[str] = []
         for store_id in requested_vector_store_ids:
@@ -2702,7 +2747,10 @@ def chat(
                 continue
             cleaned_vector_store_ids.append(clean_store_id)
         selected_vector_store_ids: list[str] = []
-        vector_search_enabled = bool(payload.use_vector_search)
+        legal_locus = str(payload.legal_locus or "").strip()
+        proceed_anyway = bool(payload.proceed_anyway)
+        skip_expand = bool(payload.skip_expand)
+        vector_search_enabled = bool(payload.use_vector_search) or task_solve
         if vector_search_enabled:
             if not cleaned_vector_store_ids:
                 vector_search_enabled = False
@@ -2716,7 +2764,7 @@ def chat(
                     vector_search_enabled = False
         context_blocks = load_chat_context_blocks(session_id)
         context_text = format_context_text(context_blocks)
-        vector_question = message
+        vector_question = pin_legal_locus(message, legal_locus) if task_solve else message
         chat_citations: list[dict[str, str]] = []
         chat_retrieval_results: list[dict[str, str]] = []
         chat_used_retrieval_results: list[dict[str, str]] = []
@@ -2751,15 +2799,16 @@ def chat(
             return [retrieval[idx - 1] for idx in indices if 0 < idx <= len(retrieval)]  # type: ignore[return-value]
         # Basisinstruksen holder den absolutte kilderegel og kildelisten; svarformen kommer
         # alene fra chatblokken. Analysens strukturafsnit er bevidst udeladt.
-        vector_chat_format_instructions = CHAT_BASE_INSTRUCTIONS + "\n\n" + CHAT_INSTRUCTIONS
+        vector_chat_format_instructions = CHAT_BASE_INSTRUCTIONS + "\n\n" + format_instructions
         if allow_markdown:
             chat_instructions = chat_instructions + "\n\n" + CHAT_MARKDOWN_ADDENDUM
             vector_chat_format_instructions = (
                 vector_chat_format_instructions + "\n\n" + CHAT_MARKDOWN_ADDENDUM
             )
         if vector_search_enabled and context_text:
+            context_body = pin_legal_locus(message, legal_locus) if task_solve else message
             vector_question = (
-                message
+                context_body
                 + "\n\n---\n"
                 + "[Materiale lagt op af brugeren]\n"
                 + context_text
@@ -2775,24 +2824,122 @@ def chat(
                 + "\n"
                 + build_context_framing(context_blocks)
             )
+        if provider == "grok":
+            vector_chat_format_instructions = (
+                vector_chat_format_instructions + "\n\n" + GROK_PREFETCH_NOTICE
+            )
 
         if stream:
             def chat_gen():
                 try:
+                    intake = None
+                    run_intake = (
+                        task_solve
+                        and not proceed_anyway
+                        and not payload.previous_response_id
+                        and not skip_expand
+                    )
+                    if run_intake:
+                        yield _sse_line({"type": "intake"})
+                        intake = assess_task_facts(
+                            client=client,
+                            message=message,
+                            legal_locus=legal_locus,
+                            context_text=context_text,
+                        )
+                        if should_ask_facts(intake):
+                            yield _sse_line(
+                                {
+                                    "type": "need_facts",
+                                    "source": "intake",
+                                    "can_proceed": False,
+                                    "sufficient": False,
+                                    "issues": intake.get("issues") or [],
+                                    "questions": intake.get("questions") or [],
+                                }
+                            )
+                            return
+
+                    prefetched_retrieval = None
+                    write_question = vector_question
+                    if vector_search_enabled and (task_solve or provider == "grok"):
+                        yield _sse_line({"type": "search", "phase": "layered" if task_solve else "semantic"})
+                        if task_solve:
+                            pack = run_layered_search(
+                                client=client,
+                                message=message,
+                                legal_locus=legal_locus,
+                                issues=(intake or {}).get("issues") or [],
+                                vector_store_ids=selected_vector_store_ids,
+                            )
+                        else:
+                            pack = prefetch_chat_retrieval(
+                                client=client,
+                                query=message,
+                                vector_store_ids=selected_vector_store_ids,
+                            )
+                        if pack.get("retrieved_chunks"):
+                            prefetched_retrieval = pack
+                            write_question = compose_write_input(
+                                message=message,
+                                prefetch_context=str(pack.get("context_text") or ""),
+                                uploaded_context=context_text,
+                                framing=build_context_framing(context_blocks),
+                            )
+                            run_expand = (
+                                task_solve
+                                and not skip_expand
+                                and not payload.previous_response_id
+                            )
+                            if run_expand:
+                                yield _sse_line({"type": "expand", "phase": "retrieval"})
+                                expanded = expand_issue_map(
+                                    client=client,
+                                    message=message,
+                                    retrieved_context=str(pack.get("context_text") or ""),
+                                    legal_locus=legal_locus,
+                                    issues=(intake or {}).get("issues") or [],
+                                )
+                                if should_ask_facts(expanded):
+                                    yield _sse_line(
+                                        {
+                                            "type": "need_facts",
+                                            "source": "retrieval",
+                                            "can_proceed": False,
+                                            "sufficient": False,
+                                            "issues": expanded.get("issues") or [],
+                                            "questions": expanded.get("questions") or [],
+                                        }
+                                    )
+                                    return
+                    elif vector_search_enabled:
+                        pack = lookup_pack_for_chat(message)
+                        if pack.get("retrieved_chunks"):
+                            yield _sse_line({"type": "search", "phase": "opslag"})
+                            prefetched_retrieval = pack
+                            write_question = compose_write_input(
+                                message=message,
+                                prefetch_context=str(pack.get("context_text") or ""),
+                                uploaded_context=context_text,
+                                framing=build_context_framing(context_blocks),
+                            )
+                    write_question = with_history(history_prefix, write_question)
+
                     def stream_without_vector(notice_prefix: str = ""):
+                        write_model = write_models[0]
                         req = {
-                            "model": PRIMARY_MODEL,
+                            "model": write_model,
                             "instructions": chat_instructions,
-                            "input": message,
-                            "reasoning": {"effort": REASONING_EFFORT_CHAT},
+                            "input": with_history(history_prefix, message),
+                            "reasoning": {"effort": write_effort},
                             "prompt_cache_key": chat_cache_key,
-                            **cache_fields_for_model(PRIMARY_MODEL),
+                            **cache_fields_for_model(write_model),
                             "stream": True,
                         }
-                        if payload.previous_response_id:
-                            req["previous_response_id"] = payload.previous_response_id
+                        if write_previous_id:
+                            req["previous_response_id"] = write_previous_id
                         t0 = time.perf_counter()
-                        stream_resp = client.responses.create(**req)
+                        stream_resp = write_client.responses.create(**req)
                         accumulated = notice_prefix or ""
                         if notice_prefix:
                             yield _sse_line({"type": "delta", "text": notice_prefix})
@@ -2814,7 +2961,7 @@ def chat(
                                 req_id = getattr(resp_obj, "_request_id", None) if resp_obj else None
                                 _log.info(
                                     "perf flow=chat model=%s duration_ms=%.0f x_request_id=%s input_tokens=%s output_tokens=%s vector_search_enabled=%s vector_store_count=%s",
-                                    PRIMARY_MODEL, duration_ms, req_id or "?", inp_tok, out_tok, False, 0,
+                                    write_model, duration_ms, req_id or "?", inp_tok, out_tok, False, 0,
                                 )
                                 final_answer = (notice_prefix + answer).strip() if notice_prefix else answer.strip()
                                 save_chat_last_sources(
@@ -2827,7 +2974,7 @@ def chat(
                                 yield _sse_line({
                                     "type": "done",
                                     "answer": final_answer,
-                                    "used_model": PRIMARY_MODEL,
+                                    "used_model": write_model,
                                     "response_id": response_id,
                                     "used_vector_store_ids": [],
                                     "vector_search_enabled": False,
@@ -2837,20 +2984,23 @@ def chat(
                     if vector_search_enabled:
                         # Når vector search er aktiv i chat, bruges samme retrieval/sourcing-regler
                         # som i analyse (parse/strict-sourcing m.m.) med analyse-prompt 1:1.
+                        # Opgaveløsning: Python har allerede hentet lag A/B; notatet skrives
+                        # uden at modellen selv søger, medmindre prefetch var tom.
                         for evt in analyze_question_stream(
-                            client=client,
-                            question=vector_question,
-                            log_question=vector_question,
-                            previous_response_id=payload.previous_response_id,
+                            client=write_client,
+                            question=write_question,
+                            log_question=write_question,
+                            previous_response_id=write_previous_id,
                             vector_store_ids=selected_vector_store_ids,
                             instructions=vector_chat_format_instructions,
-                            models_to_try=[PRIMARY_MODEL, FALLBACK_MODEL],
-                            reasoning_effort=REASONING_EFFORT_CHAT,
+                            models_to_try=write_models,
+                            reasoning_effort=write_effort,
                             prompt_cache_key=chat_cache_key,
-                            use_file_search=True,
+                            use_file_search=prefetched_retrieval is None and provider != "grok",
                             user_question=message,
-                            flow="chat",
+                            flow="task_solve" if task_solve else "chat",
                             preserve_markdown=allow_markdown,
+                            prefetched_retrieval=prefetched_retrieval,
                         ):
                             if evt.get("type") == "delta":
                                 yield _sse_line({"type": "delta", "text": evt.get("text", "")})
@@ -2899,19 +3049,56 @@ def chat(
             )
 
         if vector_search_enabled:
+            prefetched_retrieval = None
+            write_question = vector_question
+            if task_solve or provider == "grok":
+                if task_solve:
+                    pack = run_layered_search(
+                        client=client,
+                        message=message,
+                        legal_locus=legal_locus,
+                        issues=[],
+                        vector_store_ids=selected_vector_store_ids,
+                    )
+                else:
+                    pack = prefetch_chat_retrieval(
+                        client=client,
+                        query=message,
+                        vector_store_ids=selected_vector_store_ids,
+                    )
+                if pack.get("retrieved_chunks"):
+                    prefetched_retrieval = pack
+                    write_question = compose_write_input(
+                        message=message,
+                        prefetch_context=str(pack.get("context_text") or ""),
+                        uploaded_context=context_text,
+                        framing=build_context_framing(context_blocks),
+                    )
+            else:
+                pack = lookup_pack_for_chat(message)
+                if pack.get("retrieved_chunks"):
+                    prefetched_retrieval = pack
+                    write_question = compose_write_input(
+                        message=message,
+                        prefetch_context=str(pack.get("context_text") or ""),
+                        uploaded_context=context_text,
+                        framing=build_context_framing(context_blocks),
+                    )
+            write_question = with_history(history_prefix, write_question)
             parsed, used_model, response_id = analyze_question(
-                client=client,
-                question=vector_question,
-                previous_response_id=payload.previous_response_id,
+                client=write_client,
+                question=write_question,
+                previous_response_id=write_previous_id,
                 vector_store_ids=selected_vector_store_ids,
                 instructions=vector_chat_format_instructions,
-                models_to_try=[PRIMARY_MODEL, FALLBACK_MODEL],
-                reasoning_effort=REASONING_EFFORT_CHAT,
+                models_to_try=write_models,
+                reasoning_effort=write_effort,
                 prompt_cache_key=chat_cache_key,
-                use_file_search=True,
+                use_file_search=prefetched_retrieval is None and provider != "grok",
                 user_question=message,
-                flow="chat",
+                flow="task_solve" if task_solve else "chat",
                 preserve_markdown=allow_markdown,
+                prefetched_retrieval=prefetched_retrieval,
             )
             answer = str(parsed.get("output_text", "") or "").strip()
             chat_citations = parsed.get("citations", []) or []
@@ -2919,18 +3106,19 @@ def chat(
             chat_used_retrieval_results = _extract_used_retrieval_results(parsed)
             chat_retrieval_diagnostics = parsed.get("retrieval_diagnostics", {}) or {}
         else:
+            write_model = write_models[0]
             request_payload: dict[str, object] = {
-                "model": PRIMARY_MODEL,
+                "model": write_model,
                 "instructions": chat_instructions,
-                "input": message,
-                "reasoning": {"effort": REASONING_EFFORT_CHAT},
+                "input": with_history(history_prefix, message),
+                "reasoning": {"effort": write_effort},
                 "prompt_cache_key": chat_cache_key,
-                **cache_fields_for_model(PRIMARY_MODEL),
+                **cache_fields_for_model(write_model),
             }
-            if payload.previous_response_id:
-                request_payload["previous_response_id"] = payload.previous_response_id
+            if write_previous_id:
+                request_payload["previous_response_id"] = write_previous_id
             t0 = time.perf_counter()
-            resp = client.responses.create(**request_payload)
+            resp = write_client.responses.create(**request_payload)
             duration_ms = (time.perf_counter() - t0) * 1000
             answer = str(getattr(resp, "output_text", "") or "").strip()
             response_id = str(getattr(resp, "id", "") or "")
@@ -2940,16 +3128,16 @@ def chat(
             req_id = getattr(resp, "_request_id", None)
             _log.info(
                 "perf flow=chat model=%s duration_ms=%.0f x_request_id=%s input_tokens=%s output_tokens=%s reasoning_effort=%s vector_search_enabled=%s vector_store_count=%s",
-                PRIMARY_MODEL,
+                write_model,
                 duration_ms,
                 req_id or "?",
                 input_tokens,
                 output_tokens,
-                REASONING_EFFORT_CHAT,
+                write_effort,
                 False,
                 0,
             )
-            used_model = PRIMARY_MODEL
+            used_model = write_model
         save_chat_last_sources(
             session_id,
             citations=chat_citations,
