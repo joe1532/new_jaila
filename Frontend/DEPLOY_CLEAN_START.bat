@@ -6,6 +6,12 @@ echo ========================================
 echo   JAILA Clean-Start Deployment
 echo ========================================
 echo.
+echo FEJL: Gammel JAILA er taget af forsiden 25. august 2026.
+echo Koer DEPLOY_V2.bat i JAILA-NEW-FRONTEND. Dette script ville
+echo overskrive https://skat-chat.dk/ med den gamle UI.
+exit /b 1
+
+echo.
 
 if not defined SSH_KEY set "SSH_KEY=%USERPROFILE%\.ssh\id_ed25519"
 set "SSH_USER=maestro"

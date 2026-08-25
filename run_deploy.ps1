@@ -26,5 +26,6 @@ if (-not (Test-Path $env:SSH_KEY)) {
     exit 1
 }
 
-Write-Host "Deployer JAILA til server (sudo via .env)..."
-cmd /c "set SUDO_PASS=$env:SUDO_PASS&& set SSH_KEY=$env:SSH_KEY&& call DEPLOY_ALL.bat"
+Write-Host "Deployer backend til server (sudo via .env)..."
+Write-Host "Frontend deployes fra JAILA-NEW-FRONTEND med DEPLOY_V2.bat."
+cmd /c "set SUDO_PASS=$env:SUDO_PASS&& set SSH_KEY=$env:SSH_KEY&& set SKIP_PAUSE=1&& call backend\deploy\DEPLOY_BACKEND.bat"

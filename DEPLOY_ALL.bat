@@ -18,18 +18,13 @@ if errorlevel 1 (
 )
 
 echo.
-echo [2/2] Deployer frontend...
-cd Frontend
-call DEPLOY_CLEAN_START.bat
-cd ..
-if errorlevel 1 (
-  echo Frontend deployment fejlede.
-  goto :done
-)
+echo [2/2] Frontend er JAILA-NEW-FRONTEND, ikke denne mappe.
+echo Koer DEPLOY_V2.bat der. DEPLOY_CLEAN_START.bat er slaaet fra,
+echo saa den ikke laegger gammel JAILA tilbage paa forsiden.
 
 echo.
 echo ========================================
-echo   Deployment fuldfort.
+echo   Backend-deployment fuldfort.
 echo ========================================
 echo.
 
