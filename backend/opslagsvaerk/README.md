@@ -21,8 +21,9 @@ python -m backend.tools.import_opslagsvaerk
 ## DJV 2026-2
 
 Flade noder fra json-cleanerens rensede filer. Adressen er nøglen, fx
-`C.A.7.3.2`. Binding til LL § (og stk. når overskriften har det) læses af
-overskriften. `chunks.jsonl` bruges ikke.
+`C.A.7.3.2`. Binding til LL § læses af overskriften (stk. når det står der)
+og af afsnittets Regel/indledning, ikke af praksistabellen. `chunks.jsonl`
+bruges ikke.
 
 | Fil | Kilde |
 |---|---|

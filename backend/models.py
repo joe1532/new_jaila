@@ -170,6 +170,10 @@ class ChatRequest(BaseModel):
         default=True,
         description="Hvis true bruges file_search mod vector stores i chat",
     )
+    rewrite_text: bool = Field(
+        default=False,
+        description="Hvis true rettes teksten efter skriveguiden i stedet for retskildenotat",
+    )
     vector_store_ids: list[str] | None = Field(
         default=None,
         description="Valgfri override af vector stores i chat",
@@ -180,7 +184,7 @@ class ChatRequest(BaseModel):
     )
     task_solve: bool = Field(
         default=False,
-        description="Hvis true vurderes faktum først; manglende oplysninger kan stoppe før notat",
+        description="Hvis true kører test-sløjfen: file search, nodeopslag og kritik",
     )
     legal_locus: str | None = Field(
         default=None,
@@ -248,6 +252,23 @@ class RetrievalDiagnostics(BaseModel):
     asked_references: dict[str, list[str]] = Field(default_factory=dict)
     missing_references: dict[str, list[str]] = Field(default_factory=dict)
     has_missing_references: bool = False
+    critic_status: str | None = None
+    critic_stk: int | None = None
+    critic_fejl: list[str] = Field(default_factory=list)
+    critic_mangler: list[str] = Field(default_factory=list)
+    critic_action: str | None = None
+    recovered: bool = False
+    fail_closed: bool = False
+    manifest_addresses: list[str] = Field(default_factory=list)
+    draft_addresses: list[str] = Field(default_factory=list)
+    unused_in_draft: list[str] = Field(default_factory=list)
+    missing_from_retrieval: list[str] = Field(default_factory=list)
+    gold_in_manifest: list[str] = Field(default_factory=list)
+    recovery_address: str | None = None
+    recovery_source: str | None = None
+    pipeline: str | None = None
+    pipeline_outcome: str | None = None
+    pipeline_trace: list[dict[str, str]] = Field(default_factory=list)
 
 
 class ChatResponse(BaseModel):
@@ -282,6 +303,7 @@ class ChatExportRequest(BaseModel):
     retrieval_results: list[dict] = Field(default_factory=list)
     used_retrieval_results: list[dict] = Field(default_factory=list)
     used_vector_store_ids: list[str] = Field(default_factory=list)
+    retrieval_diagnostics: dict | None = None
 
 
 class ChatExportResponse(BaseModel):
@@ -309,6 +331,7 @@ class ChatLogSaveRequest(BaseModel):
     retrieval_results: list[dict] = Field(default_factory=list)
     used_retrieval_results: list[dict] = Field(default_factory=list)
     used_vector_store_ids: list[str] = Field(default_factory=list)
+    retrieval_diagnostics: dict = Field(default_factory=dict)
 
 
 class ChatLogSaveResponse(BaseModel):
@@ -346,6 +369,7 @@ class ChatLogGetResponse(BaseModel):
     retrieval_results: list[dict] = Field(default_factory=list)
     used_retrieval_results: list[dict] = Field(default_factory=list)
     used_vector_store_ids: list[str] = Field(default_factory=list)
+    retrieval_diagnostics: dict = Field(default_factory=dict)
 
 
 class ChatContextFileResponse(BaseModel):

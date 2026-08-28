@@ -1,7 +1,9 @@
+import os
 import unittest
 
 from backend.services.task_search import (
     _fact_excerpt,
+    _filter_packed_lookups,
     _open_doors,
     _pack_chunks,
     _section_is_node,
@@ -12,6 +14,7 @@ from backend.services.task_search import (
     filename_looks_like_statute,
     format_retrieved_context,
     format_flat_retrieved_context,
+    lookup_hits_for_anchors,
     lookup_pack_for_chat,
     prefetch_chat_retrieval,
     run_layered_search,
@@ -25,6 +28,397 @@ class TaskSearchTests(unittest.TestCase):
         self.assertIn("ligningsloven § 33 A", labels)
         self.assertIn("kildeskatteloven § 1", labels)
         self.assertIn("dobbeltbeskatningsoverenskomst artikel 15", labels)
+
+    def test_extract_anchors_does_not_read_stk_or_next_word_as_letter(self):
+        self.assertEqual(
+            ["ligningsloven § 16"],
+            [item["label"] for item in extract_anchors("LL § 16, stk. 4")],
+        )
+        self.assertEqual(
+            ["ligningsloven § 16"],
+            [item["label"] for item in extract_anchors("LL § 16 stk. 4")],
+        )
+        self.assertEqual(
+            ["ligningsloven § 16 C"],
+            [item["label"] for item in extract_anchors("LL § 16 C")],
+        )
+        self.assertEqual(
+            ["ligningsloven § 9 A"],
+            [item["label"] for item in extract_anchors("LL § 9 A")],
+        )
+
+    def test_layered_search_looks_up_16_not_16c_for_stk4_locus(self):
+        def fake_search(query: str):
+            if "praksis" in query or "personkreds" in query:
+                return [
+                    {
+                        "file_id": "cirk",
+                        "filename": "Cirkulære 1996-04-17 nr. 72 om ligningsloven.pdf",
+                        "score": 0.8,
+                        "text": "§ 16, stk. 4, finder anvendelse på firmabil til privat brug.",
+                    }
+                ]
+            return []
+
+        pack = run_layered_search(
+            client=None,  # type: ignore[arg-type]
+            message=(
+                "Henrik har firmabil ved bopælen og nøglerne. "
+                "Han har ikke kørt privat. Skal han beskattes af fri bil?"
+            ),
+            legal_locus="LL § 16, stk. 4",
+            issues=[{"id": "I1", "question": "Skal Henrik beskattes af fri bil efter LL § 16, stk. 4?"}],
+            search_fn=fake_search,
+        )
+        file_ids = [item["file_id"] for item in pack["retrieved_chunks"]]
+        self.assertTrue(any(item.startswith("opslag:ll:16:") for item in file_ids))
+        self.assertFalse(any("16c" in item for item in file_ids))
+        self.assertTrue(any(item.startswith("opslag:djv:") for item in file_ids))
+
+    def test_discover_anchors_inherits_law_from_source_and_skips_unrelated_section(self):
+        from backend.services.task_search import discover_anchors_from_hits
+
+        facts = (
+            "Henrik har firmabil ved bopælen og nøglerne. "
+            "Han har ikke kørt privat. Skal han beskattes af fri bil?"
+        )
+        hits = [
+            {
+                "filename": "Cirkulære 1996-04-17 nr. 72 om ligningsloven.pdf",
+                "text": (
+                    "§ 16, stk. 4, finder anvendelse på firmabil til privat brug, "
+                    "når bilen stilles til rådighed. "
+                    + ("udfyldning " * 40)
+                    + "§ 16 C om investeringsinstitutter og aktionærer."
+                ),
+            }
+        ]
+        labels = [item["label"] for item in discover_anchors_from_hits(hits, facts=facts)]
+        self.assertEqual(["ligningsloven § 16"], labels)
+
+    def test_discover_anchors_drops_weak_befordring_paragraph(self):
+        from backend.services.task_search import discover_anchors_from_hits
+
+        facts = (
+            "Henrik er direktør i Alfa A/S. Alfa stiller en personbil til en "
+            "værdi af 650.000 kr. til rådighed. Bilen holder ved bopælen, og "
+            "Henrik har nøglerne. Han har ikke kørt én privat kilometer i "
+            "firmabilen. Skal han beskattes af fri bil?"
+        )
+        hits = [
+            {
+                "filename": "Cirkulære 1996-04-17 nr. 72 om ligningsloven.pdf",
+                "text": (
+                    "§ 16, stk. 4, finder anvendelse på firmabil til privat brug, "
+                    "når bilen stilles til rådighed og den ansatte har nøglerne."
+                ),
+            },
+            {
+                "filename": "JURV2026-2_C.A_R_DEF_20260810.pdf",
+                "text": (
+                    "Befordringsfradrag efter ligningslovens § 9 C beregnes for "
+                    "kørsel mellem sædvanlig bopæl og arbejdsplads pr. kilometer."
+                ),
+            },
+        ]
+        labels = [item["label"] for item in discover_anchors_from_hits(hits, facts=facts)]
+        self.assertEqual(["ligningsloven § 16"], labels)
+        self.assertNotIn("ligningsloven § 9 C", labels)
+
+    def test_discover_anchors_does_not_guess_law_from_bare_section(self):
+        from backend.services.task_search import discover_anchors_from_hits
+
+        hits = [
+            {
+                "filename": "SKM2012.123.LSR.pdf",
+                "text": "§ 16, stk. 4, om firmabil til privat brug og rådighed.",
+            }
+        ]
+        self.assertEqual(
+            [],
+            discover_anchors_from_hits(
+                hits,
+                facts="Henrik har firmabil ved bopælen. Skal han beskattes af fri bil?",
+            ),
+        )
+
+    def test_clean_rewrite_keeps_short_query_and_drops_copy(self):
+        from backend.services.task_search import _clean_rewrite
+
+        facts = "Henrik har firmabil ved bopælen."
+        self.assertEqual(
+            "firmabil privat rådighed nøgler",
+            _clean_rewrite('Query: "firmabil privat rådighed nøgler"', facts),
+        )
+        self.assertEqual("", _clean_rewrite(facts, facts))
+
+    def test_layer_zero_runs_gpt_query_beside_python(self):
+        queries: list[str] = []
+
+        def fake_search(query: str):
+            queries.append(query)
+            if "firmabil privat rådighed" in query:
+                return [
+                    {
+                        "file_id": "cirk",
+                        "filename": "Cirkulære 1996-04-17 nr. 72 om ligningsloven.pdf",
+                        "score": 0.9,
+                        "text": (
+                            "§ 16, stk. 4, finder anvendelse på firmabil til privat brug, "
+                            "når den stilles til rådighed og den ansatte har nøglerne."
+                        ),
+                    }
+                ]
+            if "praksis" in query or "personkreds" in query:
+                return []
+            return [
+                {
+                    "file_id": "befordring",
+                    "filename": "JURV2026-2_C.A_R_DEF_20260810.pdf",
+                    "score": 0.7,
+                    "text": (
+                        "Befordringsfradrag efter ligningslovens § 9 C beregnes for "
+                        "kørsel mellem sædvanlig bopæl og arbejdsplads pr. kilometer."
+                    ),
+                }
+            ]
+
+        pack = run_layered_search(
+            client=None,  # type: ignore[arg-type]
+            message=(
+                "Henrik er direktør i Alfa A/S. Alfa stiller en personbil til rådighed. "
+                "Bilen holder ved bopælen, og Henrik har nøglerne. "
+                "Han har ikke kørt én privat kilometer i firmabilen. "
+                "Skal han beskattes af fri bil?"
+            ),
+            legal_locus="",
+            issues=[{"id": "I1", "question": "Skal Henrik beskattes af fri bil?"}],
+            search_fn=fake_search,
+            rewrite_fn=lambda _facts: "firmabil privat rådighed nøgler LL",
+        )
+        file_ids = [item["file_id"] for item in pack["retrieved_chunks"]]
+        self.assertTrue(any(item.startswith("opslag:ll:16:") for item in file_ids))
+        self.assertFalse(any(item.startswith("opslag:ll:9c:") for item in file_ids))
+        self.assertTrue(any("firmabil privat rådighed" in query for query in queries))
+        self.assertTrue(
+            any(
+                item.get("layer") == "0" and item.get("source") == "discovery-gpt"
+                for item in pack["searches"]
+            )
+        )
+
+    def test_lookup_drops_9c_for_firmabil_but_keeps_it_when_commute_is_in_facts(self):
+        hits = lookup_hits_for_anchors(
+            extract_anchors("LL § 16 og LL § 9 C og LL § 9 B")
+        )
+        self.assertEqual(len(hits), 3)
+        henrik = (
+            "Henrik er direktør i Alfa A/S. "
+            "Alfa A/S stiller en personbil til en værdi af 650.000 kr. til rådighed "
+            "for Henrik. Ifølge hans ansættelseskontrakt må bilen anvendes både "
+            "erhvervsmæssigt og privat. Bilen holder normalt ved Henriks bopæl om "
+            "natten, og Henrik har selv bilens nøgler. Henrik ejer også privat en "
+            "anden bil. Henrik oplyser, at han i hele 2026 ikke har kørt én eneste "
+            "privat kilometer i firmabilen. Han mener derfor ikke, at han skal "
+            "beskattes af fri bil. Skal Henrik beskattes af fri bil, hvis det kan "
+            "lægges til grund, at han rent faktisk ikke har kørt privat i bilen?"
+        )
+        kept, dropped = _filter_packed_lookups(hits, henrik, None, set())
+        kept_labels = {str(item.get("anchor") or "") for item in kept}
+        dropped_labels = {str(item.get("anchor") or "") for item in dropped}
+        self.assertIn("ligningsloven § 16", kept_labels)
+        self.assertIn("ligningsloven § 9 C", dropped_labels)
+        self.assertIn("ligningsloven § 9 B", dropped_labels)
+
+        from backend.services.djv_opslag import lookup_djv_hits
+
+        doors = _open_doors(kept, henrik, None)
+        self.assertTrue(any("Stk. 4" in str(door.get("label") or "") for door in doors))
+        self.assertFalse(
+            any(str(door.get("key") or "") == "9c" for door in doors)
+        )
+        djv = lookup_djv_hits(
+            [
+                item
+                for hit in kept
+                for item in extract_anchors(str(hit.get("anchor") or ""))
+            ],
+            doors,
+            facts=henrik,
+        )
+        addresses = {item["lookup_address"] for item in djv}
+        self.assertIn("C.A.5.14.1.4", addresses)
+        self.assertIn("C.A.5.14.1.11", addresses)
+        self.assertFalse(any(item.startswith("C.A.4") for item in addresses))
+
+        nine_c_first = lookup_hits_for_anchors(
+            extract_anchors("LL § 9 C og LL § 16")
+        )
+        self.assertEqual(
+            [str(item.get("anchor") or "") for item in nine_c_first],
+            ["ligningsloven § 9 C", "ligningsloven § 16"],
+        )
+        kept_first, dropped_first = _filter_packed_lookups(
+            nine_c_first, henrik, None, set()
+        )
+        first_kept = {str(item.get("anchor") or "") for item in kept_first}
+        self.assertIn("ligningsloven § 16", first_kept)
+        self.assertNotIn("ligningsloven § 9 C", first_kept)
+
+        dual = (
+            "Henrik har firmabil ved bopælen og nøglerne. "
+            "Han kører 185 km mellem bopæl og arbejdsplads og vil have "
+            "befordringsfradrag."
+        )
+        kept_dual, dropped_dual = _filter_packed_lookups(hits, dual, None, set())
+        dual_labels = {str(item.get("anchor") or "") for item in kept_dual}
+        self.assertIn("ligningsloven § 16", dual_labels)
+        self.assertIn("ligningsloven § 9 C", dual_labels)
+        self.assertTrue(any("9 C" in str(item.get("anchor") or "") for item in kept_dual))
+        self.assertLess(len(dropped_dual), len(dropped))
+
+    def test_jurv_pdf_is_dropped_when_ca_node_is_packed(self):
+        from backend.services.task_search import _drop_replaced_djv_files
+
+        djv_hits = [
+            {
+                "from_lookup": True,
+                "lookup_kind": "djv",
+                "lookup_address": "C.A.5.14.1.4",
+                "filename": "DJV C.A.5.14.1.4 Rådighedsbeskatning",
+                "text": "Det er rådigheden over den fri bil, der beskattes.",
+            }
+        ]
+        kept = _drop_replaced_djv_files(
+            [
+                {
+                    "file_id": "jurv",
+                    "filename": "JURV2026-2_C.A_R_DEF_20260810.pdf",
+                    "text": "Formodning for privat rådighed når firmabil står på hjemadressen.",
+                },
+                {
+                    "file_id": "karnov-cf",
+                    "filename": "JURV2026-2_C.F_R_DEF_20260810.pdf",
+                    "text": "C.F.4.2.1 Ligningslovens § 33 A.",
+                },
+            ],
+            djv_hits,
+        )
+        names = [str(item.get("filename") or "") for item in kept]
+        self.assertFalse(any("C.A" in name for name in names))
+        self.assertTrue(any("C.F" in name for name in names))
+
+    def test_stated_anchors_are_not_dropped_by_lookup_filter(self):
+        hits = lookup_hits_for_anchors(extract_anchors("LL § 9 A og LL § 16"))
+        kept, dropped = _filter_packed_lookups(
+            hits,
+            "Skal Mette have rejsegodtgørelse og beskattes af fri bil?",
+            None,
+            {
+                "ligningsloven § 9 a",
+                "ligningsloven § 16",
+            },
+        )
+        labels = {str(item.get("anchor") or "").lower() for item in kept}
+        self.assertIn("ligningsloven § 9 a", labels)
+        self.assertIn("ligningsloven § 16", labels)
+        self.assertEqual(dropped, [])
+
+    def test_layered_search_discovers_16_from_facts_without_citation(self):
+        def fake_search(query: str):
+            if "praksis" in query or "personkreds" in query or "rådighed" in query or "firmabil" in query:
+                return [
+                    {
+                        "file_id": "cirk",
+                        "filename": "Cirkulære 1996-04-17 nr. 72 om ligningsloven.pdf",
+                        "score": 0.8,
+                        "text": (
+                            "§ 16, stk. 4, finder anvendelse på firmabil til privat brug, "
+                            "når den stilles til rådighed."
+                        ),
+                    }
+                ]
+            return []
+
+        pack = run_layered_search(
+            client=None,  # type: ignore[arg-type]
+            message=(
+                "Henrik er direktør i Alfa A/S. Alfa stiller en personbil til rådighed. "
+                "Bilen holder ved bopælen, og Henrik har nøglerne. "
+                "Han har ikke kørt privat. Skal han beskattes af fri bil?"
+            ),
+            legal_locus="",
+            issues=[{"id": "I1", "question": "Skal Henrik beskattes af fri bil?"}],
+            search_fn=fake_search,
+        )
+        file_ids = [item["file_id"] for item in pack["retrieved_chunks"]]
+        self.assertTrue(any(item.startswith("opslag:ll:16:") for item in file_ids))
+        self.assertFalse(any("16c" in item for item in file_ids))
+        self.assertTrue(
+            any(
+                item.get("layer") == "0" and item.get("source") == "discovery"
+                for item in pack["searches"]
+            )
+        )
+        self.assertFalse(
+            any(
+                item.get("file_id") == "cirk" and item.get("layer") == "A"
+                for item in pack["retrieved_chunks"]
+            )
+        )
+
+    def test_layer_zero_is_skipped_when_anchor_is_already_stated(self):
+        calls: list[str] = []
+
+        def fake_search(query: str):
+            calls.append(query)
+            return [
+                {
+                    "file_id": "cirk",
+                    "filename": "Cirkulære 1996-04-17 nr. 72 om ligningsloven.pdf",
+                    "score": 0.8,
+                    "text": "§ 16, stk. 4, finder anvendelse på firmabil til privat brug.",
+                }
+            ]
+
+        pack = run_layered_search(
+            client=None,  # type: ignore[arg-type]
+            message="Henrik har firmabil ved bopælen. Skal han have rejsegodtgørelse?",
+            legal_locus="LL § 9 A",
+            issues=[{"id": "I1", "question": "Gælder LL § 9 A?"}],
+            search_fn=fake_search,
+        )
+        file_ids = [item["file_id"] for item in pack["retrieved_chunks"]]
+        self.assertTrue(any(item.startswith("opslag:ll:9a:") for item in file_ids))
+        self.assertFalse(any(item.startswith("opslag:ll:16:") for item in file_ids))
+        self.assertFalse(any(item.get("layer") == "0" for item in pack["searches"]))
+        self.assertTrue(any("praksis" in query or "personkreds" in query for query in calls))
+
+    def test_prefetch_chat_discovers_anchor_when_message_has_none(self):
+        def fake_search(query: str):
+            return [
+                {
+                    "file_id": "cirk",
+                    "filename": "Cirkulære 1996-04-17 nr. 72 om ligningsloven.pdf",
+                    "score": 0.8,
+                    "text": (
+                        "§ 16, stk. 4, finder anvendelse på firmabil til privat brug, "
+                        "når den stilles til rådighed."
+                    ),
+                }
+            ]
+
+        pack = prefetch_chat_retrieval(
+            client=None,  # type: ignore[arg-type]
+            query=(
+                "Henrik har firmabil ved bopælen og nøglerne. "
+                "Han har ikke kørt privat. Skal han beskattes af fri bil?"
+            ),
+            search_fn=fake_search,
+        )
+        file_ids = [item["file_id"] for item in pack["retrieved_chunks"]]
+        self.assertTrue(any(item.startswith("opslag:ll:16:") for item in file_ids))
+        self.assertTrue(any(item.get("layer") == "0" for item in pack["searches"]))
 
     def test_plan_splits_norm_and_issue_specific_interpretation(self):
         plan = build_search_plan(
@@ -238,10 +632,10 @@ class TaskSearchTests(unittest.TestCase):
         self.assertGreater(len(first["text"]), 3000)
         self.assertFalse(any("ligningsloven § 9 A" in query and "lovtekst" in query for query in calls))
         self.assertNotIn("§ 9 H.", first["text"][:80])
-        self.assertTrue(any(item["file_id"] == "djv" for item in pack["retrieved_chunks"]))
+        self.assertFalse(any(item["file_id"] == "djv" for item in pack["retrieved_chunks"]))
         self.assertTrue(
             any(
-                str(item["file_id"]).startswith("opslag:djv:C.A.7.3.2:")
+                str(item["file_id"]).startswith("opslag:djv:C.A.7.1.4:")
                 for item in pack["retrieved_chunks"]
             )
         )
@@ -307,12 +701,13 @@ class TaskSearchTests(unittest.TestCase):
         )
         file_ids = [item["file_id"] for item in pack["retrieved_chunks"]]
         self.assertTrue(any(item.startswith("opslag:ll:9a:") for item in file_ids))
-        self.assertIn("djv-rejse", file_ids)
+        self.assertTrue(any(item.startswith("opslag:djv:C.A.7.") for item in file_ids))
+        self.assertNotIn("djv-rejse", file_ids)
         self.assertIn("lsr", file_ids)
         self.assertNotIn("ll-pdf", file_ids)
         self.assertNotIn("djv-pension", file_ids)
         self.assertNotIn(dagpleje, pack["context_text"])
-        self.assertIn("ligningslovens § 9 A", pack["context_text"])
+        self.assertIn("§ 9 A", pack["context_text"])
 
     def test_pack_prefers_section_node_over_neighbor(self):
         anchor = extract_anchors("LL § 9 A")[0]
@@ -423,13 +818,14 @@ class TaskSearchTests(unittest.TestCase):
             issues=[{"id": "I1", "question": "Gælder LL § 9 A?"}],
             search_fn=fake_search,
         )
-        self.assertIn("C.A.7.2.5 om ligningslovens § 9 A", pack["context_text"])
+        self.assertIn("C.A.7", pack["context_text"])
         file_ids = [item["file_id"] for item in pack["retrieved_chunks"]]
-        self.assertIn("djv-rejse", file_ids)
+        self.assertTrue(any(item.startswith("opslag:djv:C.A.7.") for item in file_ids))
+        self.assertNotIn("djv-rejse", file_ids)
         self.assertNotIn("ksl-wrong", file_ids)
         if "ksl-node" in file_ids:
             self.assertLess(
-                pack["context_text"].find("C.A.7.2.5"),
+                pack["context_text"].find("C.A.7"),
                 pack["context_text"].find("§ 43. Til A-indkomst"),
             )
 
@@ -439,6 +835,10 @@ class TaskSearchTests(unittest.TestCase):
         )
         self.assertEqual(["bekendtgørelse nr. 173"], [item["label"] for item in found])
         self.assertEqual("regulation", found[0]["kind"])
+        titled = extract_regulations(
+            "pligt efter bekendtgørelse om rejse- og befordringsgodtgørelse nr. 173 af 13. marts 2000"
+        )
+        self.assertEqual(["bekendtgørelse nr. 173"], [item["label"] for item in titled])
 
     def test_open_doors_9a_travel_skips_board_and_double_household(self):
         from backend.services.opslagsvaerk import lookup_hit_for_anchor
@@ -502,9 +902,10 @@ class TaskSearchTests(unittest.TestCase):
             search_fn=fake_search,
         )
         file_ids = [item["file_id"] for item in pack["retrieved_chunks"]]
-        self.assertIn("djv-begreb", file_ids)
+        self.assertTrue(any(item.startswith("opslag:djv:C.A.7.1.") for item in file_ids))
+        self.assertNotIn("djv-begreb", file_ids)
         self.assertNotIn("djv-pension", file_ids)
-        self.assertIn("Rejsebegrebet", pack["context_text"])
+        self.assertIn("midlertidigt", pack["context_text"].lower())
         self.assertIn("åbnet disse stykker", pack["context_text"])
 
     def test_gap_skips_incidental_cites_and_follows_bek_in_layer_b(self):
@@ -551,7 +952,7 @@ class TaskSearchTests(unittest.TestCase):
         self.assertTrue(any("bekendtgørelse nr. 173" in query for query in calls))
         file_ids = [item["file_id"] for item in pack["retrieved_chunks"]]
         self.assertIn("bek173", file_ids)
-        self.assertIn("djv-kontrol", file_ids)
+        self.assertNotIn("djv-kontrol", file_ids)
         door_lines = [
             query
             for item in pack["searches"]
@@ -572,7 +973,7 @@ class TaskSearchTests(unittest.TestCase):
         self.assertIn("Stk. 3.", first["text"])
         self.assertGreater(len(first["text"]), 3000)
         file_ids = [item["file_id"] for item in pack["retrieved_chunks"]]
-        self.assertTrue(any(item.startswith("opslag:djv:C.A.") for item in file_ids))
+        self.assertTrue(any(item.startswith("opslag:djv:C.A.7.1.4:") for item in file_ids))
         self.assertFalse(any(item.startswith("opslag:djv:C.F.") for item in file_ids))
         self.assertIn("paragrafnode", pack["context_text"])
         self.assertIn("også slå praksis", pack["context_text"])
@@ -604,7 +1005,8 @@ class TaskSearchTests(unittest.TestCase):
         )
         file_ids = [item["file_id"] for item in pack["retrieved_chunks"]]
         self.assertTrue(any(item.startswith("opslag:ll:9a:") for item in file_ids))
-        self.assertIn("djv", file_ids)
+        self.assertTrue(any(item.startswith("opslag:djv:C.A.7.") for item in file_ids))
+        self.assertNotIn("djv", file_ids)
         self.assertNotIn("ll-pdf", file_ids)
         self.assertTrue(pack["retrieved_chunks"][0]["text"].startswith("§ 9 A."))
 
@@ -644,6 +1046,31 @@ class TaskSearchTests(unittest.TestCase):
         self.assertNotIn("djv-cf4-pdf", file_ids)
         self.assertIn("C.F.4.2.1", pack["context_text"])
         self.assertIn("slået op som node, ikke søgt", pack["context_text"])
+
+    @unittest.skipUnless(
+        os.getenv("JAILA_LIVE_LAYER0") == "1",
+        "sæt JAILA_LIVE_LAYER0=1 for at kalde gpt-5.6-sol",
+    )
+    def test_live_rewrite_henrik_query(self):
+        from openai import OpenAI
+
+        from backend.config import PRIMARY_MODEL
+        from backend.services.task_search import _rewrite_discovery_query
+
+        facts = (
+            "Henrik er direktør i Alfa A/S. Alfa A/S stiller en personbil til en "
+            "værdi af 650.000 kr. til rådighed for Henrik. Ifølge hans "
+            "ansættelseskontrakt må bilen anvendes både erhvervsmæssigt og privat. "
+            "Bilen holder normalt ved Henriks bopæl om natten, og Henrik har selv "
+            "bilens nøgler. Henrik ejer også privat en anden bil. Henrik oplyser, "
+            "at han i hele 2026 ikke har kørt én eneste privat kilometer i "
+            "firmabilen. Skal Henrik beskattes af fri bil, hvis det kan lægges "
+            "til grund, at han rent faktisk ikke har kørt privat i bilen?"
+        )
+        rewritten = _rewrite_discovery_query(OpenAI(), facts)
+        self.assertTrue(rewritten, "gpt-5.6-sol returnerede tom søgestreng")
+        self.assertNotEqual(rewritten.casefold(), facts.casefold())
+        print(f"LIVE_REWRITE model={PRIMARY_MODEL} query={rewritten}")
 
 
 if __name__ == "__main__":

@@ -53,7 +53,10 @@ STABILITY_HOPS: tuple[tuple[str, str, str], ...] = (
 
 LOOKUP_LAWS = frozenset({"ligningsloven"})
 
-_SECTION_KEY = re.compile(r"(\d+)\s*([A-Za-z])?", re.IGNORECASE)
+_SECTION_KEY = re.compile(
+    r"(\d+)(?:\s*([A-Za-z])(?![A-Za-zæøåÆØÅ]))?",
+    re.IGNORECASE,
+)
 _HYPHEN_RE = re.compile(r"[\u00ad\u2010\u2011\u2012\u2013\u2014\u2212-]")
 
 

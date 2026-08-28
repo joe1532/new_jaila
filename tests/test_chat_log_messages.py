@@ -58,3 +58,32 @@ class ChatLogPerMessageCitationsTests(unittest.TestCase):
                 )
                 self.assertEqual(assistants[1]["citations"][0]["filename"], "anden.pdf")
                 self.assertEqual(entry["citations"][0]["filename"], "anden.pdf")
+
+
+    def test_keeps_pipeline_diagnostics(self):
+        with TemporaryDirectory() as tmp:
+            with (
+                patch.object(chat_logs, "ANALYSE_LOGS_DIR", Path(tmp)),
+                patch.object(chat_logs, "_generate_title_from_messages", return_value="Titel"),
+            ):
+                chat_logs.save_chat_log(
+                    username="jonas",
+                    session_id="sess-trace",
+                    used_model="gpt-test",
+                    messages=[
+                        {"role": "user", "text": "Firmabil?"},
+                        {"role": "assistant", "text": "Ja, stk. 4."},
+                    ],
+                    retrieval_diagnostics={
+                        "pipeline": "task_critic_v1",
+                        "pipeline_outcome": "godkend_draft",
+                        "pipeline_trace": [
+                            {"id": "critic", "title": "4. Kritik", "detail": "status=godkend"}
+                        ],
+                    },
+                )
+                listed = chat_logs.list_chat_logs("jonas")
+                entry = chat_logs.get_chat_log("jonas", listed[0]["id"])
+                self.assertIsNotNone(entry)
+                self.assertEqual(entry["retrieval_diagnostics"]["pipeline"], "task_critic_v1")
+                self.assertEqual(entry["retrieval_diagnostics"]["pipeline_outcome"], "godkend_draft")

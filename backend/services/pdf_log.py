@@ -243,6 +243,43 @@ def save_pdf_log(question: str, parsed: dict[str, Any], used_model: str) -> Path
     return output_path
 
 
+def _append_pipeline_story(
+    story: list[Any],
+    diagnostics: dict[str, Any] | None,
+    body_style: ParagraphStyle,
+    heading_style: ParagraphStyle,
+) -> None:
+    """Vugge-til-grav: kørte sløjfen, hvad kritikken sagde, og hvad det affødte."""
+    story.append(Paragraph("Forløb", heading_style))
+    row = diagnostics if isinstance(diagnostics, dict) else {}
+    pipeline = str(row.get("pipeline") or "")
+    steps = row.get("pipeline_trace") or []
+    if pipeline == "task_critic_v1" and isinstance(steps, list) and steps:
+        story.append(
+            Paragraph(
+                "Sløjfe: file search → udkast → nodeopslag → kritik (v1).",
+                body_style,
+            )
+        )
+        outcome = str(row.get("pipeline_outcome") or "")
+        if outcome:
+            story.append(Paragraph(f"Udfald: {escape(outcome)}", body_style))
+        for step in steps:
+            if not isinstance(step, dict):
+                continue
+            title = escape(str(step.get("title") or "").strip() or "Trin")
+            detail = escape(str(step.get("detail") or "").strip()).replace("\n", "<br/>")
+            story.append(Paragraph(f"<b>{title}</b> — {detail}" if detail else f"<b>{title}</b>", body_style))
+    else:
+        story.append(
+            Paragraph(
+                "Chat uden kritiksløjfe. Kun file search og svar — nodeopslag og kritik kørte ikke.",
+                body_style,
+            )
+        )
+    story.append(Spacer(1, 8))
+
+
 def save_chat_pdf_log(
     messages: list[dict[str, str]],
     used_model: str,
@@ -250,6 +287,7 @@ def save_chat_pdf_log(
     retrieval_results: list[dict[str, str]] | None = None,
     used_retrieval_results: list[dict[str, str]] | None = None,
     used_vector_store_ids: list[str] | None = None,
+    retrieval_diagnostics: dict[str, Any] | None = None,
 ) -> Path:
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -292,6 +330,7 @@ def save_chat_pdf_log(
     if used_vector_store_ids:
         story.append(Paragraph(f"Vector stores: {escape(', '.join(used_vector_store_ids))}", body_style))
     story.append(Spacer(1, 8))
+    _append_pipeline_story(story, retrieval_diagnostics, body_style, heading_style)
 
     story.append(Paragraph("Samtale", heading_style))
     if not messages:

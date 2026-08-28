@@ -14,6 +14,9 @@ class OpslagsvaerkTests(unittest.TestCase):
         self.assertEqual("9a", paragraph_key("9 A"))
         self.assertEqual("9a", paragraph_key("9a"))
         self.assertEqual("33a", paragraph_key("LL § 33 A"))
+        self.assertEqual("16", paragraph_key("LL § 16, stk. 4"))
+        self.assertEqual("16", paragraph_key("16 stk. 4"))
+        self.assertEqual("16c", paragraph_key("§ 16 C"))
         self.assertEqual("", paragraph_key(""))
 
     def test_lookup_9a_returns_full_node_not_9h(self):

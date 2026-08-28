@@ -118,6 +118,7 @@ def save_chat_log(
     retrieval_results: list[dict] | None = None,
     used_retrieval_results: list[dict] | None = None,
     used_vector_store_ids: list[str] | None = None,
+    retrieval_diagnostics: dict | None = None,
     kind: str = "chat",
 ) -> dict:
     """
@@ -148,6 +149,7 @@ def save_chat_log(
     normalized_retrieval_results = retrieval_results or []
     normalized_used_retrieval_results = used_retrieval_results or []
     normalized_used_vector_store_ids = used_vector_store_ids or []
+    normalized_diagnostics = retrieval_diagnostics or {}
 
     existing_idx = next(
         (idx for idx, entry in enumerate(entries) if str(entry.get("session_id", "")).strip() == clean_session_id),
@@ -168,6 +170,7 @@ def save_chat_log(
             "retrieval_results": normalized_retrieval_results,
             "used_retrieval_results": normalized_used_retrieval_results,
             "used_vector_store_ids": normalized_used_vector_store_ids,
+            "retrieval_diagnostics": normalized_diagnostics,
         }
         entries.insert(0, entry)
     else:
@@ -180,6 +183,7 @@ def save_chat_log(
         existing["retrieval_results"] = normalized_retrieval_results
         existing["used_retrieval_results"] = normalized_used_retrieval_results
         existing["used_vector_store_ids"] = normalized_used_vector_store_ids
+        existing["retrieval_diagnostics"] = normalized_diagnostics
         entry = existing
         entries.insert(0, entry)
 

@@ -10,6 +10,7 @@ from typing import Any, Callable
 
 from openai import OpenAI
 
+from backend.config import FALLBACK_MODEL, PRIMARY_MODEL
 from backend.services.djv_opslag import lookup_djv_hits
 from backend.services.legal_search import search_legal_sources
 from backend.services.opslagsvaerk import lookup_hit_for_anchor
@@ -19,6 +20,8 @@ _log = logging.getLogger(__name__)
 MAX_NORM_QUERIES = 3
 MAX_ISSUE_B_QUERIES = 2
 MAX_GAP_QUERIES = 2
+MAX_DISCOVERY_ANCHORS = 3
+DISCOVERY_WINDOW_CHARS = 180
 RESULTS_PER_QUERY = 6
 MAX_CHUNKS_PER_FILE = 2
 MAX_STATUTE_CHUNKS_PER_FILE = 4
@@ -26,6 +29,14 @@ MAX_GAP_CHUNKS_PER_FILE = 1
 MAX_CHUNK_CHARS = 3_000
 MAX_CONTEXT_CHARS = 24_000
 SEARCH_WORKERS = 4
+MAX_REWRITE_CHARS = 240
+LAYER0_REWRITE_CACHE_KEY = "jaila-layer0-rewrite-v1"
+LAYER0_REWRITE_INSTRUCTIONS = """Du skriver én søgestreng til JAILAs danske skatteretlige kilder.
+Ikke et svar. Ikke en analyse. Én linje, højst 200 tegn.
+Brug sagens distinkte emneord. Du må nævne lov og paragraf som søgeord,
+hvis teksten peger på det; det er ikke et facit.
+Ingen citationstegn. Ingen markdown."""
+
 
 LAW_ABBREVIATIONS = {
     "ll": "ligningsloven",
@@ -52,23 +63,33 @@ STATUTE_STEMS = tuple(
     )
 )
 
+# Bogstav kun som paragrafsuffiks (9 A). Ikke «stk» og ikke næste ord («ligningsloven»).
+_SECTION_CAPTURE = r"(\d+(?:\s*[A-Za-z](?![A-Za-zæøåÆØÅ]))?)"
 _ABBREV_PATTERN = re.compile(
-    r"\b(" + "|".join(sorted(LAW_ABBREVIATIONS, key=len, reverse=True)) + r")\s*§+\s*(\d+\s*[A-Za-z]?)",
+    r"\b("
+    + "|".join(sorted(LAW_ABBREVIATIONS, key=len, reverse=True))
+    + r")\s*§+\s*"
+    + _SECTION_CAPTURE,
     re.IGNORECASE,
 )
 _FULL_LAW_PATTERN = re.compile(
-    r"\b([a-zæøå]{4,}lov(?:en|ens)?)\s*§+\s*(\d+\s*[A-Za-z]?)",
+    r"\b([a-zæøå]{4,}lov(?:en|ens)?)\s*§+\s*" + _SECTION_CAPTURE,
     re.IGNORECASE,
 )
 _DBO_PATTERN = re.compile(
     r"\b(?:dbo|dobbeltbeskatningsoverenskomst(?:en)?)\s*(?:art(?:ikel)?\.?\s*)(\d+)",
     re.IGNORECASE,
 )
-_SECTION_PATTERN = re.compile(r"(\d+)\s*([A-Za-z])?")
-_BEK_PATTERN = re.compile(
-    r"bekendtgørelse(?:n)?\s+nr\.?\s*(\d+)",
+_SECTION_PATTERN = re.compile(
+    r"(\d+)(?:\s*([A-Za-z])(?![A-Za-zæøåÆØÅ]))?",
     re.IGNORECASE,
 )
+_BEK_PATTERN = re.compile(
+    r"bekendtgørelse(?:n)?(?:[^.\n]{0,80})?\s+nr\.?\s*(\d+)",
+    re.IGNORECASE,
+)
+_LOV_NAME_RE = re.compile(r"\b([a-zæøå]{4,}lov(?:en|ens)?)\b", re.IGNORECASE)
+_BARE_SECTION_RE = re.compile(r"§+\s*" + _SECTION_CAPTURE, re.IGNORECASE)
 _HEADING_RE = re.compile(r"\b([A-Z]\.[A-Z]\.\d+(?:\.\d+)*)")
 _TOKEN_RE = re.compile(r"[a-zæøå]+", re.IGNORECASE)
 
@@ -87,6 +108,7 @@ _STOPWORDS = frozenset(
         "både",
         "denne",
         "deres",
+        "derfor",
         "dette",
         "disse",
         "dog",
@@ -106,6 +128,7 @@ _STOPWORDS = frozenset(
         "havde",
         "hendes",
         "henholdsvis",
+        "herunder",
         "hvilken",
         "hvilket",
         "hvis",
@@ -122,9 +145,12 @@ _STOPWORDS = frozenset(
         "loven",
         "lovens",
         "mellem",
+        "mener",
         "måtte",
+        "nærmere",
         "nr",
         "også",
+        "oplyser",
         "omfattet",
         "opfyldt",
         "over",
@@ -150,7 +176,22 @@ _STOPWORDS = frozenset(
     }
 )
 
+# Ord der åbner nabostykker uden at bære sagen (værdi/kilometer i en firmabilopgave).
+_WEAK_RELEVANCE_TOKENS = frozenset(
+    {
+        "bopæl",
+        "kilometer",
+        "privat",
+        "stiller",
+        "udbetale",
+        "udbetales",
+        "udbetalt",
+        "værdi",
+    }
+)
+
 SearchFn = Callable[[str], list[dict[str, Any]]]
+RewriteFn = Callable[[str], str]
 
 
 def extract_anchors(text: str) -> list[dict[str, str]]:
@@ -200,11 +241,11 @@ def extract_regulations(text: str) -> list[dict[str, str]]:
     return found
 
 
-def lookup_hits_for_text(text: str) -> list[dict[str, Any]]:
-    """Slå LL-ankre i teksten op. Tom liste hvis ingen ligningslovsanker."""
+def lookup_hits_for_anchors(anchors: list[dict[str, str]]) -> list[dict[str, Any]]:
+    """Slå ankre op i opslagsværket. Tom liste hvis loven endnu ikke har noder."""
     hits: list[dict[str, Any]] = []
     seen: set[str] = set()
-    for anchor in extract_anchors(text)[:MAX_NORM_QUERIES]:
+    for anchor in anchors[:MAX_NORM_QUERIES]:
         hit = lookup_hit_for_anchor(anchor)
         if not hit:
             continue
@@ -216,11 +257,319 @@ def lookup_hits_for_text(text: str) -> list[dict[str, Any]]:
     return hits
 
 
+def lookup_hits_for_text(text: str) -> list[dict[str, Any]]:
+    """Slå ankre i teksten op. Tom liste hvis ingen opslagsbar lov."""
+    return lookup_hits_for_anchors(extract_anchors(text))
+
+
+def discover_anchors_from_hits(
+    hits: list[dict[str, Any]],
+    facts: str = "",
+) -> list[dict[str, str]]:
+    """Lag 0: træk (lov, paragraf) ud af semantiske træf. Gæt ikke lov."""
+    fact_tokens = _content_tokens(facts)
+    ranked: list[tuple[int, int, dict[str, str]]] = []
+    for hit_index, hit in enumerate(hits):
+        filename = str(hit.get("filename") or "")
+        text = str(hit.get("text") or "")
+        source_laws = _laws_named_in(filename, text)
+        seen_in_hit: set[str] = set()
+        for anchor in _anchors_in_discovery_hit(filename, text, source_laws):
+            key = anchor["label"].lower()
+            if key in seen_in_hit:
+                continue
+            seen_in_hit.add(key)
+            windows = _section_windows(text, *_section_parts(anchor))
+            overlap = 0
+            for window in windows:
+                overlap = max(overlap, len(_content_tokens(window) & fact_tokens))
+            if fact_tokens and overlap < 1:
+                continue
+            ranked.append((overlap, -hit_index, anchor))
+    ranked.sort(key=lambda item: (-item[0], -item[1]))
+    ranked = _keep_competitive_anchors(ranked)
+    return _dedupe_anchors([item[2] for item in ranked])[:MAX_DISCOVERY_ANCHORS]
+
+
+def _keep_competitive_anchors(
+    ranked: list[tuple[int, int, dict[str, str]]],
+) -> list[tuple[int, int, dict[str, str]]]:
+    """Kun ankre hvis overlap er i nærheden af vinderen.
+
+    Ellers bliver § 9 C/§ 9 B med, fordi et befordringsuddrag deler «bopæl»
+    og «kilometer» med en firmabilsag.
+    """
+    if not ranked:
+        return []
+    best = ranked[0][0]
+    if best <= 1:
+        return ranked
+    floor = max(2, (best + 1) // 2)
+    return [item for item in ranked if item[0] >= floor]
+
+
+def _anchors_in_discovery_hit(
+    filename: str,
+    text: str,
+    source_laws: list[str],
+) -> list[dict[str, str]]:
+    found = list(extract_anchors(f"{filename}\n{text}"))
+    seen = {item["label"].lower() for item in found}
+    inherited_law = source_laws[0] if len(source_laws) == 1 else ""
+    if not inherited_law:
+        return found
+    for match in _BARE_SECTION_RE.finditer(text):
+        section = _canonical_section(match.group(1))
+        prefix = text[max(0, match.start() - 48) : match.start()].lower()
+        if _LOV_NAME_RE.search(prefix) or re.search(
+            r"\b(?:" + "|".join(re.escape(key) for key in LAW_ABBREVIATIONS) + r")\s*$",
+            prefix,
+        ):
+            continue
+        label = f"{inherited_law} {section}".strip()
+        if label.lower() in seen:
+            continue
+        seen.add(label.lower())
+        found.append(
+            {
+                "law": inherited_law,
+                "section": section,
+                "label": label,
+                "kind": "statute",
+            }
+        )
+    return found
+
+
+def _laws_named_in(*parts: str) -> list[str]:
+    """Love nævnt i filnavn eller uddrag. Ingen default-lov."""
+    blob = "\n".join(str(part or "") for part in parts)
+    found: list[str] = []
+    seen: set[str] = set()
+
+    def add(raw: str) -> None:
+        law = _canonical_law_name(raw)
+        if not law or law in seen or law in {"loven", "lovens"}:
+            return
+        seen.add(law)
+        found.append(law)
+
+    for match in _LOV_NAME_RE.finditer(blob):
+        add(match.group(1))
+    for abbrev, law in LAW_ABBREVIATIONS.items():
+        if re.search(rf"\b{re.escape(abbrev)}\s*§", blob, re.IGNORECASE):
+            add(law)
+        elif _law_in_filename(law, blob):
+            add(law)
+    return found
+
+
+def _section_windows(
+    text: str,
+    number: str | None,
+    letter: str,
+    radius: int = DISCOVERY_WINDOW_CHARS,
+) -> list[str]:
+    source = str(text or "")
+    if not number:
+        return [source[: radius * 2]] if source else []
+    if letter:
+        pattern = re.compile(
+            rf"§+\s*{re.escape(number)}\s*{re.escape(letter)}\b",
+            re.IGNORECASE,
+        )
+    else:
+        pattern = re.compile(
+            rf"§+\s*{re.escape(number)}(?!\s*[A-Za-zæøåÆØÅ]|\d)",
+            re.IGNORECASE,
+        )
+    windows = []
+    for match in pattern.finditer(source):
+        start = max(0, match.start() - radius)
+        end = min(len(source), match.end() + radius)
+        windows.append(source[start:end])
+    if not letter and "artikel" in source.lower():
+        for match in re.finditer(rf"\bartikel\s*{re.escape(number)}\b", source, re.I):
+            start = max(0, match.start() - radius)
+            end = min(len(source), match.end() + radius)
+            windows.append(source[start:end])
+    return windows
+
+
+def _dedupe_anchors(anchors: list[dict[str, str]]) -> list[dict[str, str]]:
+    found: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for anchor in anchors:
+        key = str(anchor.get("label") or "").lower()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        found.append(anchor)
+    return found
+
+
+def _stated_anchors(
+    legal_locus: str = "",
+    message: str = "",
+    issues: list[dict[str, Any]] | None = None,
+) -> list[dict[str, str]]:
+    blobs = [legal_locus, message]
+    for item in issues or []:
+        if isinstance(item, dict):
+            blobs.append(_issue_question(item))
+    return extract_anchors("\n".join(blobs))
+
+
+def _layer_zero_query(message: str, issues: list[dict[str, Any]] | None) -> str:
+    return _door_fact_blob(message, issues).strip()[:4_000]
+
+
+def _clean_rewrite(text: str, original: str) -> str:
+    """Første linje, uden citationstegn. Tom hvis den ikke tilføjer noget."""
+    line = str(text or "").strip().splitlines()[0].strip() if str(text or "").strip() else ""
+    line = line.strip(" \"'`")
+    if line.lower().startswith("query:"):
+        line = line.split(":", 1)[1].strip().strip(" \"'`")
+    if len(line) > MAX_REWRITE_CHARS:
+        line = line[:MAX_REWRITE_CHARS].rstrip()
+    if not line:
+        return ""
+    if line.casefold() == str(original or "").strip().casefold():
+        return ""
+    return line
+
+
+def _rewrite_discovery_query(client: OpenAI, facts: str) -> str:
+    """GPT-søgestreng. Tom ved fejl, så Python-sporet stadig gælder."""
+    source = str(facts or "").strip()
+    if client is None or not source:
+        return ""
+    last_error: Exception | None = None
+    for model in (PRIMARY_MODEL, FALLBACK_MODEL):
+        try:
+            resp = client.responses.create(
+                model=model,
+                instructions=LAYER0_REWRITE_INSTRUCTIONS,
+                input=source,
+                reasoning={"effort": "low"},
+                prompt_cache_key=LAYER0_REWRITE_CACHE_KEY,
+            )
+            text = str(getattr(resp, "output_text", None) or "")
+            cleaned = _clean_rewrite(text, source)
+            if cleaned:
+                return cleaned
+        except Exception as exc:
+            last_error = exc
+            _log.warning("lag 0 rewrite fejlede (%s): %s", model, exc)
+    if last_error:
+        _log.warning("lag 0 rewrite gav op: %s", last_error)
+    return ""
+
+
+def _merge_hits(*groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for group in groups:
+        for hit in group:
+            key = (str(hit.get("file_id") or ""), str(hit.get("text") or "")[:200])
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(hit)
+    return merged
+
+
+def _parallel_discovery(
+    query: str,
+    facts: str,
+    search_fn: SearchFn,
+    rewrite_fn: RewriteFn | None,
+) -> tuple[list[dict[str, str]], list[dict[str, Any]], list[dict[str, Any]]]:
+    """Python-søgning og GPT-query ved siden af hinanden. Parseren ejer ankeret."""
+    python_hits: list[dict[str, Any]] = []
+    gpt_hits: list[dict[str, Any]] = []
+    rewritten = ""
+    logs: list[dict[str, Any]] = []
+
+    def run_python() -> list[dict[str, Any]]:
+        return _safe_search(search_fn, query)
+
+    def run_gpt() -> list[dict[str, Any]]:
+        nonlocal rewritten
+        if not rewrite_fn:
+            return []
+        try:
+            rewritten = _clean_rewrite(rewrite_fn(query), query)
+        except Exception as exc:
+            _log.warning("lag 0 rewrite_fn fejlede: %s", exc)
+            rewritten = ""
+        if not rewritten:
+            return []
+        return _safe_search(search_fn, rewritten)
+
+    if rewrite_fn:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            fut_python = pool.submit(run_python)
+            fut_gpt = pool.submit(run_gpt)
+            python_hits = fut_python.result()
+            gpt_hits = fut_gpt.result()
+    else:
+        python_hits = run_python()
+
+    hits = _merge_hits(python_hits, gpt_hits)
+    discovered = discover_anchors_from_hits(hits, facts=facts)
+    logs.append(
+        {
+            "queries": [f"Lag 0: {query[:180]}"],
+            "status": "completed" if python_hits else "skipped",
+            "num_results": len(discovered),
+            "layer": "0",
+            "source": "discovery",
+        }
+    )
+    if rewrite_fn:
+        logs.append(
+            {
+                "queries": [f"Lag 0 GPT: {(rewritten or '(tom)')[:180]}"],
+                "status": "completed" if gpt_hits else "empty",
+                "num_results": len(gpt_hits),
+                "layer": "0",
+                "source": "discovery-gpt",
+                "rewrite": rewritten,
+            }
+        )
+    return discovered, hits, logs
+
+
+def _run_layer_zero(
+    message: str,
+    issues: list[dict[str, Any]] | None,
+    legal_locus: str,
+    search_fn: SearchFn,
+    searches: list[dict[str, Any]],
+    rewrite_fn: RewriteFn | None = None,
+) -> list[dict[str, str]]:
+    """Rå faktum → vektorsøgning, parallelt med GPT-query. Tom hvis anker allerede er givet."""
+    if _stated_anchors(legal_locus, message, issues):
+        return []
+    query = _layer_zero_query(message, issues)
+    if not query:
+        return []
+    discovered, _hits, logs = _parallel_discovery(
+        query=query,
+        facts=query,
+        search_fn=search_fn,
+        rewrite_fn=rewrite_fn,
+    )
+    searches.extend(logs)
+    return discovered
+
+
 def lookup_pack_for_chat(message: str) -> dict[str, Any]:
     """Paragrafnoder til almindelig chat. file_search må stadig hente praksis."""
     hits = lookup_hits_for_text(message)
     doors = _open_doors(hits, message, None)
-    djv_hits = lookup_djv_hits(extract_anchors(message), doors)
+    djv_hits = lookup_djv_hits(extract_anchors(message), doors, facts=message)
     hits = hits + djv_hits
     searches = [
         {
@@ -248,13 +597,13 @@ def build_search_plan(
     issues: list[dict[str, Any]] | None,
     legal_locus: str = "",
     message: str = "",
+    extra_anchors: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     """Lag A: unikke ankre. Lag B: personkreds for ankeret + issue-opslag med sagens ord."""
     issue_rows = [item for item in (issues or []) if isinstance(item, dict)]
-    blobs = [legal_locus, message]
-    for item in issue_rows:
-        blobs.append(_issue_question(item))
-    anchors = extract_anchors("\n".join(blobs))
+    anchors = _dedupe_anchors(
+        _stated_anchors(legal_locus, message, issue_rows) + list(extra_anchors or [])
+    )
 
     norm_queries: list[dict[str, str]] = []
     for anchor in anchors[:MAX_NORM_QUERIES]:
@@ -263,17 +612,6 @@ def build_search_plan(
                 "layer": "A",
                 "query": _norm_query(anchor),
                 "anchor": anchor["label"],
-                "issue_id": "",
-            }
-        )
-    if not norm_queries:
-        seed = (legal_locus or _issue_question(issue_rows[0]) if issue_rows else message).strip()
-        seed = seed[:180] or "skatteret lovtekst"
-        norm_queries.append(
-            {
-                "layer": "A",
-                "query": f"{seed} lovtekst lovbekendtgørelse",
-                "anchor": seed,
                 "issue_id": "",
             }
         )
@@ -385,9 +723,9 @@ def run_layered_search(
     issues: list[dict[str, Any]] | None = None,
     vector_store_ids: list[str] | None = None,
     search_fn: SearchFn | None = None,
+    rewrite_fn: RewriteFn | None = None,
 ) -> dict[str, Any]:
-    """Kør A, derefter B, derefter højst én hul-runde. Returnér pakke til notatet."""
-    plan = build_search_plan(issues, legal_locus=legal_locus, message=message)
+    """Kør lag 0 ved manglende anker, derefter A, B og højst én hul-runde."""
     if search_fn:
         worker_a = worker_b = search_fn
     else:
@@ -409,7 +747,24 @@ def run_layered_search(
                 rewrite_query=True,
             )
 
+    if rewrite_fn is None and client is not None and search_fn is None:
+        rewrite_fn = lambda facts: _rewrite_discovery_query(client, facts)
+
     searches: list[dict[str, Any]] = []
+    extra_anchors = _run_layer_zero(
+        message=message,
+        issues=issues,
+        legal_locus=legal_locus,
+        search_fn=worker_b,
+        searches=searches,
+        rewrite_fn=rewrite_fn,
+    )
+    plan = build_search_plan(
+        issues,
+        legal_locus=legal_locus,
+        message=message,
+        extra_anchors=extra_anchors,
+    )
     if not _ligningslov_anchors(plan["anchors"]):
         searches.append(
             {
@@ -421,6 +776,42 @@ def run_layered_search(
             }
         )
     hits_lookup_a, remaining_a = _resolve_lookups(plan["norm_queries"], searches)
+    stated_labels = {
+        item["label"].lower()
+        for item in _stated_anchors(legal_locus, message, issues)
+    }
+    hits_lookup_a, dropped_lookups = _filter_packed_lookups(
+        hits_lookup_a,
+        message,
+        issues,
+        stated_labels,
+    )
+    for hit in dropped_lookups:
+        searches.append(
+            {
+                "queries": [
+                    "Opslag forkastet: "
+                    + str(hit.get("anchor") or hit.get("filename") or "")
+                    + " (noden matcher ikke sagens distinkte ord)"
+                ],
+                "status": "skipped",
+                "num_results": 0,
+                "layer": "A",
+                "source": "opslag-filter",
+            }
+        )
+    kept_labels = {
+        str(hit.get("anchor") or "").lower()
+        for hit in hits_lookup_a
+        if hit.get("anchor")
+    }
+    if kept_labels:
+        plan["anchors"] = [
+            anchor
+            for anchor in plan["anchors"]
+            if str(anchor.get("label") or "").lower() in kept_labels
+            or str(anchor.get("kind") or "") in {"dbo", "regulation"}
+        ]
     hits_a = hits_lookup_a + _run_query_batch(remaining_a, worker_a, searches)
     open_doors = _open_doors(hits_a, message, issues)
     plan["open_doors"] = [door["label"] for door in open_doors]
@@ -444,7 +835,13 @@ def run_layered_search(
                 if existing
                 else [door_query]
             )
-    hits_djv = lookup_djv_hits(plan["anchors"], open_doors)
+    # Sagens faktum, ikke issue-formuleringen. «Er Mette på rejse» trækker
+    # C.A.7.2/7.3 (ordet rejse) foran C.A.7.1.4 (midlertidigt arbejdssted).
+    hits_djv = lookup_djv_hits(
+        plan["anchors"],
+        open_doors,
+        facts=message,
+    )
     if hits_djv:
         searches.append(
             {
@@ -472,7 +869,7 @@ def run_layered_search(
     gap_queries = _gap_queries(
         plan["anchors"],
         hits_a,
-        hits_b=hits_b,
+        hits_b=hits_djv + hits_b,
         doors=open_doors,
     )
     hits_lookup_gap, remaining_gap = _resolve_lookups(gap_queries, searches)
@@ -537,7 +934,10 @@ def format_retrieved_context(
     if any(chunk.get("lookup_kind") == "djv" for chunk in chunks):
         intro += (
             " DJV-afsnit med adresse er slået op som node, ikke søgt. "
-            "Brug ikke andre uddrag af samme DJV-familie som erstatning."
+            "Brug ikke andre uddrag af samme DJV-familie som erstatning. "
+            "Citer de specifikke afsnit der bærer konklusionen. "
+            "Et afsnit med overskriften Regel er kun indgangen, hvis et mere "
+            "specifikt afsnit er hentet."
         )
     lines = ["[Hentede retskilder]", intro, ""]
     current_layer = ""
@@ -579,14 +979,11 @@ def prefetch_chat_retrieval(
     query: str,
     vector_store_ids: list[str] | None = None,
     search_fn: SearchFn | None = None,
+    rewrite_fn: RewriteFn | None = None,
 ) -> dict[str, Any]:
-    """Opslag af LL-noder plus semantisk søgning. Bruges når modellen ikke selv søger."""
+    """Opslag af noder plus semantisk søgning. Lag 0 kører når beskeden ikke har anker."""
     clean = str(query or "").strip()
-    lookups = lookup_hits_for_text(clean)
-    doors = _open_doors(lookups, clean, None)
-    djv_hits = lookup_djv_hits(extract_anchors(clean), doors)
-    lookups = lookups + djv_hits
-    if not clean and not lookups:
+    if not clean:
         return {
             "retrieved_chunks": [],
             "retrieved_sources": [],
@@ -594,18 +991,66 @@ def prefetch_chat_retrieval(
             "context_text": "",
             "diagnosis_question": "",
         }
-    if search_fn:
-        raw_hits = list(search_fn(clean) or []) if clean else []
-    elif client is not None and clean:
-        raw_hits = search_legal_sources(
-            client,
-            clean,
-            max_results=10,
-            vector_store_ids=vector_store_ids,
-            rewrite_query=True,
+
+    def run_search(text: str) -> list[dict[str, Any]]:
+        if search_fn:
+            return list(search_fn(text) or [])
+        if client is not None:
+            return search_legal_sources(
+                client,
+                text,
+                max_results=10,
+                vector_store_ids=vector_store_ids,
+                rewrite_query=True,
+            )
+        return []
+
+    if rewrite_fn is None and client is not None and search_fn is None:
+        rewrite_fn = lambda facts: _rewrite_discovery_query(client, facts)
+
+    searches: list[dict[str, Any]] = []
+    anchors = extract_anchors(clean)
+    raw_hits: list[dict[str, Any]] = []
+    if not anchors:
+        anchors, raw_hits, disc_logs = _parallel_discovery(
+            query=clean,
+            facts=clean,
+            search_fn=run_search,
+            rewrite_fn=rewrite_fn,
         )
-    else:
-        raw_hits = []
+        searches.extend(disc_logs)
+
+    lookups = lookup_hits_for_anchors(anchors)
+    lookups, dropped_lookups = _filter_packed_lookups(
+        lookups, clean, None, {item["label"].lower() for item in extract_anchors(clean)}
+    )
+    for hit in dropped_lookups:
+        searches.append(
+            {
+                "queries": [
+                    "Opslag forkastet: "
+                    + str(hit.get("anchor") or hit.get("filename") or "")
+                    + " (noden matcher ikke sagens distinkte ord)"
+                ],
+                "status": "skipped",
+                "num_results": 0,
+                "layer": "A",
+                "source": "opslag-filter",
+            }
+        )
+    if lookups:
+        anchors = _dedupe_anchors(
+            [
+                item
+                for hit in lookups
+                for item in extract_anchors(str(hit.get("anchor") or ""))
+            ]
+        )
+    doors = _open_doors(lookups, clean, None)
+    djv_hits = lookup_djv_hits(anchors, doors, facts=clean)
+    lookups = lookups + djv_hits
+    if not raw_hits:
+        raw_hits = run_search(clean)
     semantic: list[dict[str, Any]] = []
     for hit in raw_hits:
         text = str(hit.get("text") or "").strip()
@@ -623,7 +1068,7 @@ def prefetch_chat_retrieval(
     semantic = _drop_replaced_statute_files(semantic, lookups)
     semantic = _drop_replaced_djv_files(semantic, djv_hits)
     chunks = lookups + semantic
-    searches: list[dict[str, Any]] = [
+    lookup_searches = [
         {
             "queries": [f"Opslag: {hit.get('anchor') or hit.get('filename') or ''}"],
             "status": "completed",
@@ -633,6 +1078,7 @@ def prefetch_chat_retrieval(
         }
         for hit in lookups
     ]
+    searches.extend(lookup_searches)
     if clean:
         searches.append(
             {"queries": [clean], "status": "completed", "num_results": len(semantic)}
@@ -802,12 +1248,16 @@ def _open_doors(
         subs = hit.get("lookup_subsections") or []
         if not isinstance(subs, list) or not subs:
             continue
+        node_key = str(hit.get("lookup_key") or "").strip().lower()
         for door in _doors_for_node(subs, facts):
-            key = (str(hit.get("file_id") or ""), door["label"])
-            if key in seen:
+            seen_key = (str(hit.get("file_id") or ""), door["label"])
+            if seen_key in seen:
                 continue
-            seen.add(key)
-            opened.append(door)
+            seen.add(seen_key)
+            row = dict(door)
+            if node_key:
+                row["key"] = node_key
+            opened.append(row)
     return opened
 
 
@@ -815,6 +1265,34 @@ def _doors_for_node(
     subsections: list[Any],
     fact_tokens: set[str],
 ) -> list[dict[str, str]]:
+    rows = _subsection_rows(subsections)
+    if not rows:
+        return []
+    df: Counter[str] = Counter()
+    for _label, _text, tokens in rows:
+        df.update(tokens)
+    opened: list[dict[str, str]] = []
+    extra_hits: set[str] = set()
+    for index, (label, text, tokens) in enumerate(rows):
+        rare = {token for token in tokens if df[token] <= 2}
+        strong = (fact_tokens & rare) - _WEAK_RELEVANCE_TOKENS
+        if index == 0:
+            opened.append({"label": label, "text": text})
+            continue
+        if not strong:
+            continue
+        # Første ekstra stykke er emnet (stk. 4 firmabil). Senere stykker
+        # (lystbåd, bolig) må ikke åbne på de samme sagsord.
+        if extra_hits and not (strong - extra_hits):
+            continue
+        extra_hits |= strong
+        opened.append({"label": label, "text": text})
+    return opened
+
+
+def _subsection_rows(
+    subsections: list[Any],
+) -> list[tuple[str, str, set[str]]]:
     rows: list[tuple[str, str, set[str]]] = []
     for item in subsections:
         if not isinstance(item, dict):
@@ -824,17 +1302,71 @@ def _doors_for_node(
         if not text:
             continue
         rows.append((label, text, _content_tokens(text)))
-    if not rows:
-        return []
+    return rows
+
+
+def _extra_door_signal(hit: dict[str, Any], fact_tokens: set[str]) -> set[str]:
+    """Sagens ord der åbner andre stykker end stk. 1. Ikke stk. 1 selv."""
+    rows = _subsection_rows(hit.get("lookup_subsections") or [])
+    if len(rows) < 2:
+        return set()
     df: Counter[str] = Counter()
     for _label, _text, tokens in rows:
         df.update(tokens)
-    opened: list[dict[str, str]] = []
-    for index, (label, text, tokens) in enumerate(rows):
+    signal: set[str] = set()
+    for index, (_label, _text, tokens) in enumerate(rows):
+        if index == 0:
+            continue
         rare = {token for token in tokens if df[token] <= 2}
-        if index == 0 or fact_tokens & rare:
-            opened.append({"label": label, "text": text})
-    return opened
+        signal |= fact_tokens & rare
+    return signal
+
+
+def _lookup_hit_is_relevant(
+    hit: dict[str, Any],
+    fact_tokens: set[str],
+    *,
+    required: bool,
+) -> bool:
+    """Pak noden hvis den er påkrævet, eller hvis et særligt stykke rammer sagens ord."""
+    if required:
+        return True
+    strong = _extra_door_signal(hit, fact_tokens) - _WEAK_RELEVANCE_TOKENS
+    return bool(strong)
+
+
+def _filter_packed_lookups(
+    hits: list[dict[str, Any]],
+    message: str,
+    issues: list[dict[str, Any]] | None,
+    stated_labels: set[str],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Slå alle ankre op, men pak kun noder sagen kan bære.
+
+    Udtrykkeligt nævnte ankre beholdes. Øvrige kun hvis et stykke ud over
+    stk. 1 rammer distinkte sagsord. Rækkefølgen i lag 0 må ikke gøre § 9 C
+    obligatorisk, bare fordi den blev fundet før § 16.
+    """
+    lookup_hits = [hit for hit in hits if hit.get("from_lookup")]
+    others = [hit for hit in hits if not hit.get("from_lookup")]
+    if len(lookup_hits) <= 1:
+        return hits, []
+    fact_tokens = _content_tokens(_door_fact_blob(message, issues))
+    kept: list[dict[str, Any]] = []
+    dropped: list[dict[str, Any]] = []
+    for hit in lookup_hits:
+        label = str(hit.get("anchor") or "").lower()
+        required = bool(stated_labels) and label in stated_labels
+        has_signal = _lookup_hit_is_relevant(hit, fact_tokens, required=False)
+        if required or has_signal:
+            kept.append(hit)
+        else:
+            dropped.append(hit)
+    if not kept and lookup_hits:
+        kept = [lookup_hits[0]]
+        dropped = lookup_hits[1:]
+    return kept + others, dropped
+
 
 
 def _door_search_terms(doors: list[dict[str, str]]) -> list[str]:
@@ -1145,17 +1677,22 @@ def _drop_replaced_djv_files(
     hits: list[dict[str, Any]],
     djv_hits: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Når DJV-noden er slået op, droppes PDF af samme underafsnit, ikke hele kapitlet.
+    """Når DJV-noden er slået op, droppes PDF af samme kapitel-familie.
 
-    C.F.4.2.1 erstatter C.F.4.2-uddrag, men ikke C.F.7. C.A.7.3.2 erstatter
-    ikke C.A.7.1 (rejsebegrebet), som stadig må komme fra vektorsøgning.
+    C.F.4.2.1 erstatter C.F.4-uddrag, men ikke C.F.7. JURV-filen for C.A
+    droppes, når en C.A-node er slået op — filnavnet har ikke kapiteladresse.
     """
-    sections = {
-        _heading_pack_key(hit)
+    families = {
+        _heading_family(hit)
         for hit in djv_hits
-        if _heading_pack_key(hit)
+        if _heading_family(hit)
     }
-    if not sections:
+    volumes = {
+        _djv_volume(hit)
+        for hit in djv_hits
+        if _djv_volume(hit)
+    }
+    if not families and not volumes:
         return hits
     kept: list[dict[str, Any]] = []
     dropped = 0
@@ -1163,7 +1700,19 @@ def _drop_replaced_djv_files(
         if hit.get("from_lookup"):
             kept.append(hit)
             continue
-        if _looks_like_djv(str(hit.get("filename") or "")) and _heading_pack_key(hit) in sections:
+        if not _looks_like_djv(str(hit.get("filename") or "")):
+            kept.append(hit)
+            continue
+        family = _heading_family(hit)
+        volume = _djv_volume(hit)
+        if family and family in families:
+            dropped += 1
+            continue
+        if (
+            volume
+            and volume in volumes
+            and "jurv" in str(hit.get("filename") or "").lower()
+        ):
             dropped += 1
             continue
         kept.append(hit)
@@ -1174,7 +1723,22 @@ def _drop_replaced_djv_files(
 
 def _looks_like_djv(filename: str) -> bool:
     name = filename.lower()
-    return "djv" in name or "juridiske vejledning" in name
+    return (
+        "djv" in name
+        or "jurv" in name
+        or "juridiske vejledning" in name
+    )
+
+
+def _djv_volume(hit: dict[str, Any]) -> str:
+    """C.A fra C.A.5.14.1.4 eller fra JURV2026-2_C.A_…-filnavn."""
+    code = _heading_code(hit)
+    parts = [part for part in code.split(".") if part]
+    if len(parts) >= 2:
+        return f"{parts[0]}.{parts[1]}"
+    name = str(hit.get("filename") or "")
+    match = re.search(r"(C\.[A-Z])(?:_|$)", name)
+    return match.group(1) if match else ""
 
 
 def _drop_replaced_statute_files(
