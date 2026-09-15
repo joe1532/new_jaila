@@ -6,3 +6,4 @@ logs/
 data/
 chat_context/
 lovhistorik/.cache/
+backend/db/backups/

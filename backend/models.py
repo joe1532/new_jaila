@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from typing import Any
 from typing import Literal
 
@@ -186,6 +186,10 @@ class ChatRequest(BaseModel):
         default=False,
         description="Hvis true kører test-sløjfen: file search, nodeopslag og kritik",
     )
+    task_critic_version: str = Field(
+        default="v1",
+        description="Kritiksløjfe i Test: v1 (nuværende) eller v2 (invarianter). Ignoreres når task_solve er false.",
+    )
     legal_locus: str | None = Field(
         default=None,
         description="Valgfrit retligt udgangspunkt, fx ligningsloven § 33 A",
@@ -218,6 +222,7 @@ class RetrievalResult(BaseModel):
     filename: str
     score: str
     text: str
+    attributes: dict[str, Any] = Field(default_factory=dict)
 
 
 class AnalyzeResponse(BaseModel):
@@ -243,7 +248,10 @@ class RetrievalDiagnostics(BaseModel):
 
     Felterne har defaults hele vejen, fordi diagnosen udelades, når vector search er slået
     fra. Et tomt objekt betyder derfor "ikke målt", ikke "intet fundet".
+    Extra felter (issue_trace, ledger) må gerne følge med i loggen.
     """
+
+    model_config = ConfigDict(extra="allow")
 
     searches: list[RetrievalSearch] = Field(default_factory=list)
     num_results: int = 0
@@ -269,6 +277,16 @@ class RetrievalDiagnostics(BaseModel):
     pipeline: str | None = None
     pipeline_outcome: str | None = None
     pipeline_trace: list[dict[str, str]] = Field(default_factory=list)
+    requested_critic_version: str | None = None
+    executed_solver: str | None = None
+    critic2_status: str | None = None
+    critic2_action: str | None = None
+    attributed_hits: int = 0
+    djv_edition: str | None = None
+    hit_editions: list[str] = Field(default_factory=list)
+    hit_document_kinds: list[str] = Field(default_factory=list)
+    hit_section_codes: list[str] = Field(default_factory=list)
+    hit_corpora: list[str] = Field(default_factory=list)
 
 
 class ChatResponse(BaseModel):
@@ -576,3 +594,16 @@ class ForarbejderHistoryRequest(BaseModel):
         le=40,
         description="Led i kæden af lovbekendtgørelser, der gås bagud",
     )
+
+
+class SkatSearchRequest(BaseModel):
+    query: str = Field(..., min_length=1, max_length=4000, description="SKM/OID eller fritekst")
+    mode: Literal["auto", "hybrid", "vector", "lexical", "exact"] = "auto"
+    limit: int = Field(default=10, ge=1, le=20)
+    exact_vector: bool = False
+
+
+class SkatSearchStatusResponse(BaseModel):
+    enabled: bool
+    database_configured: bool
+    raw_html_configured: bool = False

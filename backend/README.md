@@ -5,6 +5,9 @@ FastAPI backend that exposes vector-store powered legal analysis for the `skat-c
 ## Endpoints
 
 - `GET /api/health`
+- `GET /api/skat/search/status`
+- `POST /api/skat/search` (read-only SKAT-retrieval; requires `JAILA_SKAT_SEARCH_API`)
+- `GET /api/skat/document/original` (scraped HTML; requires `JAILA_SKAT_SEARCH_API` and `JAILA_SKAT_RAW_HTML_DIR`)
 - `POST /api/analyze`
 - `GET /api/logs/{filename}`
 
@@ -13,6 +16,10 @@ FastAPI backend that exposes vector-store powered legal analysis for the `skat-c
 - `OPENAI_API_KEY` (required)
 - `FRONTEND_ORIGINS` (optional, comma-separated; default includes `https://skat-chat.dk`)
 - `STRICT_SOURCING` (optional, `true/false`; default `false`)
+- `JAILA_SKAT_DATABASE_URL` (required when PostgreSQL decision retrieval is enabled)
+- `JAILA_SKAT_RETRIEVAL_ENABLED` (`true` enables read-only PostgreSQL decisions alongside vector stores)
+- `JAILA_SKAT_SEARCH_API` (`true` enables POST /api/skat/search for the live search test page; does not enable chat retrieval)
+- `JAILA_SKAT_RAW_HTML_DIR` (optional; folder with `{year}/raw_html/{SKM}__oid-{oid}.html`. Local default: `data/skat_info`. Production: `/var/lib/jaila/skat_info`)
 
 Example:
 

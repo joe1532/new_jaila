@@ -15,7 +15,7 @@ import xlrd
 from docx import Document
 from fastapi import FastAPI, File, Header, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from openai import OpenAI
 from pypdf import PdfReader
 
@@ -79,6 +79,8 @@ from backend.models import (
     LegalSourcesCatalogResponse,
     LegalSourceSectionResponse,
     SagsLegalBasisResponse,
+    SkatSearchRequest,
+    SkatSearchStatusResponse,
 )
 from backend.services.analyse_logs import (
     delete_analyse_log,
@@ -110,7 +112,22 @@ from backend.services.task_search import (
     compose_write_input,
     prefetch_chat_retrieval,
 )
+from backend.services.legal_search import (
+    postgres_retrieval_enabled,
+    postgres_retrieval_healthy,
+)
+from backend.services.skat_search import (
+    load_original_html,
+    load_skat_document,
+    run_skat_search,
+    search_status,
+    skat_search_api_enabled,
+)
 from backend.services.critic_loop import iter_task_solve_critic
+from backend.services.critic_loop_v2 import (
+    iter_task_solve_critic_v2,
+    normalize_task_critic_version,
+)
 from backend.services.pdf_log import save_chat_pdf_log, save_pdf_log
 
 
@@ -118,7 +135,6 @@ app = FastAPI(title="JAILA Backend API", version="1.0.0")
 _log = logging.getLogger(__name__)
 CHAT_CONTEXT_DIR = BASE_DIR / "chat_context"
 DEFAULT_CHAT_GUIDE_PATH = BASE_DIR / "backend" / "default_context" / "Skriveguide.md"
-MAX_CHAT_CONTEXT_CHARS = 20000
 MAX_CHAT_CONTEXT_PER_FILE_CHARS = 30000
 MAX_UPLOAD_BYTES = 15 * 1024 * 1024
 MAX_PDF_PAGES = 20
@@ -161,6 +177,8 @@ app.add_middleware(
 def health() -> dict[str, str]:
     if not os.getenv("OPENAI_API_KEY"):
         return {"status": "degraded", "reason": "OPENAI_API_KEY mangler"}
+    if postgres_retrieval_enabled() and not postgres_retrieval_healthy():
+        return {"status": "degraded", "reason": "SKAT PostgreSQL-retrieval er utilgængelig"}
     return {"status": "ok"}
 
 
@@ -1569,6 +1587,13 @@ def context_enabled(meta: dict) -> bool:
     return context_kind(meta) != "skrivevejledning"
 
 
+def stamp_requested_critic_version(diagnostics: dict | None, requested: str) -> dict:
+    """Gem hvad Test-fanen bad om, så PDF ikke forveksler v2 med chat."""
+    out = dict(diagnostics or {})
+    out["requested_critic_version"] = requested
+    return out
+
+
 def save_chat_last_sources(
     session_id: str,
     *,
@@ -1629,14 +1654,13 @@ def load_chat_context_blocks(
 ) -> list[dict[str, str]]:
     """De kontekstfiler, der er slået til, som tekstblokke med deres art.
 
-    Arten følger med ud, fordi rammesætningen til modellen afhænger af den. Den samlede
-    længde er stadig begrænset; grænsen rammes først af det ældste materiale, fordi
-    listen er sorteret med det nyeste først.
+    Arten følger med ud, fordi rammesætningen til modellen afhænger af den.
+    Brugermateriale sendes i fuld længde; modellens eget context window er den
+    reelle grænse.
     """
     ensure_default_guide_context_for_session(session_id)
     session_dir = get_session_dir(session_id)
     blocks: list[dict[str, str]] = []
-    total_chars = 0
     for context_id in list_chat_context_ids(session_id):
         meta = load_context_meta(session_dir, context_id)
         kind = context_kind(meta)
@@ -1651,16 +1675,12 @@ def load_chat_context_blocks(
             continue
         if not text:
             continue
-        block = f"[Kontekstfil: {filename} | type: {file_type}]\n{text}\n"
-        remaining = MAX_CHAT_CONTEXT_CHARS - total_chars
-        if remaining <= 0:
-            break
-        if len(block) > remaining:
-            block = block[:remaining] + "\n[NOTE: Kontekst afkortet pga. længde]\n"
-        blocks.append({"kind": kind, "text": block})
-        total_chars += len(block)
-        if total_chars >= MAX_CHAT_CONTEXT_CHARS:
-            break
+        blocks.append(
+            {
+                "kind": kind,
+                "text": f"[Kontekstfil: {filename} | type: {file_type}]\n{text}\n",
+            }
+        )
     return blocks
 
 
@@ -1912,9 +1932,6 @@ async def upload_chat_context(
         raise HTTPException(status_code=400, detail="Kunne ikke udtrække brugbar tekst fra filen")
 
     extracted_text = normalize_text(extracted_text)
-    extracted_text, was_truncated = truncate_text(extracted_text, MAX_CHAT_CONTEXT_PER_FILE_CHARS)
-    if was_truncated:
-        note = f"{note}. Indhold blev afkortet."
 
     CHAT_CONTEXT_DIR.mkdir(parents=True, exist_ok=True)
     session_dir = get_session_dir(session_id)
@@ -1957,15 +1974,12 @@ def create_chat_context_from_text(
     text = normalize_text(payload.text).strip()
     if not text:
         raise HTTPException(status_code=400, detail="Teksten er tom")
-    text, was_truncated = truncate_text(text, MAX_CHAT_CONTEXT_PER_FILE_CHARS)
 
     # Filnavnet vises kun i listen og bruges ikke som sti, men holdes alligevel fri for
     # tegn, der kunne pege ud af sessionsmappen. \w dækker æ, ø og å.
     filename = re.sub(r"[^\w\s.\-§]", "", payload.filename.strip())[:120] or "kontekst.txt"
 
     note = "Indsat fra JAILA"
-    if was_truncated:
-        note += ". Indhold blev afkortet."
 
     CHAT_CONTEXT_DIR.mkdir(parents=True, exist_ok=True)
     session_dir = get_session_dir(session_id)
@@ -2038,19 +2052,43 @@ def delete_chat_context(
     return build_chat_context_list_response(session_id)
 
 
+def delete_chat_context_files(session_id: str, *, kind: str | None = None) -> None:
+    """Slet kontekstfiler. kind=None sletter hele sessionen; ellers kun den art."""
+    session_dir = get_session_dir(session_id)
+    if not session_dir.exists():
+        return
+    if kind:
+        for context_id in list_chat_context_ids(session_id):
+            if context_kind(load_context_meta(session_dir, context_id)) != kind:
+                continue
+            for path in (
+                context_text_path(session_dir, context_id),
+                context_meta_path(session_dir, context_id),
+            ):
+                try:
+                    if path.exists():
+                        path.unlink()
+                except Exception:
+                    continue
+        return
+    for path in session_dir.glob("*"):
+        if path.is_file():
+            try:
+                path.unlink()
+            except Exception:
+                continue
+
+
 @app.delete("/api/chat/context", response_model=ChatContextListResponse)
 def clear_chat_context(
     x_chat_session_id: str | None = Header(default=None, alias="X-Chat-Session-Id"),
+    kind: str | None = Query(default=None, description="Slet kun denne art, fx retskilde"),
 ) -> ChatContextListResponse:
     session_id = get_session_id(x_chat_session_id)
-    session_dir = get_session_dir(session_id)
-    if session_dir.exists():
-        for path in session_dir.glob("*"):
-            if path.is_file():
-                try:
-                    path.unlink()
-                except Exception:
-                    continue
+    clean_kind = (kind or "").strip().lower() or None
+    if clean_kind and clean_kind not in CONTEXT_KINDS:
+        raise HTTPException(status_code=400, detail="Ukendt art for kontekst")
+    delete_chat_context_files(session_id, kind=clean_kind)
     return build_chat_context_list_response(session_id)
 
 
@@ -2515,6 +2553,95 @@ def get_legal_source_section(
     )
 
 
+@app.get("/api/skat/search/status", response_model=SkatSearchStatusResponse)
+def get_skat_search_status() -> SkatSearchStatusResponse:
+    """Lokal søgefane: om API'et er slået til. Ingen DSN i svaret."""
+    return SkatSearchStatusResponse(**search_status())
+
+
+@app.post("/api/skat/search")
+def post_skat_search(payload: SkatSearchRequest) -> dict:
+    """Read-only SKAT-retrieval til den lokale søgefane. Kræver JAILA_SKAT_SEARCH_API."""
+    if not skat_search_api_enabled():
+        raise HTTPException(status_code=404, detail="SKAT-søgning er ikke aktiveret")
+    from backend.db.skat_retrieval.errors import (
+        CliArgumentError,
+        DatabaseUnavailableError,
+        IdentifierNotFoundError,
+        QueryEmbeddingUnavailableError,
+        SkatRetrievalError,
+    )
+
+    try:
+        client = None
+        if os.getenv("OPENAI_API_KEY"):
+            client = OpenAI()
+        return run_skat_search(
+            payload.query,
+            mode=payload.mode,
+            limit=payload.limit,
+            exact_vector=payload.exact_vector,
+            embed_client=client,
+        )
+    except IdentifierNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from None
+    except (CliArgumentError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    except QueryEmbeddingUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from None
+    except DatabaseUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from None
+    except SkatRetrievalError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from None
+
+
+@app.get("/api/skat/document")
+def get_skat_document(identifier: str = Query(..., min_length=1)) -> dict:
+    """Fuld afgørelse som afsnit. Kræver JAILA_SKAT_SEARCH_API."""
+    if not skat_search_api_enabled():
+        raise HTTPException(status_code=404, detail="SKAT-søgning er ikke aktiveret")
+    from backend.db.skat_retrieval.errors import (
+        DatabaseUnavailableError,
+        IdentifierNotFoundError,
+        SkatRetrievalError,
+    )
+
+    try:
+        return load_skat_document(identifier)
+    except IdentifierNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from None
+    except (ValueError,) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    except DatabaseUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from None
+    except SkatRetrievalError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from None
+
+
+@app.get("/api/skat/document/original")
+def get_skat_document_original(identifier: str = Query(..., min_length=1)) -> HTMLResponse:
+    """Scraped HTML fra lokale crawl-filer. Kræver JAILA_SKAT_SEARCH_API."""
+    if not skat_search_api_enabled():
+        raise HTTPException(status_code=404, detail="SKAT-søgning er ikke aktiveret")
+    try:
+        markup = load_original_html(identifier)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from None
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    return HTMLResponse(
+        content=markup,
+        headers={
+            "X-Content-Type-Options": "nosniff",
+            "Content-Security-Policy": (
+                "sandbox allow-scripts allow-popups allow-forms "
+                "allow-popups-to-escape-sandbox"
+            ),
+            "Cache-Control": "private, max-age=300",
+        },
+    )
+
+
 @app.get("/api/forarbejder/laws", response_model=ForarbejderLawsResponse)
 def get_forarbejder_laws() -> ForarbejderLawsResponse:
     """De love, forarbejdsmotoren er målt på.
@@ -2738,6 +2865,12 @@ def chat(
         history_prefix = format_history_prefix(payload.history) if provider == "grok" else ""
         allow_markdown = bool(payload.allow_markdown)
         task_solve = bool(payload.task_solve)
+        task_critic_version = (
+            normalize_task_critic_version(payload.task_critic_version) if task_solve else "v1"
+        )
+        iter_task_solve = (
+            iter_task_solve_critic_v2 if task_critic_version == "v2" else iter_task_solve_critic
+        )
         rewrite_text = bool(payload.rewrite_text) and not task_solve
         if rewrite_text:
             format_instructions = REWRITE_INSTRUCTIONS
@@ -2877,7 +3010,7 @@ def chat(
                                         framing=build_context_framing(context_blocks),
                                     ),
                                 )
-                        for evt in iter_task_solve_critic(
+                        for evt in iter_task_solve(
                             client=client,
                             write_client=write_client,
                             message=message,
@@ -2893,7 +3026,7 @@ def chat(
                             prefetched_retrieval=prefetched_retrieval,
                         ):
                             ev_type = evt.get("type")
-                            if ev_type in {"search", "draft", "critic", "recover", "revise"}:
+                            if ev_type in {"search", "draft", "critic", "critic2", "recover", "revise"}:
                                 yield _sse_line(evt)
                                 continue
                             if ev_type == "delta":
@@ -2905,13 +3038,17 @@ def chat(
                                 chat_used_retrieval_results[:] = (
                                     evt.get("used_retrieval_results", []) or chat_retrieval_results
                                 )
+                                diag = stamp_requested_critic_version(
+                                    evt.get("retrieval_diagnostics", {}) or {},
+                                    task_critic_version,
+                                )
                                 save_chat_last_sources(
                                     session_id,
                                     citations=chat_citations,
                                     retrieval_results=chat_retrieval_results,
                                     used_retrieval_results=chat_used_retrieval_results,
                                     used_vector_store_ids=evt.get("used_vector_store_ids", []),
-                                    retrieval_diagnostics=evt.get("retrieval_diagnostics", {}) or {},
+                                    retrieval_diagnostics=diag,
                                 )
                                 yield _sse_line(
                                     {
@@ -2924,7 +3061,7 @@ def chat(
                                         "citations": chat_citations,
                                         "retrieval_results": chat_retrieval_results,
                                         "used_retrieval_results": chat_used_retrieval_results,
-                                        "retrieval_diagnostics": evt.get("retrieval_diagnostics", {}) or {},
+                                        "retrieval_diagnostics": diag,
                                     }
                                 )
                                 return
@@ -3102,7 +3239,7 @@ def chat(
                 answer = ""
                 used_model = PRIMARY_MODEL
                 response_id = ""
-                for evt in iter_task_solve_critic(
+                for evt in iter_task_solve(
                     client=client,
                     write_client=write_client,
                     message=message,
@@ -3126,7 +3263,10 @@ def chat(
                         chat_used_retrieval_results = (
                             evt.get("used_retrieval_results", []) or chat_retrieval_results
                         )
-                        chat_retrieval_diagnostics = evt.get("retrieval_diagnostics", {}) or {}
+                        chat_retrieval_diagnostics = stamp_requested_critic_version(
+                            evt.get("retrieval_diagnostics", {}) or {},
+                            task_critic_version,
+                        )
                         break
                     if evt.get("type") == "error":
                         raise RuntimeError(str(evt.get("detail") or "Opgaveløsning fejlede"))
